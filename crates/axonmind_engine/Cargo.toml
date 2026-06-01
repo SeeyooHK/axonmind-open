@@ -1,0 +1,44 @@
+[package]
+name = "axonmind_engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Ingestion, extraction, graph queries, MCP tools, persistence, and workers for axonmind-open"
+
+[dependencies]
+axonmind_core   = { workspace = true }
+anyhow          = { workspace = true }
+async-trait     = { workspace = true }
+chrono          = { workspace = true }
+calamine        = { workspace = true }
+comrak          = { workspace = true }
+scraper         = { workspace = true }
+deadpool-sqlite = { workspace = true }
+undoc           = { workspace = true }
+petgraph        = { workspace = true }
+unpdf           = { workspace = true }
+rmp-serde       = { workspace = true }
+rusqlite        = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
+sha2            = { workspace = true }
+thiserror       = { workspace = true }
+tokio           = { workspace = true }
+tracing         = { workspace = true }
+ts-rs           = { workspace = true }
+uuid            = { workspace = true }
+
+# Optional: Phase 3 LLM extraction
+reqwest    = { workspace = true, optional = true }
+seeyoo_llm = { workspace = true, optional = true }
+
+# Optional: image OCR via Tesseract (requires libtesseract installed on the system)
+tesseract  = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[features]
+llm = ["dep:reqwest", "dep:seeyoo_llm"]
+ocr = ["dep:tesseract"]

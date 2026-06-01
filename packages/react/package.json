@@ -1,0 +1,27 @@
+{
+  "name": "@axonmind/react",
+  "version": "0.1.0",
+  "private": false,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "dependencies": {
+    "@axonmind/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16",
+    "@types/react": "^19.0.0",
+    "@vitejs/plugin-react": "^4",
+    "jsdom": "^26",
+    "typescript": "^5.0.0",
+    "vitest": "^3"
+  },
+  "scripts": {
+    "build": "echo 'Types are source-only in Phase 2; bundling is Phase 5'",
+    "typecheck": "tsc --noEmit",
+    "test": "bun --bun vitest run"
+  }
+}

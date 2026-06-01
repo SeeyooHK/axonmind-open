@@ -1,0 +1,17 @@
+[package]
+name = "axonmind_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Domain types, errors, evidence model, and confidence model for axonmind-open"
+
+[dependencies]
+chrono    = { workspace = true }
+serde     = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+ts-rs     = { workspace = true }
+uuid      = { workspace = true }
+deadpool-sqlite = { workspace = true }
+rusqlite  = { workspace = true }

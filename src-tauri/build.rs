@@ -1,0 +1,48 @@
+const COMMANDS: &[&str] = &[
+    "focus_kpi",
+    "explain_kpi",
+    "get_evidence",
+    "impact_radius",
+    "trace_decision",
+    "suggest_actions",
+    "graph_search",
+    "index_path",
+    "index_markdown",
+    "list_documents",
+    "remove_document",
+    "regenerate_document",
+    "export_json",
+    "suggest_summary",
+    "get_brain_map_default_config",
+    "update_brain_map_default_config",
+    "restore_brain_map_default_config",
+    "resolve_brain_map_default_summary",
+    "resolve_brain_map_lens_children",
+    "rebuild_search_index",
+    "create_generation_from_paths",
+    "list_generations",
+    "export_generation",
+    "list_dir_files",
+    "read_file_text",
+    "list_api_keys",
+    "has_active_api_key",
+    "get_runtime_provider_status",
+    "save_api_key",
+    "delete_api_key",
+    "set_active_provider",
+    "detect_cli_sessions",
+    "get_cli_session_options",
+    "use_cli_session",
+];
+
+fn main() {
+    tauri_build::try_build(
+        tauri_build::Attributes::new().plugin(
+            "axonmind",
+            tauri_build::InlinedPlugin::new()
+                .commands(COMMANDS)
+                .default_permission(tauri_build::DefaultPermissionRule::AllowAllCommands),
+        ),
+    )
+    .expect("failed to run tauri-build");
+}

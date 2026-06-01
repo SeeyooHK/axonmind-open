@@ -1,0 +1,25 @@
+[package]
+name = "axonmind_tauri"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Optional Tauri v2 plugin adapter for axonmind-open. Contains no business logic."
+
+[dependencies]
+axonmind_core   = { workspace = true }
+axonmind_engine = { workspace = true }
+seeyoo_llm      = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
+tokio           = { workspace = true }
+tracing         = { workspace = true }
+uuid            = { workspace = true }
+
+# Tauri is optional so cargo check --workspace passes without a native build context.
+tauri   = { version = "2", optional = true }
+keyring = { version = "2", optional = true }
+base64  = { version = "0.22", optional = true }
+
+[features]
+tauri = ["dep:tauri", "dep:keyring", "dep:base64", "axonmind_engine/llm"]

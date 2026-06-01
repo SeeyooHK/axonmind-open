@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  rust:
+    name: Rust check, test, clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt, llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: cargo check
+        run: cargo check --workspace
+
+      - name: cargo test + coverage gate (≥40% lines)
+        run: cargo llvm-cov --workspace --fail-under-lines 40
+
+      - name: cargo clippy
+        run: cargo clippy --workspace
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+  typescript:
+    name: TypeScript typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: bun install
+        run: bun install
+
+      - name: typecheck
+        run: bun run typecheck
+
+      - name: test
+        run: bun run test

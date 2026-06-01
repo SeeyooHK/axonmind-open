@@ -1,0 +1,9 @@
+{
+  "identifier": "default",
+  "description": "Default capability — grants all axonmind plugin commands.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "axonmind:default"
+  ]
+}
