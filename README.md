@@ -310,7 +310,7 @@ src-tauri/          Minimal local demo host
 
 ## Contributing
 ### 🚀 Contribution Policy
- **We do not accept code contributions (pull requests) to this repository at this time.** This allows us to maintain clear intellectual property ownership of the codebase for Axonmind commercial distribution.
+ **We do not accept public code contributions (pull requests) to this repository at this time.** This allows us to maintain clear intellectual property ownership of the codebase for Axonmind commercial distribution.
 
 ### How to contribute
  We still welcome and value community participation in other forms: **Bug Reports**, **Feature Requests** and **Documentation**.

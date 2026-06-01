@@ -7,8 +7,8 @@ use axonmind_engine::{
     query::{
         ExplainKpiInput, ExplainKpiOutput, FocusKpiInput, FocusKpiOutput, GetEvidenceInput,
         GetEvidenceOutput, GraphExportV1, GraphSearchInput, GraphSearchOutput, ImpactRadiusInput,
-        ImpactRadiusOutput, SuggestActionsInput, SuggestActionsOutput, TraceDecisionInput,
-        TraceDecisionOutput,
+        ImpactRadiusOutput, ReasoningSearchInput, ReasoningSearchOutput, SuggestActionsInput,
+        SuggestActionsOutput, TraceDecisionInput, TraceDecisionOutput,
     },
     store::{
         DocumentSummary,
@@ -88,6 +88,18 @@ pub async fn graph_search(
     input: GraphSearchInput,
 ) -> Result<GraphSearchOutput, String> {
     state.0.graph_search(input).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn reasoning_search(
+    state: State<'_, EngineState>,
+    input: ReasoningSearchInput,
+) -> Result<ReasoningSearchOutput, String> {
+    state
+        .0
+        .reasoning_search(input)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ── Ingest commands ───────────────────────────────────────────────────────────
