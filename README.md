@@ -154,7 +154,7 @@ Enable richer extraction with:
 cargo build -p axonmind_engine --features llm
 ```
 
-Cloud providers use the corresponding environment variable:
+Cloud providers can be configured with API keys. If you use env-driven startup, these are common variable names:
 
 | Provider | Environment variable |
 |---|---|
@@ -164,6 +164,29 @@ Cloud providers use the corresponding environment variable:
 | Groq | `GROQ_API_KEY` |
 | DeepSeek | `DEEPSEEK_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
+
+### Environment Settings
+
+Copy the template and set values for your local environment:
+
+```bash
+cp env_example .env
+# or
+cp env_example .env.local
+```
+
+Current Codex defaults in `env_example`:
+
+- `AXONMIND_CODEX_MODEL=gpt-5.4-mini`
+- `AXONMIND_CODEX_INTELLIGENCE=low`
+
+Why `env_example` only includes these two variables:
+
+- They are the Codex default overrides currently read directly by this repo.
+- `AXONMIND_CODEX_MODEL` is passed through to Codex (`-m`) and accepts any valid model string, so new model names usually do not require Rust code changes.
+- `AXONMIND_CODEX_INTELLIGENCE` currently supports `minimal`, `low`, `medium`, `high`, and `xhigh`. If Codex adds a brand-new reasoning level in the future, this mapping may need a code update.
+
+Note: AxonMind currently reads process environment variables directly and does not auto-load `.env` or `.env.local`. Load/export these variables in your shell or runner before starting the app.
 
 Local providers do not require an API key when their server is already running:
 
@@ -272,11 +295,18 @@ src-tauri/          Minimal local demo host
 ## CLI Session Auth Status
 
 - Tested: Codex CLI login/session-based LLM provider path works in the Tauri app.
+> The default model selected for Codex is `gpt-5.4-mini`, and the default intelligence level is `low`. OpenAI and Codex might change available models at any time, so please check the Codex CLI documentation for the latest information. Model overrides use `AXONMIND_CODEX_MODEL` (pass-through), and intelligence overrides use `AXONMIND_CODEX_INTELLIGENCE` (`minimal|low|medium|high|xhigh`) as shown in `env_example`.
 - TODO: Test Claude Code and Antigravity LLM provider paths end-to-end.
 
 ## Contributing
+### 🚀 Contribution Policy
+ **We do not accept code contributions (pull requests) to this repository at this time.** This allows us to maintain clear intellectual property ownership of the codebase for Axonmind commercial distribution.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+### How to contribute
+ We still welcome and value community participation in other forms: **Bug Reports**, **Feature Requests** and **Documentation**.
+> Please check the [GitHub Issues](https://github.com/seeyooHK/axonmind-open/issues) to see if a topic is already being discussed.
+
+Details see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

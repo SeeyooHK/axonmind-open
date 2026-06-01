@@ -1,0 +1,7 @@
+# AxonMind Codex CLI defaults override (optional)
+# If unset, defaults remain:
+# - model: gpt-5.4-mini
+# - intelligence: low
+
+AXONMIND_CODEX_MODEL=gpt-5.4-mini
+AXONMIND_CODEX_INTELLIGENCE=low
