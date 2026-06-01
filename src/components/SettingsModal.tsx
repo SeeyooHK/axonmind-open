@@ -26,6 +26,8 @@ interface CliSessionOptions {
   default_intelligence: string | null;
 }
 
+const CUSTOM_CODEX_MODEL_OPTION = "__custom_model__";
+
 const CLI_META: Record<string, { label: string; model: string; experimental: boolean; note?: string }> = {
   codex:       { label: "ChatGPT (Codex CLI)",       model: "gpt-4o",         experimental: false },
   claude:      { label: "Claude (Claude Code CLI)",  model: "claude-opus-4-8", experimental: true,
@@ -72,8 +74,9 @@ export function SettingsModal({ onClose, onKeysChanged }: Props) {
   const [cliSuccess, setCliSuccess] = useState<string | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeProviderStatus | null>(null);
   const [cliOptions, setCliOptions] = useState<Record<string, CliSessionOptions>>({});
-  const [codexModel, setCodexModel] = useState("gpt-5.3-codex");
-  const [codexIntelligence, setCodexIntelligence] = useState("medium");
+  const [codexModel, setCodexModel] = useState("gpt-5.4-mini");
+  const [codexModelChoice, setCodexModelChoice] = useState("gpt-5.4-mini");
+  const [codexIntelligence, setCodexIntelligence] = useState("low");
 
   useEffect(() => {
     reload();
@@ -96,10 +99,26 @@ export function SettingsModal({ onClose, onKeysChanged }: Props) {
       const next = Object.fromEntries(entries);
       setCliOptions(next);
       const codex = next.codex;
-      if (codex?.default_model) setCodexModel(codex.default_model);
+      if (codex?.default_model) {
+        const defaultModel = codex.default_model;
+        setCodexModel(defaultModel);
+        const options = codex.models ?? [];
+        setCodexModelChoice(
+          options.includes(defaultModel) ? defaultModel : CUSTOM_CODEX_MODEL_OPTION
+        );
+      }
       if (codex?.default_intelligence) setCodexIntelligence(codex.default_intelligence);
     });
   }, []);
+
+  useEffect(() => {
+    const options = cliOptions.codex?.models ?? [];
+    if (codexModelChoice !== CUSTOM_CODEX_MODEL_OPTION && !options.includes(codexModelChoice)) {
+      setCodexModelChoice(
+        options.includes(codexModel) ? codexModel : CUSTOM_CODEX_MODEL_OPTION
+      );
+    }
+  }, [cliOptions, codexModelChoice, codexModel]);
 
   async function reload() {
     try {
@@ -266,8 +285,16 @@ export function SettingsModal({ onClose, onKeysChanged }: Props) {
                           setCliError(null);
                           setCliSuccess(null);
                           try {
+                            if (cli === "codex" && !codexModel.trim()) {
+                              setCliError("Codex model is required.");
+                              return;
+                            }
                             const payload = cli === "codex"
-                              ? { cli, model: codexModel, intelligence: codexIntelligence }
+                              ? {
+                                  cli,
+                                  model: codexModel.trim(),
+                                  intelligence: codexIntelligence.trim() || null,
+                                }
                               : { cli };
                             await invoke("plugin:axonmind|use_cli_session", payload);
                             await reload();
@@ -297,14 +324,29 @@ export function SettingsModal({ onClose, onKeysChanged }: Props) {
                     {cli === "codex" && detected && (
                       <div style={{ display: "flex", gap: 8 }}>
                         <select
-                          value={codexModel}
-                          onChange={e => setCodexModel(e.target.value)}
+                          value={codexModelChoice}
+                          onChange={e => {
+                            const next = e.target.value;
+                            setCodexModelChoice(next);
+                            if (next !== CUSTOM_CODEX_MODEL_OPTION) {
+                              setCodexModel(next);
+                            }
+                          }}
                           style={{ ...inputStyle, fontSize: 12, padding: "4px 8px", flex: 1 }}
                         >
-                          {(cliOptions.codex?.models.length ? cliOptions.codex.models : [codexModel]).map(model => (
+                          {(cliOptions.codex?.models ?? []).map(model => (
                             <option key={model} value={model}>{model}</option>
                           ))}
+                          <option value={CUSTOM_CODEX_MODEL_OPTION}>Custom model…</option>
                         </select>
+                        {codexModelChoice === CUSTOM_CODEX_MODEL_OPTION && (
+                          <input
+                            value={codexModel}
+                            onChange={e => setCodexModel(e.target.value)}
+                            placeholder="Enter Codex model"
+                            style={{ ...inputStyle, fontSize: 12, padding: "4px 8px", flex: 1 }}
+                          />
+                        )}
                         <select
                           value={codexIntelligence}
                           onChange={e => setCodexIntelligence(e.target.value)}

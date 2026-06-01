@@ -350,6 +350,17 @@ pub struct ApiKeyConfig {
 
 const KEYRING_SERVICE: &str = "axonmind-open";
 const CONFIGS_KEY_LEGACY: &str = "__api_configs__";
+const CODEX_SESSION_OPTIONS_FILENAME: &str = "codex_session_options.json";
+const DEFAULT_CODEX_SESSION_OPTIONS_JSON: &str =
+    include_str!("../../../codex_session_options.example.json");
+
+#[derive(Debug, Clone, Deserialize)]
+struct CodexSessionOptionsConfig {
+    models: Option<Vec<String>>,
+    intelligence_levels: Option<Vec<String>>,
+    default_model: Option<String>,
+    default_intelligence: Option<String>,
+}
 
 fn config_file_path() -> Result<PathBuf, String> {
     #[cfg(target_os = "windows")]
@@ -378,6 +389,71 @@ fn provider_selection_file_path() -> Result<PathBuf, String> {
         .parent()
         .ok_or_else(|| "cannot resolve config directory for provider selection".to_string())?;
     Ok(parent.join("provider_selection.json"))
+}
+
+fn codex_session_options_file_path() -> Result<PathBuf, String> {
+    let configs = config_file_path()?;
+    let parent = configs
+        .parent()
+        .ok_or_else(|| "cannot resolve config directory for codex options".to_string())?;
+    Ok(parent.join(CODEX_SESSION_OPTIONS_FILENAME))
+}
+
+fn normalize_non_empty(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn normalize_string_list(values: Option<Vec<String>>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    if let Some(items) = values {
+        for item in items {
+            if let Some(trimmed) = normalize_non_empty(item)
+                && !normalized.contains(&trimmed)
+            {
+                normalized.push(trimmed);
+            }
+        }
+    }
+    normalized
+}
+
+fn load_codex_session_options_config() -> Option<CodexSessionOptionsConfig> {
+    let path = codex_session_options_file_path().ok()?;
+    if !path.exists() {
+        return serde_json::from_str::<CodexSessionOptionsConfig>(DEFAULT_CODEX_SESSION_OPTIONS_JSON)
+            .ok();
+    }
+
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) => {
+            eprintln!(
+                "axonmind: read codex session options config failed ({}): {e}",
+                path.display()
+            );
+            return serde_json::from_str::<CodexSessionOptionsConfig>(
+                DEFAULT_CODEX_SESSION_OPTIONS_JSON,
+            )
+            .ok();
+        }
+    };
+
+    match serde_json::from_str::<CodexSessionOptionsConfig>(&raw) {
+        Ok(cfg) => Some(cfg),
+        Err(e) => {
+            eprintln!(
+                "axonmind: decode codex session options config failed ({}): {e}",
+                path.display()
+            );
+            serde_json::from_str::<CodexSessionOptionsConfig>(DEFAULT_CODEX_SESSION_OPTIONS_JSON)
+                .ok()
+        }
+    }
 }
 
 fn load_configs_from_file() -> Result<Vec<ApiKeyConfig>, String> {
@@ -832,19 +908,41 @@ pub struct CliSessionOptions {
 #[tauri::command]
 pub async fn get_cli_session_options(cli: String) -> Result<CliSessionOptions, String> {
     if cli == "codex" {
-        return Ok(CliSessionOptions {
-            models: seeyoo_llm::codex_api::CODEX_MODELS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            intelligence_levels: seeyoo_llm::codex_api::CODEX_INTELLIGENCE_LEVELS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            default_model: Some(seeyoo_llm::codex_api::default_codex_model().to_string()),
-            default_intelligence: Some(
+        let cfg = load_codex_session_options_config();
+        let models = normalize_string_list(cfg.as_ref().and_then(|c| c.models.clone()));
+
+        let intelligence_levels = {
+            let configured = normalize_string_list(cfg.as_ref().and_then(|c| c.intelligence_levels.clone()));
+            if configured.is_empty() {
+                seeyoo_llm::codex_api::CODEX_INTELLIGENCE_LEVELS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            } else {
+                configured
+            }
+        };
+
+        let default_model = cfg
+            .as_ref()
+            .and_then(|c| c.default_model.clone())
+            .and_then(normalize_non_empty)
+            .or(Some(seeyoo_llm::codex_api::default_codex_model().to_string()));
+
+        let default_intelligence = cfg
+            .as_ref()
+            .and_then(|c| c.default_intelligence.clone())
+            .and_then(normalize_non_empty)
+            .filter(|v| intelligence_levels.iter().any(|level| level == v))
+            .or(Some(
                 seeyoo_llm::codex_api::default_codex_intelligence().to_string(),
-            ),
+            ));
+
+        return Ok(CliSessionOptions {
+            models,
+            intelligence_levels,
+            default_model,
+            default_intelligence,
         });
     }
 

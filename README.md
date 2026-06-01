@@ -186,6 +186,13 @@ Why `env_example` only includes these two variables:
 - `AXONMIND_CODEX_MODEL` is passed through to Codex (`-m`) and accepts any valid model string, so new model names usually do not require Rust code changes.
 - `AXONMIND_CODEX_INTELLIGENCE` currently supports `minimal`, `low`, `medium`, `high`, and `xhigh`. If Codex adds a brand-new reasoning level in the future, this mapping may need a code update.
 
+Optional Codex UI model suggestions can be configured with a JSON file named `codex_session_options.json` in the app config directory:
+
+- macOS/Linux: `$XDG_CONFIG_HOME/axonmind-open/codex_session_options.json` (or `~/.config/axonmind-open/codex_session_options.json`)
+- Windows: `%APPDATA%\\axonmind-open\\codex_session_options.json`
+
+Use `codex_session_options.example.json` as a template.
+
 Note: AxonMind currently reads process environment variables directly and does not auto-load `.env` or `.env.local`. Load/export these variables in your shell or runner before starting the app.
 
 Local providers do not require an API key when their server is already running:

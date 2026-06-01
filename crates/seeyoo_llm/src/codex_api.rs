@@ -7,26 +7,53 @@ use crate::{
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tokio::sync::mpsc::Receiver;
 
-pub const CODEX_MODELS: &[&str] = &[
-    "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.3-codex",
-    "gpt-5.2",
-    "gpt-5.1-codex",
-    "gpt-5.1",
-    "gpt-5",
-];
+pub const CODEX_INTELLIGENCE_LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh"];
 
-pub const CODEX_INTELLIGENCE_LEVELS: &[&str] = &["low", "medium", "high", "extra_high"];
+const AXONMIND_CODEX_MODEL_ENV: &str = "AXONMIND_CODEX_MODEL";
+const AXONMIND_CODEX_INTELLIGENCE_ENV: &str = "AXONMIND_CODEX_INTELLIGENCE";
+const DEFAULT_CODEX_MODEL: &str = "gpt-5.4-mini";
+const DEFAULT_CODEX_INTELLIGENCE: &str = "low";
+static RESOLVED_DEFAULT_CODEX_MODEL: OnceLock<String> = OnceLock::new();
+static RESOLVED_DEFAULT_CODEX_INTELLIGENCE: OnceLock<String> = OnceLock::new();
+
+fn read_non_empty_env_var(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn normalize_intelligence(value: &str) -> Option<&'static str> {
+    match value {
+        "minimal" => Some("minimal"),
+        "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        "xhigh" => Some("xhigh"),
+        _ => None,
+    }
+}
 
 pub fn default_codex_model() -> &'static str {
-    "gpt-5.3-codex"
+    RESOLVED_DEFAULT_CODEX_MODEL
+        .get_or_init(|| {
+            read_non_empty_env_var(AXONMIND_CODEX_MODEL_ENV)
+                .unwrap_or_else(|| DEFAULT_CODEX_MODEL.to_string())
+        })
+        .as_str()
 }
 
 pub fn default_codex_intelligence() -> &'static str {
-    "medium"
+    RESOLVED_DEFAULT_CODEX_INTELLIGENCE
+        .get_or_init(|| {
+            read_non_empty_env_var(AXONMIND_CODEX_INTELLIGENCE_ENV)
+                .and_then(|v| normalize_intelligence(&v).map(str::to_string))
+                .unwrap_or_else(|| DEFAULT_CODEX_INTELLIGENCE.to_string())
+        })
+        .as_str()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -220,13 +247,7 @@ fn merge_prompt(system_prompt: &str, messages: &[ProviderMessage]) -> String {
 }
 
 fn reasoning_effort(intelligence: Option<&str>) -> Option<&'static str> {
-    match intelligence {
-        Some("low") => Some("low"),
-        Some("medium") => Some("medium"),
-        Some("high") => Some("high"),
-        Some("extra_high") | Some("xhigh") => Some("xhigh"),
-        _ => None,
-    }
+    intelligence.and_then(normalize_intelligence)
 }
 
 fn parse_text_value(v: &Value) -> Option<String> {
@@ -253,11 +274,15 @@ fn line_to_text(line: &str) -> Option<String> {
     let v: Value = serde_json::from_str(line).ok()?;
     let event_type = v.get("type").and_then(|t| t.as_str()).unwrap_or_default();
 
-    if event_type == "error" {
-        return v
+    if event_type == "error" || event_type == "turn.failed" || event_type == "thread.failed" {
+        if let Some(msg) = v
             .get("message")
-            .and_then(|m| m.as_str())
-            .map(|m| format!("Codex error: {m}"));
+            .and_then(parse_text_value)
+            .or_else(|| v.get("error").and_then(parse_text_value))
+            .or_else(|| v.get("params").and_then(parse_text_value))
+        {
+            return Some(format!("Codex error: {msg}"));
+        }
     }
 
     v.get("message")
@@ -265,6 +290,15 @@ fn line_to_text(line: &str) -> Option<String> {
         .or_else(|| v.get("content").and_then(parse_text_value))
         .or_else(|| v.get("text").and_then(parse_text_value))
         .or_else(|| v.get("output").and_then(parse_text_value))
+        .or_else(|| v.get("item").and_then(parse_text_value))
+        .or_else(|| v.get("error").and_then(parse_text_value))
+        .or_else(|| v.get("params").and_then(parse_text_value))
+        .or_else(|| {
+            v.get("method")
+                .and_then(|m| m.as_str())
+                .filter(|m| m.contains("failed") || m.contains("error"))
+                .and_then(|_| v.get("params").and_then(parse_text_value))
+        })
 }
 
 fn codex_isolation_dir() -> Result<(PathBuf, TempDirGuard), LlmError> {
@@ -397,8 +431,18 @@ impl ApiProvider for CodexApiProvider {
             .collect::<Vec<_>>();
 
         if texts.is_empty() {
+            let fallback_detail = stdout
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .unwrap_or_default()
+                .to_string();
             return Err(LlmError::StreamError(
-                "Codex returned no parseable text output".to_string(),
+                if fallback_detail.is_empty() {
+                    "Codex returned no parseable text output".to_string()
+                } else {
+                    format!("Codex returned no parseable text output; first event: {fallback_detail}")
+                },
             ));
         }
 
