@@ -303,7 +303,10 @@ src-tauri/          Minimal local demo host
 
 - Tested: Codex CLI login/session-based LLM provider path works in the Tauri app.
 > The default model selected for Codex is `gpt-5.4-mini`, and the default intelligence level is `low`. OpenAI and Codex might change available models at any time, so please check the Codex CLI documentation for the latest information. Model overrides use `AXONMIND_CODEX_MODEL` (pass-through), and intelligence overrides use `AXONMIND_CODEX_INTELLIGENCE` (`minimal|low|medium|high|xhigh`) as shown in `env_example`.
-- TODO: Test Claude Code and Antigravity LLM provider paths end-to-end.
+
+## TODO
+1. Test Claude Code and Antigravity LLM provider paths end-to-end.
+2. Vectorless retrieval inspired by https://github.com/VectifyAI/PageIndex.
 
 ## Contributing
 ### 🚀 Contribution Policy

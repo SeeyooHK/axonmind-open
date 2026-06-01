@@ -389,6 +389,7 @@ dependencies = [
  "chrono",
  "comrak",
  "deadpool-sqlite",
+ "futures-util",
  "petgraph",
  "reqwest",
  "rmp-serde",

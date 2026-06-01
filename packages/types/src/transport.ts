@@ -32,6 +32,34 @@ export type SearchMatchKind = "name" | "definition" | "evidence_quote";
 export interface GraphSearchInput  { query: string; kinds?: NodeKind[]; limit?: number; }
 export interface GraphSearchOutput { nodes: Node[]; matched_via: SearchMatchKind[][]; }
 
+// ── PageIndex vectorless retrieval ────────────────────────────────────────────
+
+export interface ReasoningSearchInput {
+  query: string;
+  /** Restrict to a single document node id. Omit for whole-corpus search. */
+  doc_node_id?: string;
+  /** Maximum results. Default: 20. */
+  max_results?: number;
+}
+
+export interface RetrievedSection {
+  /** Bridges to the graph Document node. */
+  doc_node_id: string;
+  section_id: string;
+  title: string;
+  text: string;
+  span_start: number;
+  span_end: number;
+  /** Breadcrumb from document root to this section. */
+  path: string[];
+}
+
+export interface ReasoningSearchOutput {
+  sections: RetrievedSection[];
+  /** false = BM25-only (no LLM provider); true = LLM-reranked. */
+  reasoning_applied: boolean;
+}
+
 export interface IndexPathOptions { recursive?: boolean; skipUnchanged?: boolean; }
 export interface IndexMarkdownOptions { sourcePath?: string; sha256?: string; }
 
@@ -103,6 +131,7 @@ export interface AxonMindTransport {
   traceDecision(input: TraceDecisionInput): Promise<TraceDecisionOutput>;
   suggestActions(input: SuggestActionsInput): Promise<SuggestActionsOutput>;
   graphSearch(input: GraphSearchInput): Promise<GraphSearchOutput>;
+  reasoningSearch(input: ReasoningSearchInput): Promise<ReasoningSearchOutput>;
   exportJson(): Promise<GraphExportV1>;
   suggestSummary(doc_ids?: string[], scoped_mode?: ScopedSummaryModeInput): Promise<SuggestedSummary>;
   resolveBrainMapDefaultSummary(doc_ids?: string[]): Promise<SummaryResolution>;

@@ -9,6 +9,7 @@ description = "Ingestion, extraction, graph queries, MCP tools, persistence, and
 [dependencies]
 axonmind_core   = { workspace = true }
 anyhow          = { workspace = true }
+futures-util    = { workspace = true }
 async-trait     = { workspace = true }
 chrono          = { workspace = true }
 calamine        = { workspace = true }

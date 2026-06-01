@@ -19,6 +19,14 @@ pub struct EngineConfig {
     pub llm: LlmConfig,
     pub event_buffer: usize,
     pub workers: WorkerConfig,
+    /// Enable PageIndex vectorless retrieval. Default: true.
+    pub pageindex_enabled: bool,
+    /// Run LLM bottom-up enrichment at ingest (feeds FTS vocab + Stage-2 reranking). Default: false.
+    pub pageindex_enrich: bool,
+    /// Max concurrent LLM calls during enrichment. Default: 4.
+    pub pageindex_enrich_concurrency: usize,
+    /// BM25 top-N shortlist size fed into Stage-2 LLM reranking. Default: 40.
+    pub pageindex_shortlist_limit: usize,
 }
 
 impl EngineConfig {
@@ -32,6 +40,10 @@ impl EngineConfig {
             llm: LlmConfig::default(),
             event_buffer: 1024,
             workers: WorkerConfig::default(),
+            pageindex_enabled: true,
+            pageindex_enrich: false,
+            pageindex_enrich_concurrency: 4,
+            pageindex_shortlist_limit: 40,
         }
     }
 }

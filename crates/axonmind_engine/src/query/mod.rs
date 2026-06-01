@@ -13,7 +13,10 @@
 pub mod evidence;
 pub mod focus;
 pub mod impact;
+pub mod reasoning;
 pub mod search;
+
+pub use reasoning::{ReasoningSearchInput, ReasoningSearchOutput, RetrievedSection};
 
 use axonmind_core::{Edge, Evidence, EvidenceId, Node, NodeId, NodeKind};
 use serde::{Deserialize, Serialize};

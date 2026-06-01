@@ -4,6 +4,7 @@ pub mod events;
 pub mod extract;
 pub mod ingest;
 pub mod mcp;
+pub mod pageindex;
 pub mod query;
 pub mod store;
 pub mod workers;
@@ -22,10 +23,12 @@ use crate::extract::llm::LlmProvider;
 use crate::ingest::{
     IngestOptions, IngestSource, IngestSummary, NormalizedDocument, dispatch_parse,
 };
+use crate::pageindex::{PageIndexSearchCfg, PageIndexStore};
 use crate::query::{
     ExplainKpiInput, ExplainKpiOutput, FocusKpiInput, FocusKpiOutput, GetEvidenceInput,
     GetEvidenceOutput, GraphSearchInput, GraphSearchOutput, ImpactRadiusInput, ImpactRadiusOutput,
-    SuggestActionsInput, SuggestActionsOutput, TraceDecisionInput, TraceDecisionOutput,
+    ReasoningSearchInput, ReasoningSearchOutput, SuggestActionsInput, SuggestActionsOutput,
+    TraceDecisionInput, TraceDecisionOutput,
 };
 use crate::store::{
     DocumentSummary, GraphCache, GraphMutation, GraphStore,
@@ -307,7 +310,21 @@ impl AxonMindEngine {
             }
         }
 
-        // Update document cache with content + structural fingerprint.
+        self.run_ingest_tail(&doc, &fingerprint, &doc_node_id, &mut summary).await;
+
+        Ok(summary)
+    }
+
+    /// Shared tail for all ingest paths: upsert_document_cache + pageindex hook.
+    /// Graph mutations must already be applied before calling this.
+    /// Errors from pageindex are non-fatal: they are pushed to `summary.errors`.
+    async fn run_ingest_tail(
+        &self,
+        doc: &NormalizedDocument,
+        fingerprint: &extract::fingerprint::DocFingerprint,
+        doc_node_id: &NodeId,
+        summary: &mut IngestSummary,
+    ) {
         if let Some(path) = &doc.source_path {
             let _ = self
                 .store
@@ -315,12 +332,24 @@ impl AxonMindEngine {
                     &path.to_string_lossy(),
                     &fingerprint.content_sha256,
                     &fingerprint.structural_sha256,
-                    &doc_node_id,
+                    doc_node_id,
                 )
                 .await;
         }
 
-        Ok(summary)
+        let page_store = PageIndexStore::new(self.store.db.0.clone());
+        let llm = self.llm_provider.read().await.clone();
+        if let Err(e) = pageindex::index_document(
+            doc,
+            &doc_node_id.0,
+            &page_store,
+            llm.as_deref(),
+            &self.config,
+        )
+        .await
+        {
+            summary.errors.push(format!("pageindex: {e}"));
+        }
     }
 
     // ── Document management ─────────────────────────────────────────────────────
@@ -503,6 +532,10 @@ impl AxonMindEngine {
             .apply_batch(removal, &self.graph_cache, &self.event_tx)
             .await?;
 
+        PageIndexStore::new(self.store.db.0.clone())
+            .delete_document(&node_id.0)
+            .await?;
+
         if delete_blob {
             if let Some(sha) = sha {
                 if self.store.count_documents_with_sha(&sha).await? == 0 {
@@ -590,17 +623,7 @@ impl AxonMindEngine {
             .apply_batch(batch, &self.graph_cache, &self.event_tx)
             .await?;
 
-        if let Some(path) = &doc.source_path {
-            let _ = self
-                .store
-                .upsert_document_cache(
-                    &path.to_string_lossy(),
-                    &fingerprint.content_sha256,
-                    &fingerprint.structural_sha256,
-                    &doc_node_id,
-                )
-                .await;
-        }
+        self.run_ingest_tail(&doc, &fingerprint, &doc_node_id, &mut summary).await;
 
         Ok(summary)
     }
@@ -653,6 +676,22 @@ impl AxonMindEngine {
         input: GraphSearchInput,
     ) -> Result<GraphSearchOutput, AxonMindError> {
         query::search::graph_search(input, &self.store).await
+    }
+
+    /// Vectorless two-stage retrieval: BM25 recall → LLM reasoning precision.
+    /// Returns ranked sections with raw passage text; degrades gracefully to BM25-only
+    /// when no LLM provider is configured (`reasoning_applied = false`).
+    pub async fn reasoning_search(
+        &self,
+        input: ReasoningSearchInput,
+    ) -> Result<ReasoningSearchOutput, AxonMindError> {
+        let store = PageIndexStore::new(self.store.db.0.clone());
+        let llm = self.llm_provider.read().await.clone();
+        let cfg = PageIndexSearchCfg {
+            shortlist_limit: self.config.pageindex_shortlist_limit,
+            ..Default::default()
+        };
+        pageindex::search::reasoning_search(input, &store, llm.as_deref(), &cfg).await
     }
 
     // ── Export / import ───────────────────────────────────────────────────────
