@@ -66,16 +66,30 @@ fn is_schema_error(e: &AxonMindError) -> bool {
     matches!(e, AxonMindError::ValidationFailed { message } if message.contains("invalid arguments"))
 }
 
+// Every declared property (required AND optional) is populated so a rename or
+// type change in any struct field trips this guard.
 fn sample_args(tool_name: &str) -> Value {
     match tool_name {
         "focus_kpi" => json!({ "kpi_id": "kpi.test" }),
-        "explain_kpi" => json!({ "kpi_id": "kpi.test" }),
-        "get_evidence" => json!({ "node_id": "kpi.test" }),
-        "impact_radius" => json!({ "node_id": "kpi.test" }),
+        "explain_kpi" => json!({ "kpi_id": "kpi.test", "depth": 2 }),
+        "get_evidence" => json!({ "node_id": "kpi.test", "edge_id": "edge.test" }),
+        "impact_radius" => json!({ "node_id": "kpi.test", "max_depth": 3 }),
         "trace_decision" => json!({ "decision_node_id": "decision.test" }),
-        "suggest_actions" => json!({ "kpi_id": "kpi.test" }),
-        "graph_search" => json!({ "query": "revenue" }),
-        "reasoning_search" => json!({ "query": "revenue" }),
+        "suggest_actions" => json!({
+            "kpi_id": "kpi.test",
+            "status_filter": ["Healthy", "AtRisk"],
+            "include_unreviewed": false
+        }),
+        "graph_search" => json!({
+            "query": "revenue",
+            "kinds": ["Kpi", "Metric"],
+            "limit": 5
+        }),
+        "reasoning_search" => json!({
+            "query": "revenue",
+            "doc_node_ids": ["doc.abc12345"],
+            "max_results": 5
+        }),
         _ => json!({}),
     }
 }

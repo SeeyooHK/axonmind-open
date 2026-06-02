@@ -1,12 +1,22 @@
 use axonmind_engine::AxonMindEngine;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
+
+const PREFERRED_PROTOCOL_VERSION: &str = "2025-06-18";
+const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2024-11-05"];
 
 pub async fn serve(engine: AxonMindEngine) -> anyhow::Result<()> {
-    let stdin = tokio::io::stdin();
-    let stdout = tokio::io::stdout();
-    let mut lines = BufReader::new(stdin).lines();
-    let mut out = tokio::io::BufWriter::new(stdout);
+    serve_io(engine, tokio::io::stdin(), tokio::io::stdout()).await
+}
+
+async fn serve_io<R, W>(engine: AxonMindEngine, reader: R, writer: W) -> anyhow::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut lines = BufReader::new(reader).lines();
+    let mut out = BufWriter::new(writer);
+    let mut initialized = false;
 
     while let Some(line) = lines.next_line().await? {
         let line = line.trim().to_owned();
@@ -14,6 +24,7 @@ pub async fn serve(engine: AxonMindEngine) -> anyhow::Result<()> {
             continue;
         }
 
+        // 1. Parse JSON
         let msg: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(e) => {
@@ -23,22 +34,56 @@ pub async fn serve(engine: AxonMindEngine) -> anyhow::Result<()> {
             }
         };
 
-        let id = msg.get("id").cloned().unwrap_or(Value::Null);
-        let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
-        let params = msg.get("params").cloned().unwrap_or(Value::Null);
+        // 2. Validate JSON-RPC 2.0 envelope
+        if msg.get("jsonrpc").and_then(|v| v.as_str()) != Some("2.0") {
+            let id = msg.get("id").cloned().unwrap_or(Value::Null);
+            let frame = error_frame(id, -32600, "invalid request: jsonrpc must be \"2.0\"");
+            write_frame(&mut out, &frame).await?;
+            continue;
+        }
 
-        // Notifications (no id) — process but do not respond.
+        let method = match msg.get("method").and_then(|v| v.as_str()) {
+            Some(m) => m,
+            None => {
+                let id = msg.get("id").cloned().unwrap_or(Value::Null);
+                let frame = error_frame(id, -32600, "invalid request: method must be a string");
+                write_frame(&mut out, &frame).await?;
+                continue;
+            }
+        };
+
+        if let Some(params) = msg.get("params") {
+            if !params.is_object() && !params.is_array() && !params.is_null() {
+                let id = msg.get("id").cloned().unwrap_or(Value::Null);
+                let frame =
+                    error_frame(id, -32600, "invalid request: params must be object or array");
+                write_frame(&mut out, &frame).await?;
+                continue;
+            }
+        }
+
+        // 3. Notifications (no id field) — process but do not respond
         if msg.get("id").is_none() {
             continue;
         }
 
+        let id = msg.get("id").cloned().unwrap_or(Value::Null);
+        let params = msg.get("params").cloned().unwrap_or(Value::Null);
+
+        // 4. Dispatch
         let response = match method {
             "initialize" => {
-                let protocol_version = params
+                let client_version = params
                     .get("protocolVersion")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("2025-06-18")
-                    .to_owned();
+                    .unwrap_or("");
+                let protocol_version =
+                    if SUPPORTED_PROTOCOL_VERSIONS.contains(&client_version) {
+                        client_version.to_owned()
+                    } else {
+                        PREFERRED_PROTOCOL_VERSION.to_owned()
+                    };
+                initialized = true;
                 result_frame(
                     id,
                     json!({
@@ -52,6 +97,9 @@ pub async fn serve(engine: AxonMindEngine) -> anyhow::Result<()> {
                 )
             }
             "ping" => result_frame(id, json!({})),
+            "tools/list" | "tools/call" if !initialized => {
+                error_frame(id, -32600, "server not initialized: send initialize first")
+            }
             "tools/list" => {
                 let tools: Vec<Value> = axonmind_engine::mcp::list_tools()
                     .into_iter()
@@ -89,6 +137,10 @@ pub async fn serve(engine: AxonMindEngine) -> anyhow::Result<()> {
                                 }),
                             )
                         }
+                        // Unknown tool → JSON-RPC invalid params, not isError:true
+                        Err(axonmind_core::AxonMindError::ToolNotFound { name }) => {
+                            error_frame(id, -32602, &format!("unknown tool: {name}"))
+                        }
                         Err(e) => result_frame(
                             id,
                             json!({
@@ -99,7 +151,6 @@ pub async fn serve(engine: AxonMindEngine) -> anyhow::Result<()> {
                     }
                 }
             }
-            "" => error_frame(id, -32600, "missing method"),
             _ => error_frame(id, -32601, &format!("method not found: {method}")),
         };
 
@@ -121,8 +172,8 @@ fn error_frame(id: Value, code: i64, message: &str) -> Value {
     })
 }
 
-async fn write_frame(
-    out: &mut tokio::io::BufWriter<tokio::io::Stdout>,
+async fn write_frame<W: AsyncWrite + Unpin>(
+    out: &mut BufWriter<W>,
     frame: &Value,
 ) -> anyhow::Result<()> {
     let mut bytes = serde_json::to_vec(frame)?;
@@ -130,4 +181,115 @@ async fn write_frame(
     out.write_all(&bytes).await?;
     out.flush().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axonmind_engine::{AxonMindEngine, config::EngineConfig};
+    use tempfile::TempDir;
+
+    async fn run_frames(input: &str) -> Vec<Value> {
+        let dir = TempDir::new().unwrap();
+        let engine =
+            AxonMindEngine::open(EngineConfig::from_workspace_dir(dir.path().to_path_buf()))
+                .await
+                .unwrap();
+        let mut output: Vec<u8> = Vec::new();
+        serve_io(engine, input.as_bytes(), &mut output).await.unwrap();
+        output
+            .split(|&b| b == b'\n')
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_slice(l).expect("response must be valid JSON"))
+            .collect()
+    }
+
+    const INIT: &str = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{}}}\n";
+
+    #[tokio::test]
+    async fn initialize_returns_server_info_and_preferred_version() {
+        let frames = run_frames(INIT).await;
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0]["id"], 1);
+        assert_eq!(frames[0]["result"]["serverInfo"]["name"], "axonmind");
+        assert_eq!(frames[0]["result"]["protocolVersion"], "2025-06-18");
+    }
+
+    #[tokio::test]
+    async fn unsupported_protocol_version_echoes_preferred() {
+        let frames = run_frames(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"1900-01-01\",\"capabilities\":{}}}\n",
+        )
+        .await;
+        assert_eq!(
+            frames[0]["result"]["protocolVersion"],
+            PREFERRED_PROTOCOL_VERSION
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_then_tools_list_returns_eight_tools() {
+        let input = format!(
+            "{INIT}{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}}\n"
+        );
+        let frames = run_frames(&input).await;
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[1]["id"], 2);
+        assert_eq!(frames[1]["result"]["tools"].as_array().unwrap().len(), 8);
+    }
+
+    #[tokio::test]
+    async fn tools_list_before_initialize_returns_rpc_error() {
+        let frames =
+            run_frames("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n").await;
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0]["error"]["code"], -32600);
+        assert!(frames[0].get("result").is_none());
+    }
+
+    #[tokio::test]
+    async fn tools_call_before_initialize_returns_rpc_error() {
+        let frames = run_frames("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"graph_search\",\"arguments\":{\"query\":\"x\"}}}\n").await;
+        assert_eq!(frames[0]["error"]["code"], -32600);
+    }
+
+    #[tokio::test]
+    async fn unknown_tool_returns_invalid_params_not_is_error() {
+        let input = format!(
+            "{INIT}{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{{\"name\":\"no_such_tool\",\"arguments\":{{}}}}}}\n"
+        );
+        let frames = run_frames(&input).await;
+        assert_eq!(frames[1]["error"]["code"], -32602);
+        assert!(frames[1].get("result").is_none());
+    }
+
+    #[tokio::test]
+    async fn invalid_jsonrpc_version_returns_invalid_request() {
+        let frames =
+            run_frames("{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"ping\"}\n").await;
+        assert_eq!(frames[0]["error"]["code"], -32600);
+    }
+
+    #[tokio::test]
+    async fn missing_method_returns_invalid_request() {
+        let frames = run_frames("{\"jsonrpc\":\"2.0\",\"id\":1,\"foo\":\"bar\"}\n").await;
+        assert_eq!(frames[0]["error"]["code"], -32600);
+    }
+
+    #[tokio::test]
+    async fn unknown_method_returns_method_not_found() {
+        let input = format!("{INIT}{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"no_such_method\"}}\n");
+        let frames = run_frames(&input).await;
+        assert_eq!(frames[1]["error"]["code"], -32601);
+    }
+
+    #[tokio::test]
+    async fn notification_produces_no_response() {
+        // notifications/initialized has no id — must not produce a response frame
+        let input = format!(
+            "{INIT}{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}}\n"
+        );
+        let frames = run_frames(&input).await;
+        assert_eq!(frames.len(), 1, "notification must not produce a response");
+    }
 }
