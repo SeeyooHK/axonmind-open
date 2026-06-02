@@ -488,6 +488,8 @@ All ID types are `pub struct FooId(pub String)` newtypes.
 
 CI runs cargo tests and bun frontend tests on every PR.
 
+> For CI on GitHub: `cargo check --workspace` compiled `src-tauri` (`axonmind-host`), which brings in Tauri v2 → WebKitGTK → GTK3 → glib-2.0. That system library isn't installed on the ubuntu-latest runner. Need to adds `--exclude axonmind-host` to all three cargo commands. `cargo fmt --all` is left unchanged — it only checks formatting and doesn't build, so it doesn't trigger glib's build script.
+
 ---
 
 ## Build Reference
