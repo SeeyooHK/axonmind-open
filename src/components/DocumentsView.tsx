@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { BrainMapView, type Summary } from "./graph/BrainMapView";
 import { InspectorPanel } from "./InspectorPanel";
 import { ContentSearchModal } from "./ContentSearchModal";
+import { FileVisualizationModal } from "./FileVisualizationModal";
+import type { StagedItem } from "./GenerationStaging";
 import { toGraphElements } from "@axonmind/react";
 import type { AxonGraphElements, AxonGraphNode } from "@axonmind/react";
 
@@ -43,6 +45,7 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
   const [summaryBusy, setSummaryBusy] = useState(false);
   const [summarySelectedNode, setSummarySelectedNode] = useState<AxonGraphNode | undefined>();
   const [showContentSearch, setShowContentSearch] = useState(false);
+  const [visualizingItem, setVisualizingItem] = useState<StagedItem | null>(null);
   const [summaryElements, setSummaryElements] = useState<AxonGraphElements>(
     elements ?? { nodes: [], edges: [] }
   );
@@ -328,7 +331,17 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
                           </div>
                         ) : (
                           <>
-                            <button onClick={() => setExpandedId(id => id === d.node_id ? null : d.node_id)} style={actionBtn} title="Inspect">Inspect</button>
+                            <button
+                              onClick={() => {
+                                if (d.source_path) {
+                                  setVisualizingItem({ id: d.node_id, path: d.source_path, displayPath: d.name, status: "ready" });
+                                } else {
+                                  setExpandedId(id => id === d.node_id ? null : d.node_id);
+                                }
+                              }}
+                              style={actionBtn}
+                              title="Inspect"
+                            >Inspect</button>
                             <button onClick={() => void revealPath(d)} disabled={!d.source_path} style={actionBtn} title="Copy file path">{copiedId === d.node_id ? "Copied" : "Reveal"}</button>
                             <button onClick={() => askRegenerate(d.node_id, d.name)} style={actionBtn} title="Reprocess from scratch">Regenerate</button>
                             <button onClick={() => askRemove(d.node_id, d.name)} style={{ ...actionBtn, color: "#f87171", borderColor: "#7f1d1d" }} title="Remove">Remove</button>
@@ -391,6 +404,15 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
           docs={docs}
           initialDocIds={[...selected]}
           onClose={() => setShowContentSearch(false)}
+        />
+      )}
+
+      {/* Side-by-side original / extracted view */}
+      {visualizingItem && (
+        <FileVisualizationModal
+          item={visualizingItem}
+          onClose={() => setVisualizingItem(null)}
+          zIndex={320}
         />
       )}
 

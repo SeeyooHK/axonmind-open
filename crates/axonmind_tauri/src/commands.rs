@@ -347,7 +347,58 @@ pub async fn list_dir_files(path: String) -> Result<Vec<DirFileEntry>, String> {
 
 #[tauri::command]
 pub async fn read_file_text(path: String) -> Result<String, String> {
-    std::fs::read_to_string(&path).map_err(|e| format!("cannot read: {}", e))
+    use axonmind_engine::ingest::{DocumentBlock, dispatch_parse};
+
+    const BINARY_EXTS: &[&str] = &["pptx", "docx", "xlsx", "xls", "ods", "xlsb", "pdf"];
+    let p = std::path::PathBuf::from(&path);
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    if !BINARY_EXTS.contains(&ext.as_str()) {
+        return std::fs::read_to_string(&path).map_err(|e| format!("cannot read: {e}"));
+    }
+
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let doc = dispatch_parse(&p, &bytes).map_err(|e| e.to_string())?;
+
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(title) = &doc.title {
+        lines.push(format!("# {title}"));
+        lines.push(String::new());
+    }
+    for block in &doc.blocks {
+        match block {
+            DocumentBlock::Heading { level, text, .. } => {
+                lines.push(format!("{} {text}", "#".repeat(*level as usize)));
+            }
+            DocumentBlock::Paragraph { text, .. } => {
+                if !text.trim().is_empty() {
+                    lines.push(text.clone());
+                    lines.push(String::new());
+                }
+            }
+            DocumentBlock::ListItem { text, .. } => {
+                lines.push(format!("• {text}"));
+            }
+            DocumentBlock::CodeBlock { text, .. } => {
+                lines.push(text.clone());
+            }
+        }
+    }
+    for table in &doc.tables {
+        if !table.headers.is_empty() {
+            lines.push(table.headers.join(" | "));
+        }
+        for row in &table.rows {
+            lines.push(row.join(" | "));
+        }
+        lines.push(String::new());
+    }
+
+    Ok(lines.join("\n"))
 }
 
 // ── API key management commands ───────────────────────────────────────────────
