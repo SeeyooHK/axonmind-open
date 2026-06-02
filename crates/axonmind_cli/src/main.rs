@@ -1,3 +1,5 @@
+mod mcp_server;
+
 use axonmind_core::NodeId;
 use axonmind_engine::{
     AxonMindEngine,
@@ -71,6 +73,11 @@ enum Commands {
     },
     /// Rebuild the FTS5 search_index from scratch.
     RebuildSearchIndex {
+        #[arg(long)]
+        workspace: PathBuf,
+    },
+    /// Serve the workspace as an MCP server over stdio (newline-delimited JSON-RPC 2.0).
+    Mcp {
         #[arg(long)]
         workspace: PathBuf,
     },
@@ -359,6 +366,12 @@ async fn main() -> anyhow::Result<()> {
             let engine = AxonMindEngine::open(config).await?;
             engine.rebuild_search_index().await?;
             println!("search index rebuilt");
+        }
+
+        Commands::Mcp { workspace } => {
+            let config = EngineConfig::from_workspace_dir(workspace);
+            let engine = AxonMindEngine::open(config).await?;
+            mcp_server::serve(engine).await?;
         }
     }
 
