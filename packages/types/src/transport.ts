@@ -36,8 +36,8 @@ export interface GraphSearchOutput { nodes: Node[]; matched_via: SearchMatchKind
 
 export interface ReasoningSearchInput {
   query: string;
-  /** Restrict to a single document node id. Omit for whole-corpus search. */
-  doc_node_id?: string;
+  /** Restrict to these document node ids. Omit or empty = whole corpus. */
+  doc_node_ids?: string[];
   /** Maximum results. Default: 20. */
   max_results?: number;
 }

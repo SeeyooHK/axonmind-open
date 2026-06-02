@@ -2,9 +2,9 @@
 
 export type ReasoningSearchInput = { query: string, 
 /**
- * Restrict results to a single document. None = search whole corpus.
+ * Restrict results to these document node ids. None / empty = whole corpus.
  */
-doc_node_id: string | null, 
+doc_node_ids: Array<string> | null, 
 /**
  * Maximum results to return. Default: 20.
  */

@@ -35,7 +35,7 @@ pub async fn reasoning_search(
     }
 
     let candidate_ids = store
-        .bm25_shortlist(&fts_query, cfg.shortlist_limit)
+        .bm25_shortlist(&fts_query, cfg.shortlist_limit, input.doc_node_ids.as_deref())
         .await?;
     if candidate_ids.is_empty() {
         return Ok(ReasoningSearchOutput {
@@ -53,11 +53,6 @@ pub async fn reasoning_search(
         .map(|(i, id)| (id.as_str(), i))
         .collect();
     rows.sort_by_key(|r| id_to_rank.get(r.section_id.as_str()).copied().unwrap_or(usize::MAX));
-
-    // Optional: filter to a single document.
-    if let Some(ref doc_id) = input.doc_node_id {
-        rows.retain(|r| &r.doc_node_id == doc_id);
-    }
 
     let max_results = input.max_results.unwrap_or(cfg.max_results);
 

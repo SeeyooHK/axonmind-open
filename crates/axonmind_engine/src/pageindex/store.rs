@@ -96,12 +96,19 @@ impl PageIndexStore {
     }
 
     /// Stage 1: BM25 shortlist. Returns section_ids ranked best-first.
+    /// When `doc_node_ids` is Some (non-empty), the scope is pushed into the SQL before LIMIT
+    /// so the shortlist is drawn only from those documents — not post-filtered after the fact.
     pub async fn bm25_shortlist(
         &self,
         fts_query: &str,
         limit: usize,
+        doc_node_ids: Option<&[String]>,
     ) -> Result<Vec<String>, AxonMindError> {
         let fts_query = fts_query.to_string();
+        let doc_ids = doc_node_ids
+            .filter(|ids| !ids.is_empty())
+            .map(|ids| ids.to_vec());
+
         let conn = self
             .db
             .0
@@ -110,16 +117,39 @@ impl PageIndexStore {
             .map_err(|e| AxonMindError::Database(format!("pageindex get conn: {e}")))?;
 
         conn.interact(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT section_id FROM page_section_fts
-                 WHERE page_section_fts MATCH ?1
-                 ORDER BY bm25(page_section_fts)
-                 LIMIT ?2",
-            )?;
+            let sql = match &doc_ids {
+                Some(ids) => {
+                    let placeholders = (2..=ids.len() + 1)
+                        .map(|i| format!("?{i}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(
+                        "SELECT section_id FROM page_section_fts \
+                         WHERE page_section_fts MATCH ?1 \
+                         AND doc_node_id IN ({placeholders}) \
+                         ORDER BY bm25(page_section_fts) \
+                         LIMIT {limit}"
+                    )
+                }
+                None => format!(
+                    "SELECT section_id FROM page_section_fts \
+                     WHERE page_section_fts MATCH ?1 \
+                     ORDER BY bm25(page_section_fts) \
+                     LIMIT {limit}"
+                ),
+            };
+
+            let mut stmt = conn.prepare(&sql)?;
+            let mut boxed: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(fts_query)];
+            if let Some(ref ids) = doc_ids {
+                for id in ids {
+                    boxed.push(Box::new(id.clone()));
+                }
+            }
+            let params: Vec<&dyn rusqlite::ToSql> =
+                boxed.iter().map(|b| b.as_ref()).collect();
             let ids: Vec<String> = stmt
-                .query_map(rusqlite::params![fts_query, limit as i64], |row| {
-                    row.get(0)
-                })?
+                .query_map(params.as_slice(), |row| row.get(0))?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok::<Vec<String>, rusqlite::Error>(ids)

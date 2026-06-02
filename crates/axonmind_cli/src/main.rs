@@ -106,9 +106,9 @@ enum QueryCommands {
     /// Vectorless BM25+LLM section search over indexed documents.
     ReasoningSearch {
         query: String,
-        /// Restrict to a single document node id.
+        /// Restrict to specific document node ids (repeat for multiple: --doc id1 --doc id2).
         #[arg(long)]
-        doc: Option<String>,
+        doc: Vec<String>,
         /// Max results to return (default: 20).
         #[arg(long)]
         limit: Option<usize>,
@@ -281,7 +281,7 @@ async fn main() -> anyhow::Result<()> {
                     let out = engine
                         .reasoning_search(ReasoningSearchInput {
                             query,
-                            doc_node_id: doc,
+                            doc_node_ids: if doc.is_empty() { None } else { Some(doc) },
                             max_results: limit,
                         })
                         .await?;

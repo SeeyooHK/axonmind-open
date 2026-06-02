@@ -97,7 +97,7 @@ async fn test_fts_sync_after_upsert() {
 
     // Term in text
     let ids = store
-        .bm25_shortlist("\"revenue\"", 10)
+        .bm25_shortlist("\"revenue\"", 10, None)
         .await
         .expect("bm25 failed");
     assert!(
@@ -108,7 +108,7 @@ async fn test_fts_sync_after_upsert() {
     // Term only in summary: "drove" is in the summary ("Revenue grew 15% YoY driven by...")
     // Use "drove" vs "driven" — let's use "YoY" which is unique to the summary.
     let ids_from_summary = store
-        .bm25_shortlist("\"YoY\"", 10)
+        .bm25_shortlist("\"YoY\"", 10, None)
         .await
         .expect("bm25 failed");
     assert!(
@@ -163,7 +163,7 @@ async fn test_bm25_ordering_title_vs_text() {
     store.upsert_document(&tree).await.expect("upsert failed");
 
     let ids = store
-        .bm25_shortlist("\"churn\"", 10)
+        .bm25_shortlist("\"churn\"", 10, None)
         .await
         .expect("bm25 failed");
     assert_eq!(ids.len(), 2, "both sections should match");
@@ -196,7 +196,7 @@ async fn test_roundtrip_and_staleness() {
     store.upsert_document(&tree).await.expect("first upsert");
 
     let ids1 = store
-        .bm25_shortlist("\"revenue\"", 20)
+        .bm25_shortlist("\"revenue\"", 20, None)
         .await
         .expect("bm25");
     assert!(!ids1.is_empty(), "initial index should be searchable");
@@ -226,7 +226,7 @@ async fn test_roundtrip_and_staleness() {
 
     // Old section ("revenue") should no longer be found.
     let ids_old = store
-        .bm25_shortlist("\"revenue\"", 20)
+        .bm25_shortlist("\"revenue\"", 20, None)
         .await
         .expect("bm25");
     assert!(
@@ -236,7 +236,7 @@ async fn test_roundtrip_and_staleness() {
 
     // New section should be found.
     let ids_new = store
-        .bm25_shortlist("\"acquisition\"", 20)
+        .bm25_shortlist("\"acquisition\"", 20, None)
         .await
         .expect("bm25");
     assert!(!ids_new.is_empty(), "new section should be searchable");
@@ -254,7 +254,7 @@ async fn test_delete_removes_sections_and_fts() {
         .expect("upsert");
 
     let before = store
-        .bm25_shortlist("\"revenue\"", 10)
+        .bm25_shortlist("\"revenue\"", 10, None)
         .await
         .expect("bm25");
     assert!(!before.is_empty(), "section must exist before delete");
@@ -265,7 +265,7 @@ async fn test_delete_removes_sections_and_fts() {
         .expect("delete failed");
 
     let after = store
-        .bm25_shortlist("\"revenue\"", 10)
+        .bm25_shortlist("\"revenue\"", 10, None)
         .await
         .expect("bm25");
     assert!(
@@ -342,7 +342,7 @@ async fn test_funnel_no_provider_returns_bm25_order() {
     };
     let input = ReasoningSearchInput {
         query: "revenue".to_string(),
-        doc_node_id: None,
+        doc_node_ids: None,
         max_results: None,
     };
     let out =
@@ -409,7 +409,7 @@ async fn test_funnel_provider_rerank_order() {
     };
     let input = ReasoningSearchInput {
         query: "profitability".to_string(),
-        doc_node_id: None,
+        doc_node_ids: None,
         max_results: None,
     };
     let out = axonmind_engine::pageindex::search::reasoning_search(
@@ -447,7 +447,7 @@ async fn test_funnel_none_response() {
     };
     let input = ReasoningSearchInput {
         query: "revenue".to_string(),
-        doc_node_id: None,
+        doc_node_ids: None,
         max_results: None,
     };
     let out = axonmind_engine::pageindex::search::reasoning_search(
@@ -505,7 +505,7 @@ async fn test_funnel_doc_filter() {
     };
     let input = ReasoningSearchInput {
         query: "revenue".to_string(),
-        doc_node_id: Some("doc.aaa".to_string()),
+        doc_node_ids: Some(vec!["doc.aaa".to_string()]),
         max_results: None,
     };
     let out =
@@ -562,7 +562,7 @@ async fn test_ingest_populates_pageindex() {
     let out = engine
         .reasoning_search(ReasoningSearchInput {
             query: "churn".to_string(),
-            doc_node_id: None,
+            doc_node_ids: None,
             max_results: Some(5),
         })
         .await

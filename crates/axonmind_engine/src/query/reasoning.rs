@@ -5,8 +5,8 @@ use ts_rs::TS;
 #[ts(export)]
 pub struct ReasoningSearchInput {
     pub query: String,
-    /// Restrict results to a single document. None = search whole corpus.
-    pub doc_node_id: Option<String>,
+    /// Restrict results to these document node ids. None / empty = whole corpus.
+    pub doc_node_ids: Option<Vec<String>>,
     /// Maximum results to return. Default: 20.
     pub max_results: Option<usize>,
 }
