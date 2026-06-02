@@ -59,13 +59,7 @@ pub async fn index_document(
     // Optional enrichment: bottom-up LLM summaries (gated, never at query time).
     let doc_summary = if config.pageindex_enrich {
         if let Some(llm) = llm {
-            match enrich::enrich_tree(
-                &mut roots,
-                llm,
-                config.pageindex_enrich_concurrency,
-            )
-            .await
-            {
+            match enrich::enrich_tree(&mut roots, llm, config.pageindex_enrich_concurrency).await {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::warn!("pageindex enrichment failed for {doc_node_id}: {e}");

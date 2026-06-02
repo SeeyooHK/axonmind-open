@@ -146,8 +146,7 @@ impl PageIndexStore {
                     boxed.push(Box::new(id.clone()));
                 }
             }
-            let params: Vec<&dyn rusqlite::ToSql> =
-                boxed.iter().map(|b| b.as_ref()).collect();
+            let params: Vec<&dyn rusqlite::ToSql> = boxed.iter().map(|b| b.as_ref()).collect();
             let ids: Vec<String> = stmt
                 .query_map(params.as_slice(), |row| row.get(0))?
                 .filter_map(|r| r.ok())
@@ -160,10 +159,7 @@ impl PageIndexStore {
     }
 
     /// Fetch full section rows by id.
-    pub async fn fetch_sections(
-        &self,
-        ids: &[String],
-    ) -> Result<Vec<SectionRow>, AxonMindError> {
+    pub async fn fetch_sections(&self, ids: &[String]) -> Result<Vec<SectionRow>, AxonMindError> {
         if ids.is_empty() {
             return Ok(vec![]);
         }
@@ -217,10 +213,7 @@ impl PageIndexStore {
     }
 
     /// Get the stored sha256 for a document (staleness check).
-    pub async fn page_tree_sha(
-        &self,
-        doc_node_id: &str,
-    ) -> Result<Option<String>, AxonMindError> {
+    pub async fn page_tree_sha(&self, doc_node_id: &str) -> Result<Option<String>, AxonMindError> {
         let doc_node_id = doc_node_id.to_string();
         let conn = self
             .db

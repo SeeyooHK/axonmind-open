@@ -1,7 +1,7 @@
 use crate::types::{LlmProvider, RetryConfig, ToolDefinition};
 use crate::{
     AgentEvent,
-    api_mod::{MessageBlock, ApiProvider, ProviderMessage},
+    api_mod::{ApiProvider, MessageBlock, ProviderMessage},
     errors::LlmError,
 };
 use async_trait::async_trait;
@@ -162,7 +162,10 @@ fn lookup_in_known_app_locations(platform_bin: &str) -> Option<PathBuf> {
 
     if let Some(home) = home_dir() {
         candidates.push(home.join("Applications/Codex.app/Contents/Resources/codex"));
-        candidates.push(home.join("Applications/Codex.app/Contents/Resources").join(platform_bin));
+        candidates.push(
+            home.join("Applications/Codex.app/Contents/Resources")
+                .join(platform_bin),
+        );
     }
 
     candidates.into_iter().find(|p| p.is_file())
@@ -320,7 +323,10 @@ fn copy_auth_files(dest_dir: &Path) -> Result<(), LlmError> {
     for (name, src) in files {
         let dest = dest_dir.join(name);
         std::fs::copy(&src, &dest).map_err(|e| {
-            LlmError::Config(format!("Failed copying Codex auth file {}: {e}", src.display()))
+            LlmError::Config(format!(
+                "Failed copying Codex auth file {}: {e}",
+                src.display()
+            ))
         })?;
     }
     Ok(())
@@ -437,13 +443,11 @@ impl ApiProvider for CodexApiProvider {
                 .find(|l| !l.is_empty())
                 .unwrap_or_default()
                 .to_string();
-            return Err(LlmError::StreamError(
-                if fallback_detail.is_empty() {
-                    "Codex returned no parseable text output".to_string()
-                } else {
-                    format!("Codex returned no parseable text output; first event: {fallback_detail}")
-                },
-            ));
+            return Err(LlmError::StreamError(if fallback_detail.is_empty() {
+                "Codex returned no parseable text output".to_string()
+            } else {
+                format!("Codex returned no parseable text output; first event: {fallback_detail}")
+            }));
         }
 
         Ok(texts.join("\n"))

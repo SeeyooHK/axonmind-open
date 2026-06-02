@@ -101,12 +101,10 @@ pub fn build_tree(doc: &NormalizedDocument, doc_node_id: &str) -> Vec<PageSectio
 
     // Helper: append table text to the top of stack, or last root if stack is empty.
     let flush_tables_before = |before_offset: usize,
-                                table_idx: &mut usize,
-                                stack: &mut Vec<PageSection>,
-                                roots: &mut Vec<PageSection>| {
-        while *table_idx < sorted_tables.len()
-            && sorted_tables[*table_idx].0 < before_offset
-        {
+                               table_idx: &mut usize,
+                               stack: &mut Vec<PageSection>,
+                               roots: &mut Vec<PageSection>| {
+        while *table_idx < sorted_tables.len() && sorted_tables[*table_idx].0 < before_offset {
             let table_text = sorted_tables[*table_idx].1.clone();
             if let Some(top) = stack.last_mut() {
                 append_text(&mut top.text, &table_text);
@@ -126,11 +124,7 @@ pub fn build_tree(doc: &NormalizedDocument, doc_node_id: &str) -> Vec<PageSectio
                 let level = *level;
                 // Pop sections with level >= current heading: they become children of whatever
                 // is left on the stack, or roots.
-                while stack
-                    .last()
-                    .map(|s| s.level >= level)
-                    .unwrap_or(false)
-                {
+                while stack.last().map(|s| s.level >= level).unwrap_or(false) {
                     let popped = stack.pop().unwrap();
                     if let Some(parent) = stack.last_mut() {
                         parent.children.push(popped);
@@ -150,8 +144,7 @@ pub fn build_tree(doc: &NormalizedDocument, doc_node_id: &str) -> Vec<PageSectio
                     children: vec![],
                 });
             }
-            DocumentBlock::Paragraph { text, span }
-            | DocumentBlock::ListItem { text, span } => {
+            DocumentBlock::Paragraph { text, span } | DocumentBlock::ListItem { text, span } => {
                 if let Some(top) = stack.last_mut() {
                     append_text(&mut top.text, text);
                     top.span_end = top.span_end.max(span.end);
@@ -192,8 +185,7 @@ fn build_headerless(
 
     for block in &doc.blocks {
         let block_text = match block {
-            DocumentBlock::Paragraph { text, span }
-            | DocumentBlock::ListItem { text, span } => {
+            DocumentBlock::Paragraph { text, span } | DocumentBlock::ListItem { text, span } => {
                 span_start_val = span_start_val.min(span.start);
                 span_end_val = span_end_val.max(span.end);
                 text.as_str()
@@ -287,7 +279,14 @@ fn flatten_section(
     });
 
     for (i, child) in section.children.iter().enumerate() {
-        flatten_section(child, Some(&section.id), i as i64, &path_parts, out, doc_node_id);
+        flatten_section(
+            child,
+            Some(&section.id),
+            i as i64,
+            &path_parts,
+            out,
+            doc_node_id,
+        );
     }
 }
 
@@ -341,17 +340,26 @@ mod tests {
         assert_eq!(roots[0].children[0].title, "B");
         assert_eq!(roots[0].children[1].title, "C");
         assert!(roots[0].text.as_deref().unwrap_or("").contains("a body"));
-        assert!(roots[0].children[0].text.as_deref().unwrap_or("").contains("b body"));
-        assert!(roots[0].children[1].text.as_deref().unwrap_or("").contains("c body"));
+        assert!(
+            roots[0].children[0]
+                .text
+                .as_deref()
+                .unwrap_or("")
+                .contains("b body")
+        );
+        assert!(
+            roots[0].children[1]
+                .text
+                .as_deref()
+                .unwrap_or("")
+                .contains("c body")
+        );
     }
 
     #[test]
     fn test_level_skip() {
         // h1 A → h3 C (skip h2): h3 becomes child of h1
-        let d = doc(vec![
-            heading(1, "A", 0, 5),
-            heading(3, "C", 6, 11),
-        ]);
+        let d = doc(vec![heading(1, "A", 0, 5), heading(3, "C", 6, 11)]);
         let roots = build_tree(&d, "doc.test1234");
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].children.len(), 1);
@@ -376,10 +384,7 @@ mod tests {
     #[test]
     fn test_headerless_fallback() {
         // No headings: single synthetic "Document" root
-        let d = doc(vec![
-            para("line one", 0, 8),
-            para("line two", 9, 17),
-        ]);
+        let d = doc(vec![para("line one", 0, 8), para("line two", 9, 17)]);
         let roots = build_tree(&d, "doc.test1234");
         assert_eq!(roots.len(), 1, "should produce one synthetic root");
         assert_eq!(roots[0].title, "Document");
@@ -462,10 +467,7 @@ mod tests {
 
     #[test]
     fn test_table_appended_to_current_section() {
-        let mut d = doc(vec![
-            heading(1, "Section", 0, 10),
-            para("intro", 11, 16),
-        ]);
+        let mut d = doc(vec![heading(1, "Section", 0, 10), para("intro", 11, 16)]);
         d.tables = vec![NormalizedTable {
             headers: vec!["Name".to_string(), "Value".to_string()],
             rows: vec![vec!["A".to_string(), "1".to_string()]],
@@ -473,7 +475,13 @@ mod tests {
         }];
         let roots = build_tree(&d, "doc.test1234");
         let text = roots[0].text.as_deref().unwrap_or("");
-        assert!(text.contains("Name | Value"), "table headers should be in section text");
-        assert!(text.contains("A | 1"), "table row should be in section text");
+        assert!(
+            text.contains("Name | Value"),
+            "table headers should be in section text"
+        );
+        assert!(
+            text.contains("A | 1"),
+            "table row should be in section text"
+        );
     }
 }

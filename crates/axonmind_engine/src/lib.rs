@@ -310,7 +310,8 @@ impl AxonMindEngine {
             }
         }
 
-        self.run_ingest_tail(&doc, &fingerprint, &doc_node_id, &mut summary).await;
+        self.run_ingest_tail(&doc, &fingerprint, &doc_node_id, &mut summary)
+            .await;
 
         Ok(summary)
     }
@@ -650,7 +651,8 @@ impl AxonMindEngine {
             .apply_batch(batch, &self.graph_cache, &self.event_tx)
             .await?;
 
-        self.run_ingest_tail(&doc, &fingerprint, &doc_node_id, &mut summary).await;
+        self.run_ingest_tail(&doc, &fingerprint, &doc_node_id, &mut summary)
+            .await;
 
         Ok(summary)
     }

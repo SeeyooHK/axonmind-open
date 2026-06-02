@@ -8,8 +8,7 @@ use crate::extract::llm::LlmProvider;
 
 use super::tree::PageSection;
 
-const ENRICH_SYSTEM: &str =
-    "Summarize the following document section in 2-3 sentences, capturing the key business \
+const ENRICH_SYSTEM: &str = "Summarize the following document section in 2-3 sentences, capturing the key business \
      information. Focus on quantitative facts and business metrics when present. Be concise.";
 
 /// Bottom-up LLM enrichment: fill `PageSection.summary` for every section.

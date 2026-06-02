@@ -222,7 +222,10 @@ async fn test_roundtrip_and_staleness() {
         doc_summary: None,
         sections: new_sections,
     };
-    store.upsert_document(&new_tree).await.expect("second upsert");
+    store
+        .upsert_document(&new_tree)
+        .await
+        .expect("second upsert");
 
     // Old section ("revenue") should no longer be found.
     let ids_old = store
@@ -345,12 +348,14 @@ async fn test_funnel_no_provider_returns_bm25_order() {
         doc_node_ids: None,
         max_results: None,
     };
-    let out =
-        axonmind_engine::pageindex::search::reasoning_search(input, &store, None, &cfg)
-            .await
-            .expect("search failed");
+    let out = axonmind_engine::pageindex::search::reasoning_search(input, &store, None, &cfg)
+        .await
+        .expect("search failed");
 
-    assert!(!out.reasoning_applied, "no provider → reasoning_applied must be false");
+    assert!(
+        !out.reasoning_applied,
+        "no provider → reasoning_applied must be false"
+    );
     assert!(!out.sections.is_empty(), "BM25 should return results");
 }
 
@@ -421,7 +426,10 @@ async fn test_funnel_provider_rerank_order() {
     .await
     .expect("search failed");
 
-    assert!(out.reasoning_applied, "LLM provider present → reasoning_applied must be true");
+    assert!(
+        out.reasoning_applied,
+        "LLM provider present → reasoning_applied must be true"
+    );
     assert_eq!(out.sections.len(), 2, "both sections selected");
     assert_eq!(
         out.sections[0].section_id, "doc.rerank#0002",
@@ -508,10 +516,9 @@ async fn test_funnel_doc_filter() {
         doc_node_ids: Some(vec!["doc.aaa".to_string()]),
         max_results: None,
     };
-    let out =
-        axonmind_engine::pageindex::search::reasoning_search(input, &store, None, &cfg)
-            .await
-            .expect("search failed");
+    let out = axonmind_engine::pageindex::search::reasoning_search(input, &store, None, &cfg)
+        .await
+        .expect("search failed");
 
     assert!(
         out.sections.iter().all(|s| s.doc_node_id == "doc.aaa"),
@@ -556,7 +563,10 @@ async fn test_ingest_populates_pageindex() {
         .iter()
         .filter(|e| e.starts_with("pageindex:"))
         .collect();
-    assert!(pi_errors.is_empty(), "pageindex errors during ingest: {pi_errors:?}");
+    assert!(
+        pi_errors.is_empty(),
+        "pageindex errors during ingest: {pi_errors:?}"
+    );
 
     // The ingested content is now searchable via reasoning_search.
     let out = engine

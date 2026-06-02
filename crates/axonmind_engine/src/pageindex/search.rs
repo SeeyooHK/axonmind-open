@@ -9,8 +9,7 @@ use crate::query::reasoning::{ReasoningSearchInput, ReasoningSearchOutput, Retri
 
 use super::{PageIndexSearchCfg, store::PageIndexStore};
 
-const STAGE2_SYSTEM: &str =
-    "You are a document retrieval assistant. Given a search query and a numbered list of document \
+const STAGE2_SYSTEM: &str = "You are a document retrieval assistant. Given a search query and a numbered list of document \
      sections, return the numbers of the most relevant sections in order from most to least \
      relevant, best first. Reply with just the numbers separated by commas (e.g. '3, 1, 2'). \
      If no sections are relevant, reply with exactly 'NONE'.";
@@ -35,7 +34,11 @@ pub async fn reasoning_search(
     }
 
     let candidate_ids = store
-        .bm25_shortlist(&fts_query, cfg.shortlist_limit, input.doc_node_ids.as_deref())
+        .bm25_shortlist(
+            &fts_query,
+            cfg.shortlist_limit,
+            input.doc_node_ids.as_deref(),
+        )
         .await?;
     if candidate_ids.is_empty() {
         return Ok(ReasoningSearchOutput {
@@ -52,7 +55,12 @@ pub async fn reasoning_search(
         .enumerate()
         .map(|(i, id)| (id.as_str(), i))
         .collect();
-    rows.sort_by_key(|r| id_to_rank.get(r.section_id.as_str()).copied().unwrap_or(usize::MAX));
+    rows.sort_by_key(|r| {
+        id_to_rank
+            .get(r.section_id.as_str())
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
 
     let max_results = input.max_results.unwrap_or(cfg.max_results);
 
@@ -117,10 +125,7 @@ async fn rerank_with_llm(
         })
         .collect();
 
-    let user = format!(
-        "Query: {query}\n\nSections:\n{}",
-        numbered.join("\n")
-    );
+    let user = format!("Query: {query}\n\nSections:\n{}", numbered.join("\n"));
 
     let response = llm.complete(STAGE2_SYSTEM, &user).await?;
     let response = response.trim();
