@@ -97,7 +97,9 @@ fn sample_args(tool_name: &str) -> Value {
 #[tokio::test]
 async fn schema_drift_guard() {
     let dir = TempDir::new().unwrap();
-    let engine = AxonMindEngine::open(test_engine_config(&dir)).await.unwrap();
+    let engine = AxonMindEngine::open(test_engine_config(&dir))
+        .await
+        .unwrap();
 
     for def in tool_defs() {
         let args = sample_args(def.name);
@@ -118,7 +120,9 @@ async fn schema_drift_guard() {
 #[tokio::test]
 async fn unknown_tool_returns_tool_not_found() {
     let dir = TempDir::new().unwrap();
-    let engine = AxonMindEngine::open(test_engine_config(&dir)).await.unwrap();
+    let engine = AxonMindEngine::open(test_engine_config(&dir))
+        .await
+        .unwrap();
 
     let err = call_tool(&engine, "nonexistent_tool", json!({}))
         .await
@@ -132,7 +136,9 @@ async fn unknown_tool_returns_tool_not_found() {
 #[tokio::test]
 async fn graph_search_empty_workspace_returns_ok() {
     let dir = TempDir::new().unwrap();
-    let engine = AxonMindEngine::open(test_engine_config(&dir)).await.unwrap();
+    let engine = AxonMindEngine::open(test_engine_config(&dir))
+        .await
+        .unwrap();
 
     let output = call_tool(&engine, "graph_search", json!({ "query": "anything" }))
         .await
@@ -146,7 +152,9 @@ async fn graph_search_empty_workspace_returns_ok() {
 #[tokio::test]
 async fn null_arguments_treated_as_empty_object() {
     let dir = TempDir::new().unwrap();
-    let engine = AxonMindEngine::open(test_engine_config(&dir)).await.unwrap();
+    let engine = AxonMindEngine::open(test_engine_config(&dir))
+        .await
+        .unwrap();
 
     // graph_search requires "query"; passing null should give a clean schema error,
     // not a panic or an unrelated error.

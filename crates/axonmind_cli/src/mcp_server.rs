@@ -55,8 +55,11 @@ where
         if let Some(params) = msg.get("params") {
             if !params.is_object() && !params.is_array() && !params.is_null() {
                 let id = msg.get("id").cloned().unwrap_or(Value::Null);
-                let frame =
-                    error_frame(id, -32600, "invalid request: params must be object or array");
+                let frame = error_frame(
+                    id,
+                    -32600,
+                    "invalid request: params must be object or array",
+                );
                 write_frame(&mut out, &frame).await?;
                 continue;
             }
@@ -77,12 +80,11 @@ where
                     .get("protocolVersion")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let protocol_version =
-                    if SUPPORTED_PROTOCOL_VERSIONS.contains(&client_version) {
-                        client_version.to_owned()
-                    } else {
-                        PREFERRED_PROTOCOL_VERSION.to_owned()
-                    };
+                let protocol_version = if SUPPORTED_PROTOCOL_VERSIONS.contains(&client_version) {
+                    client_version.to_owned()
+                } else {
+                    PREFERRED_PROTOCOL_VERSION.to_owned()
+                };
                 initialized = true;
                 result_frame(
                     id,
@@ -196,7 +198,9 @@ mod tests {
                 .await
                 .unwrap();
         let mut output: Vec<u8> = Vec::new();
-        serve_io(engine, input.as_bytes(), &mut output).await.unwrap();
+        serve_io(engine, input.as_bytes(), &mut output)
+            .await
+            .unwrap();
         output
             .split(|&b| b == b'\n')
             .filter(|l| !l.is_empty())
@@ -229,9 +233,7 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_then_tools_list_returns_eight_tools() {
-        let input = format!(
-            "{INIT}{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}}\n"
-        );
+        let input = format!("{INIT}{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}}\n");
         let frames = run_frames(&input).await;
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[1]["id"], 2);
@@ -240,8 +242,7 @@ mod tests {
 
     #[tokio::test]
     async fn tools_list_before_initialize_returns_rpc_error() {
-        let frames =
-            run_frames("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n").await;
+        let frames = run_frames("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n").await;
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0]["error"]["code"], -32600);
         assert!(frames[0].get("result").is_none());
@@ -265,8 +266,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_jsonrpc_version_returns_invalid_request() {
-        let frames =
-            run_frames("{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"ping\"}\n").await;
+        let frames = run_frames("{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"ping\"}\n").await;
         assert_eq!(frames[0]["error"]["code"], -32600);
     }
 
@@ -278,7 +278,8 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_method_returns_method_not_found() {
-        let input = format!("{INIT}{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"no_such_method\"}}\n");
+        let input =
+            format!("{INIT}{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"no_such_method\"}}\n");
         let frames = run_frames(&input).await;
         assert_eq!(frames[1]["error"]["code"], -32601);
     }
@@ -286,9 +287,8 @@ mod tests {
     #[tokio::test]
     async fn notification_produces_no_response() {
         // notifications/initialized has no id — must not produce a response frame
-        let input = format!(
-            "{INIT}{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}}\n"
-        );
+        let input =
+            format!("{INIT}{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}}\n");
         let frames = run_frames(&input).await;
         assert_eq!(frames.len(), 1, "notification must not produce a response");
     }

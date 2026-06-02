@@ -39,7 +39,9 @@ pub async fn call_tool(
 
     match name {
         "focus_kpi" => Ok(serialize!(engine.focus_kpi(parse!(FocusKpiInput)).await?)),
-        "explain_kpi" => Ok(serialize!(engine.explain_kpi(parse!(ExplainKpiInput)).await?)),
+        "explain_kpi" => Ok(serialize!(
+            engine.explain_kpi(parse!(ExplainKpiInput)).await?
+        )),
         "get_evidence" => Ok(serialize!(
             engine.get_evidence(parse!(GetEvidenceInput)).await?
         )),
@@ -56,7 +58,9 @@ pub async fn call_tool(
             engine.graph_search(parse!(GraphSearchInput)).await?
         )),
         "reasoning_search" => Ok(serialize!(
-            engine.reasoning_search(parse!(ReasoningSearchInput)).await?
+            engine
+                .reasoning_search(parse!(ReasoningSearchInput))
+                .await?
         )),
         _ => Err(AxonMindError::ToolNotFound {
             name: name.to_owned(),
