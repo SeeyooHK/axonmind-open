@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { BrainMapView, type Summary } from "./graph/BrainMapView";
 import { InspectorPanel } from "./InspectorPanel";
+import { ContentSearchModal } from "./ContentSearchModal";
 import { toGraphElements } from "@axonmind/react";
 import type { AxonGraphElements, AxonGraphNode } from "@axonmind/react";
 
@@ -41,6 +42,7 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
   const [summaryView, setSummaryView] = useState<"graph" | "json">("graph");
   const [summaryBusy, setSummaryBusy] = useState(false);
   const [summarySelectedNode, setSummarySelectedNode] = useState<AxonGraphNode | undefined>();
+  const [showContentSearch, setShowContentSearch] = useState(false);
   const [summaryElements, setSummaryElements] = useState<AxonGraphElements>(
     elements ?? { nodes: [], edges: [] }
   );
@@ -227,6 +229,16 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
           style={{ ...inputStyle, width: 240 }}
         />
         <button
+          onClick={() => setShowContentSearch(true)}
+          disabled={docs.length === 0}
+          title={selected.size > 0
+            ? `Search inside the ${selected.size} selected file(s)`
+            : "Search inside all indexed documents"}
+          style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid #334155", background: "transparent", color: docs.length === 0 ? "#334155" : "#94a3b8", fontSize: 13, fontWeight: 600, cursor: docs.length === 0 ? "default" : "pointer", whiteSpace: "nowrap" }}
+        >
+          {selected.size > 0 ? `Search Contents (${selected.size})` : "Search Contents"}
+        </button>
+        <button
           onClick={() => void generateBrainMap("auto")}
           disabled={summaryBusy || docs.length === 0}
           title={selected.size > 0
@@ -371,6 +383,15 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Content search modal */}
+      {showContentSearch && (
+        <ContentSearchModal
+          docs={docs}
+          initialDocIds={[...selected]}
+          onClose={() => setShowContentSearch(false)}
+        />
       )}
 
       {/* Brain-map summary — radial graph (default) with a JSON toggle. */}

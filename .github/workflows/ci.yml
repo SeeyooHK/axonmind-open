@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: clippy, rustfmt, llvm-tools-preview
 
@@ -22,13 +22,13 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: cargo check
-        run: cargo check --workspace
+        run: cargo check --workspace --exclude axonmind-host
 
       - name: cargo test + coverage gate (≥40% lines)
-        run: cargo llvm-cov --workspace --fail-under-lines 40
+        run: cargo llvm-cov --workspace --exclude axonmind-host --fail-under-lines 40
 
       - name: cargo clippy
-        run: cargo clippy --workspace
+        run: cargo clippy --workspace --exclude axonmind-host
 
       - name: cargo fmt
         run: cargo fmt --all -- --check

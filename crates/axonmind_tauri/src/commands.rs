@@ -7,8 +7,8 @@ use axonmind_engine::{
     query::{
         ExplainKpiInput, ExplainKpiOutput, FocusKpiInput, FocusKpiOutput, GetEvidenceInput,
         GetEvidenceOutput, GraphExportV1, GraphSearchInput, GraphSearchOutput, ImpactRadiusInput,
-        ImpactRadiusOutput, SuggestActionsInput, SuggestActionsOutput, TraceDecisionInput,
-        TraceDecisionOutput,
+        ImpactRadiusOutput, ReasoningSearchInput, ReasoningSearchOutput, SuggestActionsInput,
+        SuggestActionsOutput, TraceDecisionInput, TraceDecisionOutput,
     },
     store::{
         DocumentSummary,
@@ -88,6 +88,18 @@ pub async fn graph_search(
     input: GraphSearchInput,
 ) -> Result<GraphSearchOutput, String> {
     state.0.graph_search(input).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn reasoning_search(
+    state: State<'_, EngineState>,
+    input: ReasoningSearchInput,
+) -> Result<ReasoningSearchOutput, String> {
+    state
+        .0
+        .reasoning_search(input)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ── Ingest commands ───────────────────────────────────────────────────────────
@@ -223,7 +235,9 @@ const SUPPORTED_EXTS: &[&str] = &[
 #[derive(Debug, Clone)]
 enum RuntimeProviderSource {
     None,
-    ApiKey { id: String },
+    ApiKey {
+        id: String,
+    },
     Cli {
         cli: String,
         model: Option<String>,
@@ -246,7 +260,8 @@ enum PersistedProviderSelection {
 
 // Tracks which source last set the in-memory provider.
 // This is process-local by design and resets on app restart.
-static RUNTIME_PROVIDER_SOURCE: Mutex<RuntimeProviderSource> = Mutex::new(RuntimeProviderSource::None);
+static RUNTIME_PROVIDER_SOURCE: Mutex<RuntimeProviderSource> =
+    Mutex::new(RuntimeProviderSource::None);
 
 fn set_runtime_provider_source(source: RuntimeProviderSource) {
     if let Ok(mut guard) = RUNTIME_PROVIDER_SOURCE.lock() {
@@ -425,8 +440,10 @@ fn normalize_string_list(values: Option<Vec<String>>) -> Vec<String> {
 fn load_codex_session_options_config() -> Option<CodexSessionOptionsConfig> {
     let path = codex_session_options_file_path().ok()?;
     if !path.exists() {
-        return serde_json::from_str::<CodexSessionOptionsConfig>(DEFAULT_CODEX_SESSION_OPTIONS_JSON)
-            .ok();
+        return serde_json::from_str::<CodexSessionOptionsConfig>(
+            DEFAULT_CODEX_SESSION_OPTIONS_JSON,
+        )
+        .ok();
     }
 
     let raw = match std::fs::read_to_string(&path) {
@@ -483,7 +500,9 @@ fn load_persisted_provider_selection() -> Option<PersistedProviderSelection> {
     serde_json::from_str(&raw).ok()
 }
 
-fn persist_provider_selection(selection: Option<&PersistedProviderSelection>) -> Result<(), String> {
+fn persist_provider_selection(
+    selection: Option<&PersistedProviderSelection>,
+) -> Result<(), String> {
     let path = provider_selection_file_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create config dir: {e}"))?;
@@ -583,11 +602,12 @@ fn build_cli_provider(
     intelligence: Option<String>,
 ) -> std::sync::Arc<dyn axonmind_engine::extract::llm::LlmProvider> {
     if cli == "codex" {
-        let selected_model =
-            model.clone().unwrap_or_else(|| seeyoo_llm::codex_api::default_codex_model().to_string());
-        let selected_intelligence = intelligence
+        let selected_model = model
             .clone()
-            .or(Some(seeyoo_llm::codex_api::default_codex_intelligence().to_string()));
+            .unwrap_or_else(|| seeyoo_llm::codex_api::default_codex_model().to_string());
+        let selected_intelligence = intelligence.clone().or(Some(
+            seeyoo_llm::codex_api::default_codex_intelligence().to_string(),
+        ));
         let provider = seeyoo_llm::codex_api::CodexApiProvider::new(
             seeyoo_llm::types::RetryConfig::default(),
             Some(selected_model.clone()),
@@ -601,7 +621,8 @@ fn build_cli_provider(
         return std::sync::Arc::new(adapter);
     }
 
-    let selected_model = model.unwrap_or_else(|| crate::cli_auth::default_model_for(cli).to_string());
+    let selected_model =
+        model.unwrap_or_else(|| crate::cli_auth::default_model_for(cli).to_string());
     std::sync::Arc::new(axonmind_engine::extract::openai::OpenAiProvider::new(
         crate::cli_auth::base_url_for(cli),
         &profile.access_token,
@@ -654,12 +675,8 @@ pub(crate) fn build_active_provider()
                     _ => None,
                 };
                 if let Some(profile) = profile {
-                    let provider = build_cli_provider(
-                        &cli,
-                        &profile,
-                        model.clone(),
-                        intelligence.clone(),
-                    );
+                    let provider =
+                        build_cli_provider(&cli, &profile, model.clone(), intelligence.clone());
                     set_runtime_provider_source(RuntimeProviderSource::Cli {
                         cli,
                         model,
@@ -912,7 +929,8 @@ pub async fn get_cli_session_options(cli: String) -> Result<CliSessionOptions, S
         let models = normalize_string_list(cfg.as_ref().and_then(|c| c.models.clone()));
 
         let intelligence_levels = {
-            let configured = normalize_string_list(cfg.as_ref().and_then(|c| c.intelligence_levels.clone()));
+            let configured =
+                normalize_string_list(cfg.as_ref().and_then(|c| c.intelligence_levels.clone()));
             if configured.is_empty() {
                 seeyoo_llm::codex_api::CODEX_INTELLIGENCE_LEVELS
                     .iter()
@@ -927,7 +945,9 @@ pub async fn get_cli_session_options(cli: String) -> Result<CliSessionOptions, S
             .as_ref()
             .and_then(|c| c.default_model.clone())
             .and_then(normalize_non_empty)
-            .or(Some(seeyoo_llm::codex_api::default_codex_model().to_string()));
+            .or(Some(
+                seeyoo_llm::codex_api::default_codex_model().to_string(),
+            ));
 
         let default_intelligence = cfg
             .as_ref()
@@ -975,14 +995,16 @@ pub async fn use_cli_session(
     if cli == "codex" {
         let selected_model =
             model.unwrap_or_else(|| seeyoo_llm::codex_api::default_codex_model().to_string());
-        let selected_intelligence =
-            intelligence.or(Some(seeyoo_llm::codex_api::default_codex_intelligence().to_string()));
-        let adapter =
-            build_cli_provider("codex", &profile, Some(selected_model.clone()), selected_intelligence.clone());
-        state
-            .0
-            .update_llm_provider(Some(adapter))
-            .await;
+        let selected_intelligence = intelligence.or(Some(
+            seeyoo_llm::codex_api::default_codex_intelligence().to_string(),
+        ));
+        let adapter = build_cli_provider(
+            "codex",
+            &profile,
+            Some(selected_model.clone()),
+            selected_intelligence.clone(),
+        );
+        state.0.update_llm_provider(Some(adapter)).await;
         set_runtime_provider_source(RuntimeProviderSource::Cli {
             cli: cli.clone(),
             model: Some(selected_model.clone()),
@@ -996,12 +1018,10 @@ pub async fn use_cli_session(
         return Ok(());
     }
 
-    let selected_model = model.unwrap_or_else(|| crate::cli_auth::default_model_for(&cli).to_string());
+    let selected_model =
+        model.unwrap_or_else(|| crate::cli_auth::default_model_for(&cli).to_string());
     let provider = build_cli_provider(&cli, &profile, Some(selected_model.clone()), None);
-    state
-        .0
-        .update_llm_provider(Some(provider))
-        .await;
+    state.0.update_llm_provider(Some(provider)).await;
     set_runtime_provider_source(RuntimeProviderSource::Cli {
         cli: cli.clone(),
         model: Some(selected_model.clone()),

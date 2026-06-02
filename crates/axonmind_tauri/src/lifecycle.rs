@@ -67,6 +67,7 @@ fn init_inner<R: Runtime>(
             crate::commands::trace_decision,
             crate::commands::suggest_actions,
             crate::commands::graph_search,
+            crate::commands::reasoning_search,
             crate::commands::index_path,
             crate::commands::index_markdown,
             crate::commands::list_documents,

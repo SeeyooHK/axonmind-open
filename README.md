@@ -303,11 +303,64 @@ src-tauri/          Minimal local demo host
 
 - Tested: Codex CLI login/session-based LLM provider path works in the Tauri app.
 > The default model selected for Codex is `gpt-5.4-mini`, and the default intelligence level is `low`. OpenAI and Codex might change available models at any time, so please check the Codex CLI documentation for the latest information. Model overrides use `AXONMIND_CODEX_MODEL` (pass-through), and intelligence overrides use `AXONMIND_CODEX_INTELLIGENCE` (`minimal|low|medium|high|xhigh`) as shown in `env_example`.
-- TODO: Test Claude Code and Antigravity LLM provider paths end-to-end.
+
+## Page Indexing Features
+
+### Re-indexing is needed for existing files
+
+The `page_*` tables (page_sections, page_section_fts) are populated by pageindex::index_document, which runs at the end of every ingest via `run_ingest_tail`. Documents that were indexed before this session have no rows in those tables — so "Search Contents" returns nothing for them.
+
+The staleness check in `index_document` confirms this: it looks up `page_tree_sha` for each document and, if it's missing (which it is for all pre-existing docs), builds and stores the section tree. So re-triggering ingest is enough.
+
+### What to do in the UI
+
+In the Processed Files view: select all documents → Regenerate selected. This reads from the already-stored blob (no re-upload needed), re-parses the file, rebuilds the section tree, and stores it. If no AI provider is connected, it's fast — rule extraction only, no LLM calls.
+
+Alternatively, per-document: the Regenerate button in the Actions column does the same for one file at a time.
+
+### What to do from the CLI
+
+`axonmind index <path> --workspace <dir>`
+
+Without `--skip-unchanged`, this re-ingests all files and populates the page index. With `--skip-unchanged` it bails out early for unchanged files and never reaches the pageindex hook — so don't use that flag for this purpose.
+
+### What this does not touch
+
+The section tree is built purely from the parsed document structure — no LLM extraction involved unless pageindex_enrich = true (which defaults to false). So re-ingesting existing files without an AI provider is cheap: parse from blob → build headings tree → write to SQLite FTS. The graph nodes and edges also get re-upserted but that's lightweight (they already exist, so it's mostly no-ops).
+
+### Regeneration and Generation with AI might take long
+
+**What's eating the time.** Regeneration has three LLM phases:
+
+1. Entity extraction — one API call per document (fast, ~2s)
+2. Relation extraction — one API call per entity pair per paragraph (line 196-216). If a paragraph mentions 8 entities, that's 28 calls. A document with 5 such paragraphs is 140 calls. At ~2s/call that's ~5 minutes per document alone.
+3. Semantic linking — one more call
+
+The N² entity-pair loop is the dominant cost. The UI already warns "Regenerating… (AI, may take a while)" but doesn't surface how many calls are actually queued.
+
+**How to tell if it's hung vs. working.** It's working if your API provider dashboard shows ongoing requests. It's hung if:
+- No API activity for >2 minutes
+- The app process is using no CPU
+
+Practical options right now:
+
+- Let it run. If the files are entity-dense documents, 5–10 min each is expected.
+- Disable the provider first, then regenerate. Go to Settings, disconnect the API key, then regenerate. Rule extraction only takes milliseconds — the pageindex section tree gets rebuilt (which is all you actually need for Search Contents) and no LLM calls are made. Reconnect the provider after (but with the costs of lower quality).
+- CLI alternative for bulk backfill without LLM cost:
+# No LLM key in config → rule-only + pageindex, very fast
+`axonmind index <path> --workspace <dir>`
+
+### Future improvement worth noting (TODO)
+
+A dedicated rebuild-page-index command — analogous to the existing rebuild-search-index — that walks document_cache, reads each blob, and populates page_* without touching graph tables at all. That would be the cleanest backfill path, but it doesn't exist yet.
+
+## TODO
+1. Test Claude Code and Antigravity LLM provider paths end-to-end.
+2. A dedicated rebuild-page-index command mentioned above.
 
 ## Contributing
 ### 🚀 Contribution Policy
- **We do not accept code contributions (pull requests) to this repository at this time.** This allows us to maintain clear intellectual property ownership of the codebase for Axonmind commercial distribution.
+ **We do not accept public code contributions (pull requests) to this repository at this time.** This allows us to maintain clear intellectual property ownership of the codebase for Axonmind commercial distribution.
 
 ### How to contribute
  We still welcome and value community participation in other forms: **Bug Reports**, **Feature Requests** and **Documentation**.

@@ -5,7 +5,7 @@ use axonmind_engine::{
     ingest::{IngestOptions, IngestSource},
     query::{
         ExplainKpiInput, FocusKpiInput, GetEvidenceInput, GraphSearchInput, ImpactRadiusInput,
-        SuggestActionsInput, TraceDecisionInput,
+        ReasoningSearchInput, SuggestActionsInput, TraceDecisionInput,
     },
 };
 use clap::{Parser, Subcommand};
@@ -102,6 +102,16 @@ enum QueryCommands {
     },
     SuggestActions {
         kpi_id: String,
+    },
+    /// Vectorless BM25+LLM section search over indexed documents.
+    ReasoningSearch {
+        query: String,
+        /// Restrict to specific document node ids (repeat for multiple: --doc id1 --doc id2).
+        #[arg(long)]
+        doc: Vec<String>,
+        /// Max results to return (default: 20).
+        #[arg(long)]
+        limit: Option<usize>,
     },
 }
 
@@ -264,6 +274,27 @@ async fn main() -> anyhow::Result<()> {
                         println!("{} suggested action(s):", out.actions.len());
                         for a in &out.actions {
                             println!("  - {} ({})", a.name, a.id);
+                        }
+                    }
+                }
+                QueryCommands::ReasoningSearch { query, doc, limit } => {
+                    let out = engine
+                        .reasoning_search(ReasoningSearchInput {
+                            query,
+                            doc_node_ids: if doc.is_empty() { None } else { Some(doc) },
+                            max_results: limit,
+                        })
+                        .await?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&out)?);
+                    } else {
+                        println!(
+                            "{} section(s) [reasoning_applied={}]:",
+                            out.sections.len(),
+                            out.reasoning_applied
+                        );
+                        for s in &out.sections {
+                            println!("  [{}] {} — {}", s.doc_node_id, s.title, s.path.join(" › "));
                         }
                     }
                 }

@@ -4,6 +4,7 @@ pub mod events;
 pub mod extract;
 pub mod ingest;
 pub mod mcp;
+pub mod pageindex;
 pub mod query;
 pub mod store;
 pub mod workers;
@@ -22,10 +23,12 @@ use crate::extract::llm::LlmProvider;
 use crate::ingest::{
     IngestOptions, IngestSource, IngestSummary, NormalizedDocument, dispatch_parse,
 };
+use crate::pageindex::{PageIndexSearchCfg, PageIndexStore};
 use crate::query::{
     ExplainKpiInput, ExplainKpiOutput, FocusKpiInput, FocusKpiOutput, GetEvidenceInput,
     GetEvidenceOutput, GraphSearchInput, GraphSearchOutput, ImpactRadiusInput, ImpactRadiusOutput,
-    SuggestActionsInput, SuggestActionsOutput, TraceDecisionInput, TraceDecisionOutput,
+    ReasoningSearchInput, ReasoningSearchOutput, SuggestActionsInput, SuggestActionsOutput,
+    TraceDecisionInput, TraceDecisionOutput,
 };
 use crate::store::{
     DocumentSummary, GraphCache, GraphMutation, GraphStore,
@@ -282,7 +285,7 @@ impl AxonMindEngine {
         let doc_node_id = doc_node.id.clone();
 
         let mutations = self
-            .build_ingest_mutations(&doc, &doc_node, skip_llm)
+            .build_ingest_mutations(&doc, &doc_node, skip_llm, &Default::default())
             .await?;
 
         // Apply mutations and track summary
@@ -307,7 +310,22 @@ impl AxonMindEngine {
             }
         }
 
-        // Update document cache with content + structural fingerprint.
+        self.run_ingest_tail(&doc, &fingerprint, &doc_node_id, &mut summary)
+            .await;
+
+        Ok(summary)
+    }
+
+    /// Shared tail for all ingest paths: upsert_document_cache + pageindex hook.
+    /// Graph mutations must already be applied before calling this.
+    /// Errors from pageindex are non-fatal: they are pushed to `summary.errors`.
+    async fn run_ingest_tail(
+        &self,
+        doc: &NormalizedDocument,
+        fingerprint: &extract::fingerprint::DocFingerprint,
+        doc_node_id: &NodeId,
+        summary: &mut IngestSummary,
+    ) {
         if let Some(path) = &doc.source_path {
             let _ = self
                 .store
@@ -315,12 +333,24 @@ impl AxonMindEngine {
                     &path.to_string_lossy(),
                     &fingerprint.content_sha256,
                     &fingerprint.structural_sha256,
-                    &doc_node_id,
+                    doc_node_id,
                 )
                 .await;
         }
 
-        Ok(summary)
+        let page_store = PageIndexStore::new(self.store.db.0.clone());
+        let llm = self.llm_provider.read().await.clone();
+        if let Err(e) = pageindex::index_document(
+            doc,
+            &doc_node_id.0,
+            &page_store,
+            llm.as_deref(),
+            &self.config,
+        )
+        .await
+        {
+            summary.errors.push(format!("pageindex: {e}"));
+        }
     }
 
     // ── Document management ─────────────────────────────────────────────────────
@@ -333,11 +363,17 @@ impl AxonMindEngine {
     /// Build (but do not apply) all extraction mutations for a document: the Document node, rule
     /// extraction, LLM entity+relation extraction, cross-document semantic links, and the
     /// deterministic bridge. Kept separate from application so callers can apply atomically.
+    ///
+    /// `exclude_from_existing`: concept node ids to exclude from the "existing concepts" view fed
+    /// to the bridge and semantic linker. Used by `regenerate_document` to prevent the bridge from
+    /// creating edges to concepts that are about to be deleted in the same batch — which would
+    /// produce `NodeNotFound` when those edge insertions are processed after the deletions.
     async fn build_ingest_mutations(
         &self,
         doc: &NormalizedDocument,
         doc_node: &Node,
         skip_llm: bool,
+        exclude_from_existing: &std::collections::HashSet<String>,
     ) -> Result<Vec<GraphMutation>, AxonMindError> {
         use axonmind_core::NodeKind;
 
@@ -363,11 +399,16 @@ impl AxonMindEngine {
 
         // Concept nodes already in the graph from other documents — drives cross-document dedup
         // (LLM "avoid duplicating" hint) and the deterministic bridge.
-        let existing_concepts = self
+        // Concepts in `exclude_from_existing` are about to be deleted in the same batch (regenerate
+        // path) and must not appear as bridge/linker targets or they cause NodeNotFound.
+        let existing_concepts: Vec<(NodeId, String)> = self
             .store
             .fetch_concept_node_id_names(EXISTING_NAME_HINT_LIMIT)
             .await
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(id, _)| !exclude_from_existing.contains(&id.0))
+            .collect();
 
         // Resolve the LLM provider once so we don't hold the lock across awaits.
         let llm_opt = if self.config.enable_llm_extraction && !skip_llm {
@@ -503,6 +544,10 @@ impl AxonMindEngine {
             .apply_batch(removal, &self.graph_cache, &self.event_tx)
             .await?;
 
+        PageIndexStore::new(self.store.db.0.clone())
+            .delete_document(&node_id.0)
+            .await?;
+
         if delete_blob {
             if let Some(sha) = sha {
                 if self.store.count_documents_with_sha(&sha).await? == 0 {
@@ -568,7 +613,23 @@ impl AxonMindEngine {
         };
         let doc_node = make_document_node(&doc);
         let doc_node_id = doc_node.id.clone();
-        let new_mutations = self.build_ingest_mutations(&doc, &doc_node, false).await?;
+
+        // Build removal mutations first (read-only) so we know which concepts are about to be
+        // deleted. This is still safe: no DB writes happen until apply_batch below.
+        // Concepts in the removal set must be excluded from the bridge/linker's "existing" view —
+        // they will be deleted in the same batch, so edges TO them would produce NodeNotFound.
+        let removal = self.build_removal_mutations(&node_id).await?;
+        let to_delete: std::collections::HashSet<String> = removal
+            .iter()
+            .filter_map(|m| match m {
+                GraphMutation::DeleteNode { node_id } => Some(node_id.0.clone()),
+                _ => None,
+            })
+            .collect();
+
+        let new_mutations = self
+            .build_ingest_mutations(&doc, &doc_node, false, &to_delete)
+            .await?;
 
         let mut summary = IngestSummary {
             files_processed: 1,
@@ -584,23 +645,14 @@ impl AxonMindEngine {
         }
 
         // Apply the old data's removal and the new data together: all-or-nothing.
-        let mut batch = self.build_removal_mutations(&node_id).await?;
+        let mut batch = removal;
         batch.extend(new_mutations);
         self.store
             .apply_batch(batch, &self.graph_cache, &self.event_tx)
             .await?;
 
-        if let Some(path) = &doc.source_path {
-            let _ = self
-                .store
-                .upsert_document_cache(
-                    &path.to_string_lossy(),
-                    &fingerprint.content_sha256,
-                    &fingerprint.structural_sha256,
-                    &doc_node_id,
-                )
-                .await;
-        }
+        self.run_ingest_tail(&doc, &fingerprint, &doc_node_id, &mut summary)
+            .await;
 
         Ok(summary)
     }
@@ -653,6 +705,22 @@ impl AxonMindEngine {
         input: GraphSearchInput,
     ) -> Result<GraphSearchOutput, AxonMindError> {
         query::search::graph_search(input, &self.store).await
+    }
+
+    /// Vectorless two-stage retrieval: BM25 recall → LLM reasoning precision.
+    /// Returns ranked sections with raw passage text; degrades gracefully to BM25-only
+    /// when no LLM provider is configured (`reasoning_applied = false`).
+    pub async fn reasoning_search(
+        &self,
+        input: ReasoningSearchInput,
+    ) -> Result<ReasoningSearchOutput, AxonMindError> {
+        let store = PageIndexStore::new(self.store.db.0.clone());
+        let llm = self.llm_provider.read().await.clone();
+        let cfg = PageIndexSearchCfg {
+            shortlist_limit: self.config.pageindex_shortlist_limit,
+            ..Default::default()
+        };
+        pageindex::search::reasoning_search(input, &store, llm.as_deref(), &cfg).await
     }
 
     // ── Export / import ───────────────────────────────────────────────────────

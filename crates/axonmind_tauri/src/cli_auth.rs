@@ -6,7 +6,10 @@
 //! All file reads are best-effort — missing files silently return None.
 
 use serde::{Deserialize, Serialize};
-use std::{env, path::{Path, PathBuf}};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -75,8 +78,16 @@ pub fn detect_claude() -> Option<CliProfile> {
     }
     candidates.push(xdg_config_dir().join("claude").join(".credentials.json"));
     candidates.push(xdg_config_dir().join("claude").join("credentials.json"));
-    candidates.push(xdg_config_dir().join("claude-code").join(".credentials.json"));
-    candidates.push(xdg_config_dir().join("claude-code").join("credentials.json"));
+    candidates.push(
+        xdg_config_dir()
+            .join("claude-code")
+            .join(".credentials.json"),
+    );
+    candidates.push(
+        xdg_config_dir()
+            .join("claude-code")
+            .join("credentials.json"),
+    );
 
     detect_from_sources(
         "claude",
@@ -96,8 +107,16 @@ pub fn detect_antigravity() -> Option<CliProfile> {
     if let Some(home) = home_dir() {
         candidates.push(home.join(".antigravity").join("credentials.json"));
         candidates.push(home.join(".gemini").join("credentials.json"));
-        candidates.push(home.join(".gemini").join("antigravity").join("credentials.json"));
-        candidates.push(home.join(".gemini").join("antigravity-cli").join("credentials.json"));
+        candidates.push(
+            home.join(".gemini")
+                .join("antigravity")
+                .join("credentials.json"),
+        );
+        candidates.push(
+            home.join(".gemini")
+                .join("antigravity-cli")
+                .join("credentials.json"),
+        );
     }
     let base = xdg_config_dir();
     candidates.push(base.join("agy").join("credentials.json"));
@@ -182,10 +201,7 @@ fn detect_from_sources(
     read_profile_from_keyring(cli, keyring_candidates)
 }
 
-fn read_profile_from_keyring(
-    cli: &str,
-    keyring_candidates: &[(&str, &str)],
-) -> Option<CliProfile> {
+fn read_profile_from_keyring(cli: &str, keyring_candidates: &[(&str, &str)]) -> Option<CliProfile> {
     for (service, account) in keyring_candidates {
         let entry = match keyring::Entry::new(service, account) {
             Ok(v) => v,

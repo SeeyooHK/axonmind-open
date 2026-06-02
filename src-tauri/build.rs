@@ -6,6 +6,7 @@ const COMMANDS: &[&str] = &[
     "trace_decision",
     "suggest_actions",
     "graph_search",
+    "reasoning_search",
     "index_path",
     "index_markdown",
     "list_documents",

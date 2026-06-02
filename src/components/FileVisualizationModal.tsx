@@ -7,9 +7,10 @@ import type { StagedItem } from "./GenerationStaging";
 interface Props {
   item: StagedItem;
   onClose: () => void;
+  zIndex?: number;
 }
 
-export function FileVisualizationModal({ item, onClose }: Props) {
+export function FileVisualizationModal({ item, onClose, zIndex = 200 }: Props) {
   const { transport } = useAxonMind();
   const [rawText, setRawText] = useState<string | null>(null);
   const [nodes, setNodes] = useState<Node[] | null>(null);
@@ -35,7 +36,7 @@ export function FileVisualizationModal({ item, onClose }: Props) {
 
   return (
     <div
-      style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "stretch" }}
+      style={{ position: "fixed", inset: 0, zIndex, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "stretch" }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div style={{

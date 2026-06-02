@@ -9,7 +9,7 @@ function makeTransport(overrides: Partial<AxonMindTransport> = {}): AxonMindTran
   const stub = (): Promise<never> => Promise.reject(new Error('not implemented'))
   return {
     focusKpi: stub, explainKpi: stub, getEvidence: stub, impactRadius: stub,
-    traceDecision: stub, suggestActions: stub, graphSearch: stub, exportJson: stub,
+    traceDecision: stub, suggestActions: stub, graphSearch: stub, reasoningSearch: stub, exportJson: stub,
     suggestSummary: stub, resolveBrainMapDefaultSummary: stub, resolveBrainMapLensChildren: stub,
     getBrainMapDefaultConfig: stub, updateBrainMapDefaultConfig: stub, restoreBrainMapDefaultConfig: stub,
     listDocuments: stub, removeDocument: stub, regenerateDocument: stub,

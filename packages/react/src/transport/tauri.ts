@@ -17,6 +17,7 @@ import type {
   TraceDecisionInput, TraceDecisionOutput,
   SuggestActionsInput, SuggestActionsOutput,
   GraphSearchInput, GraphSearchOutput,
+  ReasoningSearchInput, ReasoningSearchOutput,
   ScopedSummaryModeInput, SuggestedSummary, SummaryResolution, LensResolution,
   SummaryConfigSnapshot, SummaryConfigEdit, DocumentSummary,
   IndexMarkdownOptions, IndexPathOptions,
@@ -70,6 +71,10 @@ export class TauriTransport implements AxonMindTransport {
 
   graphSearch(input: GraphSearchInput): Promise<GraphSearchOutput> {
     return this.invoke(CMD("graph_search"), { input });
+  }
+
+  reasoningSearch(input: ReasoningSearchInput): Promise<ReasoningSearchOutput> {
+    return this.invoke(CMD("reasoning_search"), { input });
   }
 
   exportJson(): Promise<GraphExportV1> {
