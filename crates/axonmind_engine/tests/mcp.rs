@@ -16,7 +16,7 @@ fn test_engine_config(dir: &TempDir) -> EngineConfig {
 #[test]
 fn tool_defs_count_and_names() {
     let defs = tool_defs();
-    assert_eq!(defs.len(), 8);
+    assert_eq!(defs.len(), 10);
     let names: Vec<_> = defs.iter().map(|t| t.name).collect();
     assert!(names.contains(&"focus_kpi"));
     assert!(names.contains(&"explain_kpi"));
@@ -26,6 +26,8 @@ fn tool_defs_count_and_names() {
     assert!(names.contains(&"suggest_actions"));
     assert!(names.contains(&"graph_search"));
     assert!(names.contains(&"reasoning_search"));
+    assert!(names.contains(&"graph_stats"));
+    assert!(names.contains(&"graph_diff"));
 }
 
 #[test]
@@ -90,6 +92,21 @@ fn sample_args(tool_name: &str) -> Value {
             "doc_node_ids": ["doc.abc12345"],
             "max_results": 5
         }),
+        "graph_stats" => json!({}),
+        "graph_diff" => {
+            let empty_export = json!({
+                "schema_version": 1,
+                "exported_at": "2026-01-01T00:00:00Z",
+                "workspace_id": "test",
+                "nodes": [],
+                "edges": [],
+                "evidence": [],
+                "edge_evidence": [],
+                "metric_values": [],
+                "kpi_candidates": []
+            });
+            json!({ "before": empty_export.clone(), "after": empty_export })
+        }
         _ => json!({}),
     }
 }

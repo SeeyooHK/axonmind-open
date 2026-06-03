@@ -337,14 +337,6 @@ fn extract_paragraph_relations(
     }
 }
 
-/// Convert a free-form name to a lowercase underscore slug, e.g. "Revenue Growth" → "revenue_growth"
 fn slugify(name: &str) -> String {
-    name.to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '_' })
-        .collect::<String>()
-        .split('_')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("_")
+    crate::util::slugify(name)
 }
