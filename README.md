@@ -30,7 +30,7 @@ AxonMind is designed to build local-first business intelligence, document intell
 - **Evidence-first graph construction.** Edges require evidence references at the storage layer. If AxonMind cannot point back to source text, it does not create the relationship.
 - **Local by default.** Workspaces live in SQLite with an in-memory `petgraph` cache. No account, hosted control plane, or cloud dependency is required for the default rule extractor.
 - **Useful immediately from the CLI.** Index the included sample document and query a real graph in under a minute.
-- **Embeddable architecture.** Use the Rust engine directly, call the CLI, or connect a React/Tauri UI through the TypeScript transport interface.
+- **Embeddable architecture.** Use the Rust engine directly, call the CLI, run the MCP server for AI agents, or connect a React/Tauri UI through the TypeScript transport interface.
 - **LLM-optional.** Deterministic extraction works out of the box. Optional LLM providers can enrich extraction when you want broader free-form reasoning.
 
 ## What It Does
@@ -73,10 +73,11 @@ In practice, AxonMind helps you ask business questions across documents instead 
 You can then:
 
 - focus on a KPI and inspect its drivers, blockers, risks, and related evidence
-- search across the graph with SQLite FTS5
+- search across the graph with SQLite FTS5 or use reasoning-based document retrieval
+- expose the knowledge graph to AI agents via the built-in MCP server
 - export or import graph state as JSON
 - embed the engine behind your own product UI
-- run a local Tauri demo app with Brain Map, documents, and inspector views
+- run a local Tauri demo app with Brain Map, documents, and side-by-side inspector views
 
 **Not in scope:** hosted SaaS, billing, cloud sync, SSO, RBAC, team management, or a managed control plane.
 
@@ -100,6 +101,10 @@ cargo run -p axonmind_cli -- query --workspace ./demo focus-kpi kpi.revenue_grow
 # 4. Search the graph or return JSON.
 cargo run -p axonmind_cli -- search "revenue" --workspace ./demo
 cargo run -p axonmind_cli -- query --workspace ./demo --json focus-kpi kpi.revenue_growth
+
+# 5. Run reasoning-based retrieval or start the MCP server.
+cargo run -p axonmind_cli -- query --workspace ./demo reasoning-search "what drives revenue?"
+cargo run -p axonmind_cli -- mcp --workspace ./demo
 ```
 
 The default rule extractor detects KPIs from headings and creates driver/blocker edges when named KPIs appear in the same paragraph with linking language such as "influences" or "blocks". Documents without those patterns may produce KPI nodes without relationships; that is expected. Use optional LLM extraction when you need richer relationship discovery from free-form prose.
@@ -284,11 +289,12 @@ src-tauri/          Minimal local demo host
 | Ingestion | Markdown, text, PDF, DOCX, spreadsheets, HTML, optional image OCR |
 | Extraction | Deterministic rules by default; optional LLM extraction |
 | Scope analysis | Analyze one document, selected documents, or the full indexed library |
-| Queries | KPI focus, graph search, evidence lookup, impact radius, trace decision, suggest actions |
+| Queries | KPI focus, explain KPI, evidence lookup, impact radius, trace decision, suggest actions, graph search, reasoning search |
 | Evidence | Relationship citations and source spans are first-class graph data |
 | Workers | KPI discovery and KPI recomputation infrastructure |
 | SDK | Generated TypeScript types, React hooks, Tauri transport |
-| Demo | Local Tauri app with Brain Map, document list, inspector, and settings |
+| Integration | Standard MCP (Model Context Protocol) server for AI agents |
+| Demo | Local Tauri app with Brain Map, document list, side-by-side file inspector, and settings |
 
 ## Key Invariants
 

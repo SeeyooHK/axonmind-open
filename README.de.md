@@ -30,7 +30,7 @@ AxonMind ist für den Aufbau von Local-First Business Intelligence, Dokumentenin
 - **Evidenzbasierter Graphaufbau.** Kanten erfordern Evidenzreferenzen in der Speicherschicht. Wenn AxonMind nicht auf den Quelltext verweisen kann, wird die Beziehung nicht erstellt.
 - **Standardmäßig lokal.** Workspaces liegen in SQLite mit einem In-Memory-`petgraph`-Cache. Für den Standard-Regelextraktor ist kein Account, keine gehostete Steuerungsebene (Control Plane) oder Cloud-Abhängigkeit erforderlich.
 - **Sofort über die CLI nutzbar.** Indizieren Sie das enthaltene Beispieldokument und fragen Sie in weniger als einer Minute einen echten Graphen ab.
-- **Einbettbare Architektur.** Nutzen Sie die Rust-Engine direkt, rufen Sie die CLI auf oder verbinden Sie eine React/Tauri-UI über die TypeScript-Transportschnittstelle.
+- **Einbettbare Architektur.** Nutzen Sie die Rust-Engine direkt, rufen Sie die CLI auf, führen Sie den MCP-Server für KI-Agenten aus oder verbinden Sie eine React/Tauri-UI über die TypeScript-Transportschnittstelle.
 - **LLM optional.** Die deterministische Extraktion funktioniert direkt nach der Installation. Optionale LLM-Anbieter können die Extraktion bereichern, wenn Sie ein umfassenderes freies Denken wünschen.
 
 ## Was es macht
@@ -72,10 +72,11 @@ In der Praxis hilft Ihnen AxonMind dabei, geschäftliche Fragen dokumentenüberg
 Sie können dann:
 
 - sich auf einen KPI konzentrieren und dessen Treiber, Blockaden, Risiken und zugehörige Belege untersuchen
-- den Graphen mit SQLite FTS5 durchsuchen
+- den Graphen mit SQLite FTS5 durchsuchen oder eine argumentationsbasierte Dokumentensuche nutzen
+- den Wissensgraphen über den integrierten MCP-Server für KI-Agenten freigeben
 - den Graphenzustand als JSON exportieren oder importieren
 - die Engine hinter Ihrer eigenen Produkt-UI einbetten
-- eine lokale Tauri-Demo-App mit Brain Map-, Dokumenten- und Inspektor-Ansichten ausführen
+- eine lokale Tauri-Demo-App mit Brain Map-, Dokumenten- und Side-by-Side-Inspektor-Ansichten ausführen
 
 **Nicht im Umfang enthalten:** Gehostetes SaaS, Abrechnung, Cloud-Synchronisierung, SSO, RBAC, Teamverwaltung oder eine verwaltete Steuerungsebene.
 
@@ -99,6 +100,10 @@ cargo run -p axonmind_cli -- query --workspace ./demo focus-kpi kpi.revenue_grow
 # 4. Durchsuchen Sie den Graphen oder geben Sie JSON zurück.
 cargo run -p axonmind_cli -- search "revenue" --workspace ./demo
 cargo run -p axonmind_cli -- query --workspace ./demo --json focus-kpi kpi.revenue_growth
+
+# 5. Führen Sie eine argumentationsbasierte Suche aus oder starten Sie den MCP-Server.
+cargo run -p axonmind_cli -- query --workspace ./demo reasoning-search "what drives revenue?"
+cargo run -p axonmind_cli -- mcp --workspace ./demo
 ```
 
 Der Standard-Regelextraktor erkennt KPIs aus Überschriften und erstellt Treiber-/Blockaden-Kanten, wenn benannte KPIs im selben Absatz mit verknüpfenden Begriffen wie „influences“ oder „blocks“ erscheinen. Dokumente ohne diese Muster können KPI-Knoten ohne Beziehungen erzeugen; das ist normal. Verwenden Sie die optionale LLM-Extraktion, wenn Sie eine umfassendere Beziehungserkennung aus freiem Text benötigen.
@@ -283,11 +288,12 @@ src-tauri/          Minimaler lokaler Demo-Host
 | Aufnahme | Markdown, Text, PDF, DOCX, Tabellenkalkulationen, HTML, optionale Bild-OCR |
 | Extraktion | Deterministische Regeln standardmäßig; optionale LLM-Extraktion |
 | Bereichsanalyse | Analyse eines Dokuments, ausgewählter Dokumente oder der gesamten indizierten Bibliothek |
-| Abfragen | KPI-Fokus, Graphsuche, Evidenzsuche, Auswirkungsradius, Entscheidungsverfolgung, Aktionsvorschläge |
+| Abfragen | KPI-Fokus, KPI-Erklärung, Evidenzsuche, Auswirkungsradius, Entscheidungsverfolgung, Aktionsvorschläge, Graphsuche, Argumentationssuche |
 | Evidenz | Beziehungszitate und Quellbereiche sind erstklassige Graphdaten |
 | Worker | Infrastruktur für KPI-Erkennung und KPI-Neuberechnung |
 | SDK | Generierte TypeScript-Typen, React-Hooks, Tauri-Transport |
-| Demo | Lokale Tauri-App mit Brain Map, Dokumentenliste, Inspektor und Einstellungen |
+| Integration | Standard-MCP-Server (Model Context Protocol) für KI-Agenten |
+| Demo | Lokale Tauri-App mit Brain Map, Dokumentenliste, Side-by-Side-Inspektor und Einstellungen |
 
 ## Wichtige Invarianten
 

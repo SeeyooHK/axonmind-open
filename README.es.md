@@ -30,7 +30,7 @@ AxonMind está diseñado para crear inteligencia empresarial local-first, inteli
 - **Construcción de grafos basada en evidencia.** Los bordes (edges) requieren referencias de evidencia en la capa de almacenamiento. Si AxonMind no puede señalar el texto original, no crea la relación.
 - **Local por defecto.** Los espacios de trabajo residen en SQLite con un caché `petgraph` en memoria. No se requiere cuenta, plano de control alojado o dependencia de la nube para el extractor de reglas por defecto.
 - **Útil de inmediato desde la CLI.** Indexa el documento de muestra incluido y consulta un grafo real en menos de un minuto.
-- **Arquitectura integrable.** Usa el motor Rust directamente, llama a la CLI o conecta una interfaz de usuario React/Tauri a través de la interfaz de transporte TypeScript.
+- **Arquitectura integrable.** Usa el motor Rust directamente, llama a la CLI, ejecuta el servidor MCP para agentes de IA o conecta una interfaz de usuario React/Tauri a través de la interfaz de transporte TypeScript.
 - **LLM opcional.** La extracción determinista funciona sin necesidad de configuración adicional. Los proveedores opcionales de LLM pueden enriquecer la extracción cuando desees un razonamiento libre más amplio.
 
 ## Qué hace
@@ -72,10 +72,11 @@ En la práctica, AxonMind te ayuda a plantear preguntas comerciales a través de
 Luego puedes:
 
 - Concentrarte en un KPI e inspeccionar sus impulsores, bloqueadores, riesgos y evidencia relacionada
-- Buscar en todo el grafo con SQLite FTS5
+- Buscar en todo el grafo con SQLite FTS5 o usar la recuperación de documentos basada en razonamiento
+- Exponer el grafo de conocimiento a los agentes de IA a través del servidor MCP integrado
 - Exportar o importar el estado del grafo como JSON
 - Integrar el motor detrás de la interfaz de usuario de tu propio producto
-- Ejecutar una aplicación de demostración de Tauri local con vistas de Brain Map, documentos e inspector
+- Ejecutar una aplicación de demostración de Tauri local con vistas de Brain Map, documentos y el inspector lado a lado
 
 **Fuera de alcance:** SaaS alojado, facturación, sincronización en la nube, SSO, RBAC, gestión de equipos o un plano de control administrado.
 
@@ -99,6 +100,10 @@ cargo run -p axonmind_cli -- query --workspace ./demo focus-kpi kpi.revenue_grow
 # 4. Busca en el grafo o devuelve JSON.
 cargo run -p axonmind_cli -- search "revenue" --workspace ./demo
 cargo run -p axonmind_cli -- query --workspace ./demo --json focus-kpi kpi.revenue_growth
+
+# 5. Ejecuta la recuperación basada en razonamiento o inicia el servidor MCP.
+cargo run -p axonmind_cli -- query --workspace ./demo reasoning-search "what drives revenue?"
+cargo run -p axonmind_cli -- mcp --workspace ./demo
 ```
 
 El extractor de reglas predeterminado detecta los KPI a partir de los encabezados y crea bordes de impulsores/bloqueadores cuando los KPI nombrados aparecen en el mismo párrafo con palabras de enlace como "influences" o "blocks". Los documentos sin esos patrones pueden producir nodos KPI sin relaciones; eso es de esperarse. Usa la extracción opcional de LLM cuando necesites un descubrimiento de relaciones más rico a partir de texto libre.
@@ -283,11 +288,12 @@ src-tauri/          Host de demostración local mínimo
 | Ingesta | Markdown, texto, PDF, DOCX, hojas de cálculo, HTML, OCR de imagen opcional |
 | Extracción | Reglas deterministas por defecto; extracción de LLM opcional |
 | Análisis de alcance | Analiza un documento, documentos seleccionados o la biblioteca indexada completa |
-| Consultas | Enfoque de KPI, búsqueda de grafos, búsqueda de evidencia, radio de impacto, rastreo de decisiones, sugerencia de acciones |
+| Consultas | Enfoque de KPI, explicar KPI, búsqueda de evidencia, radio de impacto, rastreo de decisiones, sugerencia de acciones, búsqueda de grafos, búsqueda de razonamiento |
 | Evidencia | Las citas de relaciones y los intervalos de origen son datos de grafos de primera clase |
 | Trabajadores | Infraestructura de descubrimiento de KPI y recálculo de KPI |
 | SDK | Tipos de TypeScript generados, hooks de React, transporte de Tauri |
-| Demostración | Aplicación local de Tauri con Brain Map, lista de documentos, inspector y configuración |
+| Integración | Servidor MCP (Model Context Protocol) estándar para agentes de IA |
+| Demostración | Aplicación local de Tauri con Brain Map, lista de documentos, inspector lado a lado y configuración |
 
 ## Invariantes clave
 

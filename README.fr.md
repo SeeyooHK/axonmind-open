@@ -30,7 +30,7 @@ AxonMind est conçu pour créer de la business intelligence locale-first, de l'i
 - **Construction de graphe axée sur les preuves.** Les arêtes nécessitent des références de preuves au niveau de la couche de stockage. Si AxonMind ne peut pas pointer vers le texte source, il ne crée pas la relation.
 - **Local par défaut.** Les espaces de travail résident dans SQLite avec un cache `petgraph` en mémoire. Aucun compte, plan de contrôle hébergé ou dépendance au cloud n'est requis pour l'extracteur de règles par défaut.
 - **Utile immédiatement depuis le CLI.** Indexez le document d'exemple inclus et interrogez un vrai graphe en moins d'une minute.
-- **Architecture intégrable.** Utilisez le moteur Rust directement, appelez le CLI ou connectez une interface utilisateur React/Tauri via l'interface de transport TypeScript.
+- **Architecture intégrable.** Utilisez le moteur Rust directement, appelez le CLI, lancez le serveur MCP pour les agents IA ou connectez une interface utilisateur React/Tauri via l'interface de transport TypeScript.
 - **LLM optionnel.** L'extraction déterministe fonctionne immédiatement. Des fournisseurs LLM optionnels peuvent enrichir l'extraction lorsque vous souhaitez un raisonnement plus large en texte libre.
 
 ## Ce qu'il fait
@@ -72,10 +72,11 @@ En pratique, AxonMind vous aide à poser des questions d'affaires à travers plu
 Vous pouvez ensuite :
 
 - Vous concentrer sur un KPI et inspecter ses facteurs clés, ses bloqueurs, ses risques et les preuves associées
-- Rechercher dans le graphe à l'aide de SQLite FTS5
+- Rechercher dans le graphe à l'aide de SQLite FTS5 ou utiliser la recherche de documents basée sur le raisonnement
+- Exposer le graphe de connaissances aux agents IA via le serveur MCP intégré
 - Exporter ou importer l'état du graphe au format JSON
 - Intégrer le moteur derrière l'interface utilisateur de votre propre produit
-- Exécuter une application de démonstration Tauri locale avec des vues Brain Map, documents et inspecteur
+- Exécuter une application de démonstration Tauri locale avec des vues Brain Map, documents et inspecteur côte à côte
 
 **Hors périmètre :** SaaS hébergé, facturation, synchronisation cloud, SSO, RBAC, gestion d'équipe ou plan de contrôle managé.
 
@@ -99,6 +100,10 @@ cargo run -p axonmind_cli -- query --workspace ./demo focus-kpi kpi.revenue_grow
 # 4. Recherchez dans le graphe ou obtenez du JSON.
 cargo run -p axonmind_cli -- search "revenue" --workspace ./demo
 cargo run -p axonmind_cli -- query --workspace ./demo --json focus-kpi kpi.revenue_growth
+
+# 5. Lancez la recherche basée sur le raisonnement ou démarrez le serveur MCP.
+cargo run -p axonmind_cli -- query --workspace ./demo reasoning-search "what drives revenue?"
+cargo run -p axonmind_cli -- mcp --workspace ./demo
 ```
 
 L'extracteur de règles par défaut détecte les KPI à partir des titres et crée des liaisons de facteurs clés/bloqueurs lorsque des KPI nommés apparaissent dans le même paragraphe avec des termes de liaison comme « influences » ou « blocks ». Les documents sans ces motifs peuvent produire des nœuds de KPI sans relation ; ceci est attendu. Utilisez l'extraction LLM optionnelle lorsque vous avez besoin d'une découverte de relations plus riche à partir de texte libre.
@@ -283,11 +288,12 @@ src-tauri/          Hôte de démonstration local minimal
 | Ingestion | Markdown, texte, PDF, DOCX, tableurs, HTML, OCR d'images optionnel |
 | Extraction | Règles déterministes par défaut ; extraction LLM optionnelle |
 | Analyse de périmètre | Analyse un document, les documents sélectionnés ou l'ensemble de la bibliothèque indexée |
-| Requêtes | Focus KPI, recherche de graphe, recherche de preuves, rayon d'impact, tracé de décision, suggestion d'actions |
+| Requêtes | Focus KPI, expliquer KPI, recherche de preuves, rayon d'impact, tracé de décision, suggestion d'actions, recherche de graphe, recherche de raisonnement |
 | Preuves | Les citations de relations et les intervalles de sources sont des données de graphe de premier niveau |
 | Workers | Infrastructure de découverte et de recalcul de KPI |
 | SDK | Types TypeScript générés, hooks React, transport Tauri |
-| Démo | Application Tauri locale avec Brain Map, liste de documents, inspecteur et paramètres |
+| Intégration | Serveur MCP (Model Context Protocol) standard pour les agents IA |
+| Démo | Application Tauri locale avec Brain Map, liste de documents, inspecteur côte à côte et paramètres |
 
 ## Invariants clés
 

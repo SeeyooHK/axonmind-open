@@ -30,7 +30,7 @@ AxonMind è progettato per creare business intelligence locale-first, intelligen
 - **Costruzione del grafo basata sulle prove.** Gli archi richiedono riferimenti alle prove a livello di archiviazione. Se AxonMind non può risalire al testo sorgente, non crea la relazione.
 - **Locale per impostazione predefinita.** I workspace risiedono in SQLite con una cache `petgraph` in memoria. Non è richiesto alcun account, piano di controllo ospitato o dipendenza dal cloud per l'estrattore di regole predefinito.
 - **Utile immediatamente dalla CLI.** Indicizza il documento di esempio incluso e interroga un grafo reale in meno di un minuto.
-- **Architettura incorporabile.** Usa direttamente il motore Rust, chiama la CLI o connetti una UI React/Tauri tramite l'interfaccia di trasporto TypeScript.
+- **Architettura incorporabile.** Usa direttamente il motore Rust, chiama la CLI, esegui il server MCP per gli agenti AI o connetti una UI React/Tauri tramite l'interfaccia di trasporto TypeScript.
 - **LLM opzionale.** L'estrazione deterministica funziona immediatamente. I provider LLM opzionali possono arricchire l'estrazione per un ragionamento a testo libero più ampio.
 
 ## Cosa fa
@@ -72,10 +72,11 @@ In pratica, AxonMind ti aiuta a porre domande aziendali tra i documenti invece d
 Puoi quindi:
 
 - Concentrarti su un KPI e ispezionare i relativi driver, blocker, rischi e prove correlate
-- Cercare nel grafo con SQLite FTS5
+- Cercare nel grafo con SQLite FTS5 o usare il recupero dei documenti basato sul ragionamento
+- Esporre il grafo della conoscenza agli agenti AI tramite il server MCP integrato
 - Esportare o importare lo stato del grafo come JSON
 - Integrare il motore dietro l'interfaccia utente del tuo prodotto
-- Eseguire un'app demo Tauri locale con viste Brain Map, documenti e inspector
+- Eseguire un'app demo Tauri locale con viste Brain Map, documenti e inspector affiancati
 
 **Fuori ambito:** SaaS ospitato, fatturazione, sincronizzazione cloud, SSO, RBAC, gestione del team o un piano di controllo gestito.
 
@@ -99,6 +100,10 @@ cargo run -p axonmind_cli -- query --workspace ./demo focus-kpi kpi.revenue_grow
 # 4. Cerca nel grafo o restituisci JSON.
 cargo run -p axonmind_cli -- search "revenue" --workspace ./demo
 cargo run -p axonmind_cli -- query --workspace ./demo --json focus-kpi kpi.revenue_growth
+
+# 5. Esegui il recupero basato sul ragionamento o avvia il server MCP.
+cargo run -p axonmind_cli -- query --workspace ./demo reasoning-search "what drives revenue?"
+cargo run -p axonmind_cli -- mcp --workspace ./demo
 ```
 
 L'estrattore di regole predefinito rileva i KPI dalle intestazioni e crea archi driver/blocker quando i KPI denominati appaiono nello stesso paragrafo con parole di collegamento come "influences" o "blocks". I documenti senza questi pattern possono produrre nodi KPI senza relazioni; questo è previsto. Utilizza l'estrazione LLM opzionale quando hai bisogno di una scoperta delle relazioni più ricca dalla prosa libera.
@@ -283,11 +288,12 @@ src-tauri/          Host demo locale minimale
 | Ingestione | Markdown, testo, PDF, DOCX, fogli di calcolo, HTML, OCR immagini opzionale |
 | Estrazione | Regole deterministiche per impostazione predefinita; estrazione LLM opzionale |
 | Analisi dell'ambito | Analizza un documento, documenti selezionati o l'intera libreria indicizzata |
-| Query | Focus KPI, ricerca nel grafo, ricerca prove, raggio di impatto, tracciamento decisioni, suggerimento azioni |
+| Query | Focus KPI, spiega KPI, ricerca prove, raggio di impatto, tracciamento decisioni, suggerimento azioni, ricerca nel grafo, ricerca ragionamento |
 | Prove | Riferimenti alle relazioni e intervalli di origine sono dati del grafo di prima classe |
 | Worker | Infrastruttura di scoperta KPI e ricalcolo KPI |
 | SDK | Tipi TypeScript generati, hook React, trasporto Tauri |
-| Demo | App Tauri locale con Brain Map, elenco documenti, inspector e impostazioni |
+| Integrazione | Server MCP (Model Context Protocol) standard per agenti AI |
+| Demo | App Tauri locale con Brain Map, elenco documenti, inspector affiancato e impostazioni |
 
 ## Invarianti Chiave
 
