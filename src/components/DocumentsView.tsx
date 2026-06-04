@@ -5,8 +5,22 @@ import { InspectorPanel } from "./InspectorPanel";
 import { ContentSearchModal } from "./ContentSearchModal";
 import { FileVisualizationModal } from "./FileVisualizationModal";
 import type { StagedItem } from "./GenerationStaging";
-import { toGraphElements } from "@axonmind/react";
+import { useAxonMind, toGraphElements } from "@axonmind/react";
 import type { AxonGraphElements, AxonGraphNode } from "@axonmind/react";
+import { DiffToast } from "./DiffToast";
+import type { GraphDiff, GraphExportV1 } from "@axonmind/types";
+
+// One-line "what changed" banner for the re-index toast.
+function formatDiffSummary(diff: GraphDiff, after: GraphExportV1): string | null {
+  const s = diff.summary;
+  const nodesTouched = s.nodes_added + s.nodes_removed + s.nodes_modified;
+  const edgesTouched = s.edges_added + s.edges_removed + s.edges_modified;
+  if (nodesTouched === 0 && edgesTouched === 0) return null;
+  return (
+    `${after.nodes.length} nodes (+${s.nodes_added} ~${s.nodes_modified} -${s.nodes_removed}), ` +
+    `${after.edges.length} edges (+${s.edges_added} ~${s.edges_modified} -${s.edges_removed})`
+  );
+}
 
 // Mirrors the Rust `DocumentSummary` (serde snake_case).
 interface DocumentSummary {
@@ -29,6 +43,8 @@ interface Props {
 const PAGE_SIZE = 50;
 
 export function DocumentsView({ onBack, onChanged, elements }: Props) {
+  const { transport } = useAxonMind();
+  const [diffToast, setDiffToast] = useState<string | null>(null);
   const [docs, setDocs] = useState<DocumentSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -124,13 +140,34 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
     await invoke("plugin:axonmind|regenerate_document", { nodeId: id });
   }
 
+  async function withDiffToast(action: () => Promise<void>) {
+    let before: GraphExportV1 | null = null;
+    try { before = await transport.exportJson(); } catch { before = null; }
+
+    await action();
+
+    if (before) {
+      try {
+        const after = await transport.exportJson();
+        const diff = await transport.graphDiff(before, after);
+        const summary = formatDiffSummary(diff, after);
+        console.log("[diff] before:", before.nodes.length, "after:", after.nodes.length, "summary:", summary);
+        if (summary) setDiffToast(summary);
+      } catch (err) {
+        console.warn("[diff] skipped:", err);
+      }
+    }
+  }
+
   function askRemove(id: string, label: string) {
     setConfirm({
       message: `Remove "${label}" and everything derived only from it? Shared concepts are kept. This cannot be undone.`,
       run: async () => {
         setBusyId(id); setBusyKind("removing");
         try {
-          await removeOne(id);
+          await withDiffToast(async () => {
+            await removeOne(id);
+          });
           setSelected(prev => { const n = new Set(prev); n.delete(id); return n; });
           await reload();
           onChanged?.();
@@ -145,7 +182,9 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
       run: async () => {
         setBusyId(id); setBusyKind("regenerating");
         try {
-          await regenerateOne(id);
+          await withDiffToast(async () => {
+            await regenerateOne(id);
+          });
           await reload();
           onChanged?.();
         } catch (e) { setError(String(e)); } finally { setBusyId(null); setBusyKind(null); }
@@ -160,7 +199,9 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
       run: async () => {
         setBusyId("__bulk__"); setBusyKind("removing");
         try {
-          for (const id of ids) await removeOne(id);
+          await withDiffToast(async () => {
+            for (const id of ids) await removeOne(id);
+          });
           setSelected(new Set());
           await reload();
           onChanged?.();
@@ -176,7 +217,9 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
       run: async () => {
         setBusyId("__bulk__"); setBusyKind("regenerating");
         try {
-          for (const id of ids) await regenerateOne(id);
+          await withDiffToast(async () => {
+            for (const id of ids) await regenerateOne(id);
+          });
           await reload();
           onChanged?.();
         } catch (e) { setError(String(e)); } finally { setBusyId(null); setBusyKind(null); }
@@ -480,6 +523,8 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
           </div>
         </div>
       )}
+
+      {diffToast && <DiffToast message={diffToast} onClose={() => setDiffToast(null)} />}
     </div>
   );
 }
