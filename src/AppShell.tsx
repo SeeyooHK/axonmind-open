@@ -2,7 +2,9 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAxonMind, toGraphElements } from "@axonmind/react";
 import type { AxonGraphElements, AxonGraphNode, AxonGraphEdge } from "@axonmind/react";
+import type { GraphDiff, GraphExportV1 } from "@axonmind/types";
 import { DropZone } from "./components/DropZone";
+import { DiffToast } from "./components/DiffToast";
 import { GenerationStaging, type StagedItem, type ItemStatus } from "./components/GenerationStaging";
 import { FolderSummaryModal } from "./components/FolderSummaryModal";
 import { FileVisualizationModal } from "./components/FileVisualizationModal";
@@ -51,6 +53,19 @@ function defaultGenerationName(rootPaths: string[]): string {
   return `Map ${new Date().toLocaleString()}`;
 }
 
+// One-line "what changed" banner for the re-index toast. `after` supplies the totals;
+// the diff summary supplies the deltas. Returns null when nothing changed (no toast).
+function formatDiffSummary(diff: GraphDiff, after: GraphExportV1): string | null {
+  const s = diff.summary;
+  const nodesTouched = s.nodes_added + s.nodes_removed + s.nodes_modified;
+  const edgesTouched = s.edges_added + s.edges_removed + s.edges_modified;
+  if (nodesTouched === 0 && edgesTouched === 0) return null;
+  return (
+    `${after.nodes.length} nodes (+${s.nodes_added} ~${s.nodes_modified} -${s.nodes_removed}), ` +
+    `${after.edges.length} edges (+${s.edges_added} ~${s.edges_modified} -${s.edges_removed})`
+  );
+}
+
 export function AppShell() {
   const { transport } = useAxonMind();
 
@@ -73,6 +88,7 @@ export function AppShell() {
   const [showSettings, setShowSettings] = useState(false);
   const [returnPhase, setReturnPhase] = useState<Phase>("upload");
   const [hasActiveKey, setHasActiveKey] = useState(false);
+  const [diffToast, setDiffToast] = useState<string | null>(null);
 
   // Navigate to the full-page Processed Files view, remembering where to return.
   const openDocuments = useCallback((from: Phase) => {
@@ -117,7 +133,7 @@ export function AppShell() {
     }
   }, [transport, updateItemStatus]);
 
-  const addToStaging = useCallback((files: Array<{ path: string; displayPath: string }>, rootPaths: string[]) => {
+  const addToStaging = useCallback(async (files: Array<{ path: string; displayPath: string }>, rootPaths: string[]) => {
     const existingPaths = new Set(itemsRef.current.map(i => i.path));
     const seen = new Set<string>();
     const newItems: StagedItem[] = files
@@ -130,8 +146,26 @@ export function AppShell() {
       const actual = newItems.filter(i => !cur.has(i.path));
       return actual.length > 0 ? [...prev, ...actual] : prev;
     });
-    for (const item of newItems) ingestItem(item);
-  }, [ingestItem]);
+
+    // Snapshot the graph before ingest so we can show a one-line "what changed" toast once
+    // the whole batch settles. The export must complete before any indexPath() write starts,
+    // and we diff a single before/after pair per batch to avoid racing concurrent ingests.
+    let before: GraphExportV1 | null = null;
+    try { before = await transport.exportJson(); } catch { before = null; }
+
+    await Promise.all(newItems.map(item => ingestItem(item)));
+
+    if (before) {
+      try {
+        const after = await transport.exportJson();
+        const diff = await transport.graphDiff(before, after);
+        const summary = formatDiffSummary(diff, after);
+        if (summary) setDiffToast(summary);
+      } catch (err) {
+        console.warn("[diff] skipped:", err);
+      }
+    }
+  }, [ingestItem, transport]);
 
   const onRemove = useCallback((id: string) => {
     setItems(prev => prev.filter(i => i.id !== id));
@@ -288,6 +322,8 @@ export function AppShell() {
           />
         )}
 
+        {diffToast && <DiffToast message={diffToast} onClose={() => setDiffToast(null)} />}
+
       </div>
     );
   }
@@ -391,6 +427,8 @@ export function AppShell() {
           onKeysChanged={refreshHasActiveKey}
         />
       )}
+
+      {diffToast && <DiffToast message={diffToast} onClose={() => setDiffToast(null)} />}
 
     </div>
   );
