@@ -235,7 +235,7 @@ export function AppShell() {
         multiple: true,
         filters: [{
           name: "Documents",
-          extensions: ["md", "txt", "csv", "xlsx", "docx", "pdf", "pptx"],
+          extensions: ["md", "txt", "csv", "xlsx", "docx", "pdf", "pptx", "jpg", "jpeg", "png", "bmp", "webp", "tiff", "tif", "gif"],
         }],
       });
     } catch (err) {

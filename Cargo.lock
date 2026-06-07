@@ -387,6 +387,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axonmind_core",
+ "base64 0.22.1",
  "calamine",
  "chrono",
  "comrak",

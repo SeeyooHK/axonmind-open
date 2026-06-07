@@ -250,7 +250,29 @@ impl AxonMindEngine {
         }
 
         // Parse to compute structural fingerprint.
-        let doc = dispatch_parse(path, &bytes)?;
+        // Images go through the async LLM-vision path first (falls back to Tesseract on failure).
+        let doc = {
+            #[cfg(feature = "llm")]
+            {
+                let is_image = matches!(
+                    path.extension().and_then(|e| e.to_str()),
+                    Some("jpg" | "jpeg" | "png" | "bmp" | "webp" | "tiff" | "tif" | "gif")
+                );
+                if is_image {
+                    let llm_guard = self.llm_provider.read().await;
+                    if let Some(llm) = llm_guard.as_deref() {
+                        ingest::image::parse_with_llm(path, &bytes, content_sha256.clone(), llm)
+                            .await?
+                    } else {
+                        dispatch_parse(path, &bytes)?
+                    }
+                } else {
+                    dispatch_parse(path, &bytes)?
+                }
+            }
+            #[cfg(not(feature = "llm"))]
+            dispatch_parse(path, &bytes)?
+        };
         let structural_sha256 = structural_signature(&doc);
         let next_fp = DocFingerprint {
             content_sha256,

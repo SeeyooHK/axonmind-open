@@ -245,6 +245,7 @@ pub struct DirFileEntry {
 
 const SUPPORTED_EXTS: &[&str] = &[
     "md", "markdown", "txt", "csv", "xlsx", "docx", "pdf", "pptx",
+    "jpg", "jpeg", "png", "bmp", "webp", "tiff", "tif", "gif",
 ];
 
 #[derive(Debug, Clone)]

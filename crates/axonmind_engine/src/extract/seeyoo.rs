@@ -4,7 +4,7 @@ use super::llm::{
 };
 use async_trait::async_trait;
 use axonmind_core::AxonMindError;
-use seeyoo_llm::api_mod::{ApiProvider, ProviderMessage};
+use seeyoo_llm::api_mod::{ApiProvider, MessageBlock, ProviderMessage};
 use seeyoo_llm::types::ToolDefinition;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -225,6 +225,33 @@ impl LlmProvider for SeeyooAdapter {
         Ok(SemanticLinkOutput {
             links: parsed.links,
         })
+    }
+
+    async fn transcribe_image(&self, bytes: &[u8], mime_type: &str) -> Result<String, AxonMindError> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let data_base64 = STANDARD.encode(bytes);
+        let messages = vec![ProviderMessage::User(vec![
+            MessageBlock::Image {
+                data_base64,
+                mime_type: mime_type.to_string(),
+            },
+            MessageBlock::Text {
+                text: "Transcribe all visible text exactly as written. For diagrams, charts, or \
+                       handwritten content, describe them clearly in markdown. Return only the \
+                       transcribed content with no commentary."
+                    .to_string(),
+            },
+        ])];
+        self.provider
+            .complete(
+                "You are a document transcriber. Extract all text and describe visual content as markdown.",
+                messages,
+                Vec::<seeyoo_llm::types::ToolDefinition>::new(),
+                &self.api_key,
+                self.model.as_deref(),
+            )
+            .await
+            .map_err(|e| AxonMindError::LlmProvider(e.to_string()))
     }
 
     async fn explain_kpi_rationale(

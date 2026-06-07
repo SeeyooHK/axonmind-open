@@ -44,7 +44,7 @@ export function DropZone({ onPaths }: Props) {
         Drag files or folders here
       </p>
       <p style={{ color: "#475569", margin: "6px 0 0", fontSize: 12 }}>
-        md · txt · csv · xlsx · docx · pdf · pptx
+        md · txt · csv · xlsx · docx · pdf · pptx · jpg · png · webp · …
       </p>
     </div>
   );

@@ -102,4 +102,17 @@ pub trait LlmProvider: Send + Sync {
         kpi_name: &str,
         evidence_quotes: &[String],
     ) -> Result<String, AxonMindError>;
+
+    /// Transcribe an image to markdown text using the provider's vision capability.
+    /// `bytes` is the raw image data; `mime_type` is e.g. "image/png".
+    /// Default returns Err so providers that don't support vision fall back to Tesseract.
+    async fn transcribe_image(
+        &self,
+        _bytes: &[u8],
+        _mime_type: &str,
+    ) -> Result<String, AxonMindError> {
+        Err(AxonMindError::LlmProvider(
+            "vision not supported by this provider".into(),
+        ))
+    }
 }
