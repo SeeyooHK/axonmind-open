@@ -1,5 +1,19 @@
 # Changelog
 
+## After PR #3 — Graph Diff & FK Cascade Fix (merged 2026-06-07)
+
+- **Graph diff engine** (`crates/axonmind_engine/src/query/diff.rs`) — typed diff between two `GraphExportV1` snapshots; returns added, modified, and removed nodes and edges with a list of changed fields per entry, plus summary counts and a warnings list.
+- **`graph_diff` and `graph_stats` engine methods** — `graph_diff(before, after)` computes the diff; `graph_stats()` returns per-kind node counts and total edge count. Both exposed as Tauri commands and MCP tools.
+- **CLI subcommands** — `axonmind graph-diff <before.json> <after.json>` and `axonmind graph-stats --workspace <dir>` with `--json` flag support.
+- **Graph Diff UI** — "Graph Diff" button on the Processed Files page captures a before/after snapshot on every Regenerate and opens a tabbed modal (Overview, Nodes, Edges, Warnings) with Copy Summary and Export JSON actions. A one-line diff toast appears after any ingest or bulk regenerate.
+- **React hooks** — `useGraphDiff` and `useGraphStats` transport-agnostic hooks added; `graphDiff()` and `graphStats()` methods added to `AxonMindTransport` and the Tauri transport implementation.
+- **TypeScript bindings** — `GraphDiff`, `NodeChange`, `EdgeChange`, `DiffCounts`, `DiffSection`, `GraphStatsOutput`, `NodeKindCount` generated from Rust types.
+- **Bug fix — FK cascade** (`store/sqlite.rs`) — `PRAGMA foreign_keys = ON` was only applied to the migration connection, not every pooled connection. Added a `post_create` hook to enforce FK on each connection. Without this fix, `DeleteNode` did not cascade to edges, causing concept counts to grow on every Regenerate.
+- **Orphaned edge cleanup** (`store/mod.rs`) — after `DeleteNode`, edges that lost all evidence via FK cascade are now explicitly removed and their FTS5 entries synced.
+- **34 new tests** in `crates/axonmind_engine/tests/diff.rs` covering node add/remove/modify, edge add/remove/modify, no-change, and mixed-change cases.
+
+---
+
 ## After PR #2 — MCP Service & File Inspector (merged 2026-06-02)
 
 - **`axonmind mcp --workspace <dir>` server** — spec-compliant JSON-RPC 2.0 stdio MCP server exposing all 8 query tools (`focus_kpi`, `explain_kpi`, `get_evidence`, `impact_radius`, `trace_decision`, `suggest_actions`, `graph_search`, `reasoning_search`) with protocol version negotiation, initialization guard, and strict request validation; no new dependencies.

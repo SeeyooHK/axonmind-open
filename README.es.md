@@ -104,6 +104,10 @@ cargo run -p axonmind_cli -- query --workspace ./demo --json focus-kpi kpi.reven
 # 5. Ejecuta la recuperación basada en razonamiento o inicia el servidor MCP.
 cargo run -p axonmind_cli -- query --workspace ./demo reasoning-search "what drives revenue?"
 cargo run -p axonmind_cli -- mcp --workspace ./demo
+
+# 6. Inspecciona las estadísticas del grafo o compara dos instantáneas exportadas.
+cargo run -p axonmind_cli -- graph-stats --workspace ./demo
+cargo run -p axonmind_cli -- graph-diff before.json after.json
 ```
 
 El extractor de reglas predeterminado detecta los KPI a partir de los encabezados y crea bordes de impulsores/bloqueadores cuando los KPI nombrados aparecen en el mismo párrafo con palabras de enlace como "influences" o "blocks". Los documentos sin esos patrones pueden producir nodos KPI sin relaciones; eso es de esperarse. Usa la extracción opcional de LLM cuando necesites un descubrimiento de relaciones más rico a partir de texto libre.
@@ -148,7 +152,7 @@ bun run build
 bun run tauri:build
 ```
 
-La validación local actual cubre 159 pruebas de Rust y 19 pruebas de TypeScript.
+La validación local actual cubre 193 pruebas de Rust y 19 pruebas de TypeScript.
 
 ## Características opcionales
 
@@ -289,11 +293,13 @@ src-tauri/          Host de demostración local mínimo
 | Extracción | Reglas deterministas por defecto; extracción de LLM opcional |
 | Análisis de alcance | Analiza un documento, documentos seleccionados o la biblioteca indexada completa |
 | Consultas | Enfoque de KPI, explicar KPI, búsqueda de evidencia, radio de impacto, rastreo de decisiones, sugerencia de acciones, búsqueda de grafos, búsqueda de razonamiento |
+| Comparación de grafos | Comparación tipada antes/después de cualquier dos instantáneas de grafos: nodos y bordes agregados, modificados y eliminados con listas de campos modificados |
+| Estadísticas de grafos | Recuento de nodos por tipo y recuento total de bordes a través del método del motor, CLI y herramienta MCP |
 | Evidencia | Las citas de relaciones y los intervalos de origen son datos de grafos de primera clase |
 | Trabajadores | Infraestructura de descubrimiento de KPI y recálculo de KPI |
 | SDK | Tipos de TypeScript generados, hooks de React, transporte de Tauri |
 | Integración | Servidor MCP (Model Context Protocol) estándar para agentes de IA |
-| Demostración | Aplicación local de Tauri con Brain Map, lista de documentos, inspector lado a lado y configuración |
+| Demostración | Aplicación local de Tauri con Brain Map, lista de documentos, modal de comparación de grafos, inspector lado a lado y configuración |
 
 ## Invariantes clave
 

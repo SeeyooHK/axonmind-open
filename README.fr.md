@@ -104,6 +104,10 @@ cargo run -p axonmind_cli -- query --workspace ./demo --json focus-kpi kpi.reven
 # 5. Lancez la recherche basée sur le raisonnement ou démarrez le serveur MCP.
 cargo run -p axonmind_cli -- query --workspace ./demo reasoning-search "what drives revenue?"
 cargo run -p axonmind_cli -- mcp --workspace ./demo
+
+# 6. Inspecter les statistiques du graphe ou comparer deux instantanés exportés.
+cargo run -p axonmind_cli -- graph-stats --workspace ./demo
+cargo run -p axonmind_cli -- graph-diff before.json after.json
 ```
 
 L'extracteur de règles par défaut détecte les KPI à partir des titres et crée des liaisons de facteurs clés/bloqueurs lorsque des KPI nommés apparaissent dans le même paragraphe avec des termes de liaison comme « influences » ou « blocks ». Les documents sans ces motifs peuvent produire des nœuds de KPI sans relation ; ceci est attendu. Utilisez l'extraction LLM optionnelle lorsque vous avez besoin d'une découverte de relations plus riche à partir de texte libre.
@@ -148,7 +152,7 @@ bun run build
 bun run tauri:build
 ```
 
-La validation locale actuelle couvre 159 tests Rust et 19 tests TypeScript.
+La validation locale actuelle couvre 193 tests Rust et 19 tests TypeScript.
 
 ## Fonctionnalités optionnelles
 
@@ -289,11 +293,13 @@ src-tauri/          Hôte de démonstration local minimal
 | Extraction | Règles déterministes par défaut ; extraction LLM optionnelle |
 | Analyse de périmètre | Analyse un document, les documents sélectionnés ou l'ensemble de la bibliothèque indexée |
 | Requêtes | Focus KPI, expliquer KPI, recherche de preuves, rayon d'impact, tracé de décision, suggestion d'actions, recherche de graphe, recherche de raisonnement |
+| Comparaison de graphe | Comparaison typée (avant/après) de deux instantanés de graphes — nœuds et arêtes ajoutés, modifiés et supprimés avec listes de champs modifiés |
+| Statistiques de graphe | Nombre de nœuds par type et nombre total d'arêtes via méthode du moteur, CLI et outil MCP |
 | Preuves | Les citations de relations et les intervalles de sources sont des données de graphe de premier niveau |
 | Workers | Infrastructure de découverte et de recalcul de KPI |
 | SDK | Types TypeScript générés, hooks React, transport Tauri |
 | Intégration | Serveur MCP (Model Context Protocol) standard pour les agents IA |
-| Démo | Application Tauri locale avec Brain Map, liste de documents, inspecteur côte à côte et paramètres |
+| Démo | Application Tauri locale avec Brain Map, liste de documents, modal de comparaison de graphe, inspecteur côte à côte et paramètres |
 
 ## Invariants clés
 

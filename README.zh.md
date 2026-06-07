@@ -104,6 +104,10 @@ cargo run -p axonmind_cli -- query --workspace ./demo --json focus-kpi kpi.reven
 # 5. 运行基于推理的检索或启动 MCP 服务。
 cargo run -p axonmind_cli -- query --workspace ./demo reasoning-search "what drives revenue?"
 cargo run -p axonmind_cli -- mcp --workspace ./demo
+
+# 6. 检查图谱统计信息或对比两个导出的快照。
+cargo run -p axonmind_cli -- graph-stats --workspace ./demo
+cargo run -p axonmind_cli -- graph-diff before.json after.json
 ```
 
 默认的规则提取器会从标题中检测 KPI，并在同一个段落中出现命名 KPI 以及表示关联的语言（如 “influences” 或 “blocks”）时，创建驱动因素/阻碍因素边。不包含这些模式的文档可能会生成没有关系的 KPI 节点；这是预期之中的。当你需要从自由文本中发掘更丰富的关系时，请使用可选的 LLM 提取。
@@ -148,7 +152,7 @@ bun run build
 bun run tauri:build
 ```
 
-当前的本地验证覆盖了 159 个 Rust 测试和 19 个 TypeScript 测试。
+当前的本地验证覆盖了 193 个 Rust 测试和 19 个 TypeScript 测试。
 
 ## 可选特性
 
@@ -289,11 +293,13 @@ src-tauri/          极简本地演示宿主
 | 提取 | 默认使用确定性规则；可选的 LLM 提取 |
 | 范围分析 | 分析单个文档、选定的文档或完整的已索引库 |
 | 查询 | KPI 关注、KPI 解释、证据查找、影响半径、决策追溯、操作建议、图谱搜索、推理搜索 |
+| 图谱对比 | 对任意两个图谱快照进行有类型的对比（前/后）—— 包含新增、修改和删除的节点与边，以及变化字段列表 |
+| 图谱统计 | 通过引擎方法、CLI 和 MCP 工具，按类型统计节点数量及总边数 |
 | 证据 | 关系引用和源跨度是一等公民图谱数据 |
 | 工作协程 | KPI 发现和 KPI 重新计算基础设施 |
 | SDK | 生成的 TypeScript 类型、React hooks、Tauri 传输 |
 | 集成 | 面向 AI Agent 的标准 MCP (Model Context Protocol) 服务 |
-| 演示 | 带有 Brain Map、文档列表、双栏文件检查器和设置的本地 Tauri 应用 |
+| 演示 | 带有 Brain Map、文档列表、图谱对比弹窗、双栏文件检查器和设置的本地 Tauri 应用 |
 
 ## 关键不变性
 

@@ -104,6 +104,10 @@ cargo run -p axonmind_cli -- query --workspace ./demo --json focus-kpi kpi.reven
 # 5. Führen Sie eine argumentationsbasierte Suche aus oder starten Sie den MCP-Server.
 cargo run -p axonmind_cli -- query --workspace ./demo reasoning-search "what drives revenue?"
 cargo run -p axonmind_cli -- mcp --workspace ./demo
+
+# 6. Graphstatistiken inspizieren oder zwei exportierte Snapshots vergleichen.
+cargo run -p axonmind_cli -- graph-stats --workspace ./demo
+cargo run -p axonmind_cli -- graph-diff before.json after.json
 ```
 
 Der Standard-Regelextraktor erkennt KPIs aus Überschriften und erstellt Treiber-/Blockaden-Kanten, wenn benannte KPIs im selben Absatz mit verknüpfenden Begriffen wie „influences“ oder „blocks“ erscheinen. Dokumente ohne diese Muster können KPI-Knoten ohne Beziehungen erzeugen; das ist normal. Verwenden Sie die optionale LLM-Extraktion, wenn Sie eine umfassendere Beziehungserkennung aus freiem Text benötigen.
@@ -148,7 +152,7 @@ bun run build
 bun run tauri:build
 ```
 
-Die aktuelle lokale Validierung deckt 159 Rust-Tests und 19 TypeScript-Tests ab.
+Die aktuelle lokale Validierung deckt 193 Rust-Tests und 19 TypeScript-Tests ab.
 
 ## Optionale Features
 
@@ -289,11 +293,13 @@ src-tauri/          Minimaler lokaler Demo-Host
 | Extraktion | Deterministische Regeln standardmäßig; optionale LLM-Extraktion |
 | Bereichsanalyse | Analyse eines Dokuments, ausgewählter Dokumente oder der gesamten indizierten Bibliothek |
 | Abfragen | KPI-Fokus, KPI-Erklärung, Evidenzsuche, Auswirkungsradius, Entscheidungsverfolgung, Aktionsvorschläge, Graphsuche, Argumentationssuche |
+| Graph-Vergleich | Typisierter Vorher/Nachher-Vergleich zweier Graph-Snapshots – hinzugefügte, geänderte und entfernte Knoten und Kanten mit geänderten Feldlisten |
+| Graphstatistiken | Knotenanzahl pro Typ und Gesamtkantenanzahl über Engine-Methode, CLI und MCP-Tool |
 | Evidenz | Beziehungszitate und Quellbereiche sind erstklassige Graphdaten |
 | Worker | Infrastruktur für KPI-Erkennung und KPI-Neuberechnung |
 | SDK | Generierte TypeScript-Typen, React-Hooks, Tauri-Transport |
 | Integration | Standard-MCP-Server (Model Context Protocol) für KI-Agenten |
-| Demo | Lokale Tauri-App mit Brain Map, Dokumentenliste, Side-by-Side-Inspektor und Einstellungen |
+| Demo | Lokale Tauri-App mit Brain Map, Dokumentenliste, Graph-Vergleichs-Modal, Side-by-Side-Inspektor und Einstellungen |
 
 ## Wichtige Invarianten
 
