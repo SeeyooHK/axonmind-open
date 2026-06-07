@@ -182,6 +182,37 @@ pub enum SearchMatchKind {
 
 // ── Graph export format (CLI export-json) ────────────────────────────────────
 
+// ── graph_stats ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NodeKindCount {
+    pub kind: NodeKind,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GraphStatsOutput {
+    pub total_nodes: usize,
+    pub document_nodes: usize,
+    pub concept_nodes: usize,
+    pub total_edges: usize,
+    pub total_evidence: usize,
+    pub avg_confidence: f64,
+    pub tainted_nodes: usize,
+    pub tainted_edges: usize,
+    pub review_required_nodes: usize,
+    pub nodes_by_kind: Vec<NodeKindCount>,
+}
+
+// ── graph_diff ────────────────────────────────────────────────────────────────
+
+pub mod diff;
+pub use diff::{DiffCounts, DiffSection, EdgeChange, GraphDiff, NodeChange, diff_exports};
+
+// ── Graph export format (CLI export-json) ────────────────────────────────────
+
 /// Schema v1 export. `schema_version` must be checked on import.
 /// Blobs are NOT included by default; only `blob_sha256` references.
 #[derive(Debug, Clone, Serialize, Deserialize)]

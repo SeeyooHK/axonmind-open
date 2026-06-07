@@ -7,6 +7,8 @@ const COMMANDS: &[&str] = &[
     "suggest_actions",
     "graph_search",
     "reasoning_search",
+    "graph_diff",
+    "graph_stats",
     "index_path",
     "index_markdown",
     "list_documents",

@@ -2,7 +2,7 @@
 // Tauri hosts implement this via invoke(); HTTP/WS hosts implement via fetch/WebSocket.
 // No implementation may import from window.__TAURI__ directly inside @axonmind/react.
 import type {
-  EdgeId, EngineEvent, Evidence, EvidenceId, IngestSummary,
+  Edge, EdgeId, EngineEvent, Evidence, EvidenceId, IngestSummary,
   Node, NodeId, NodeKind, KpiStatus, GraphExportV1,
 } from "./index";
 
@@ -27,6 +27,52 @@ export interface TraceDecisionOutput { decision: Node; caused_by: EdgeWithNodes[
 
 export interface SuggestActionsInput  { kpi_id: NodeId; status_filter?: KpiStatus[]; include_unreviewed?: boolean; }
 export interface SuggestActionsOutput { actions: Node[]; }
+
+// ── graph_stats ───────────────────────────────────────────────────────────────
+
+export interface NodeKindCount { kind: string; count: number; }
+export interface GraphStatsOutput {
+  total_nodes: number;
+  document_nodes: number;
+  concept_nodes: number;
+  total_edges: number;
+  total_evidence: number;
+  avg_confidence: number;
+  tainted_nodes: number;
+  tainted_edges: number;
+  review_required_nodes: number;
+  nodes_by_kind: NodeKindCount[];
+}
+
+// ── graph_diff ────────────────────────────────────────────────────────────────
+
+export interface NodeChange {
+  logical_key: string;
+  before: Node | null;
+  after: Node | null;
+  changed_fields: string[];
+}
+export interface EdgeChange {
+  logical_key: string;
+  before: Edge | null;
+  after: Edge | null;
+  changed_fields: string[];
+}
+export interface DiffSection<T> { added: T[]; removed: T[]; modified: T[]; }
+export interface DiffCounts {
+  nodes_added: number; nodes_removed: number; nodes_modified: number;
+  edges_added: number; edges_removed: number; edges_modified: number;
+}
+export interface GraphDiff {
+  before_exported_at: string;
+  after_exported_at: string;
+  nodes: DiffSection<NodeChange>;
+  edges: DiffSection<EdgeChange>;
+  summary: DiffCounts;
+  /** Non-empty when inputs were not cleanly diffable (logical-key collisions or edges
+   *  whose endpoints are absent from the same export). Surfaced rather than silently dropped. */
+  warnings: string[];
+}
 
 export type SearchMatchKind = "name" | "definition" | "evidence_quote";
 export interface GraphSearchInput  { query: string; kinds?: NodeKind[]; limit?: number; }
@@ -133,6 +179,8 @@ export interface AxonMindTransport {
   graphSearch(input: GraphSearchInput): Promise<GraphSearchOutput>;
   reasoningSearch(input: ReasoningSearchInput): Promise<ReasoningSearchOutput>;
   exportJson(): Promise<GraphExportV1>;
+  graphStats(): Promise<GraphStatsOutput>;
+  graphDiff(before: GraphExportV1, after: GraphExportV1): Promise<GraphDiff>;
   suggestSummary(doc_ids?: string[], scoped_mode?: ScopedSummaryModeInput): Promise<SuggestedSummary>;
   resolveBrainMapDefaultSummary(doc_ids?: string[]): Promise<SummaryResolution>;
   resolveBrainMapLensChildren(parent_lens_id: string): Promise<LensResolution[]>;

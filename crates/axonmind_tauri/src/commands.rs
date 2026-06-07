@@ -6,9 +6,10 @@ use axonmind_engine::{
     ingest::{IngestOptions, IngestSource, IngestSummary},
     query::{
         ExplainKpiInput, ExplainKpiOutput, FocusKpiInput, FocusKpiOutput, GetEvidenceInput,
-        GetEvidenceOutput, GraphExportV1, GraphSearchInput, GraphSearchOutput, ImpactRadiusInput,
-        ImpactRadiusOutput, ReasoningSearchInput, ReasoningSearchOutput, SuggestActionsInput,
-        SuggestActionsOutput, TraceDecisionInput, TraceDecisionOutput,
+        GetEvidenceOutput, GraphDiff, GraphExportV1, GraphSearchInput, GraphSearchOutput,
+        GraphStatsOutput, ImpactRadiusInput, ImpactRadiusOutput, ReasoningSearchInput,
+        ReasoningSearchOutput, SuggestActionsInput, SuggestActionsOutput, TraceDecisionInput,
+        TraceDecisionOutput,
     },
     store::{
         DocumentSummary,
@@ -100,6 +101,20 @@ pub async fn reasoning_search(
         .reasoning_search(input)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn graph_stats(state: State<'_, EngineState>) -> Result<GraphStatsOutput, String> {
+    state.0.graph_stats().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn graph_diff(
+    state: State<'_, EngineState>,
+    before: GraphExportV1,
+    after: GraphExportV1,
+) -> Result<GraphDiff, String> {
+    Ok(state.0.graph_diff(&before, &after))
 }
 
 // ── Ingest commands ───────────────────────────────────────────────────────────

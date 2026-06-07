@@ -1,8 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useAxonMind, toGraphElements } from "@axonmind/react";
 import type { AxonGraphElements, AxonGraphNode, AxonGraphEdge } from "@axonmind/react";
+import type { GraphDiff, GraphExportV1 } from "@axonmind/types";
 import { DropZone } from "./components/DropZone";
+import { DiffToast } from "./components/DiffToast";
 import { GenerationStaging, type StagedItem, type ItemStatus } from "./components/GenerationStaging";
 import { FolderSummaryModal } from "./components/FolderSummaryModal";
 import { FileVisualizationModal } from "./components/FileVisualizationModal";
@@ -28,6 +31,10 @@ interface FolderSummaryState {
   rejected: Array<{ displayPath: string; reason: string }>;
 }
 
+interface PathSummary extends FolderSummaryState {
+  hasDir: boolean;
+}
+
 function computeDisplayPath(filePath: string, dropRoot: string): string {
   const clean = (p: string) => p.replace(/\\/g, "/");
   const f = clean(filePath);
@@ -49,6 +56,19 @@ function defaultGenerationName(rootPaths: string[]): string {
     return parents[0].split("/").pop() ?? `Map ${new Date().toLocaleString()}`;
   }
   return `Map ${new Date().toLocaleString()}`;
+}
+
+// One-line "what changed" banner for the re-index toast. `after` supplies the totals;
+// the diff summary supplies the deltas. Returns null when nothing changed (no toast).
+function formatDiffSummary(diff: GraphDiff, after: GraphExportV1): string | null {
+  const s = diff.summary;
+  const nodesTouched = s.nodes_added + s.nodes_removed + s.nodes_modified;
+  const edgesTouched = s.edges_added + s.edges_removed + s.edges_modified;
+  if (nodesTouched === 0 && edgesTouched === 0) return null;
+  return (
+    `${after.nodes.length} nodes (+${s.nodes_added} ~${s.nodes_modified} -${s.nodes_removed}), ` +
+    `${after.edges.length} edges (+${s.edges_added} ~${s.edges_modified} -${s.edges_removed})`
+  );
 }
 
 export function AppShell() {
@@ -73,6 +93,7 @@ export function AppShell() {
   const [showSettings, setShowSettings] = useState(false);
   const [returnPhase, setReturnPhase] = useState<Phase>("upload");
   const [hasActiveKey, setHasActiveKey] = useState(false);
+  const [diffToast, setDiffToast] = useState<string | null>(null);
 
   // Navigate to the full-page Processed Files view, remembering where to return.
   const openDocuments = useCallback((from: Phase) => {
@@ -117,7 +138,7 @@ export function AppShell() {
     }
   }, [transport, updateItemStatus]);
 
-  const addToStaging = useCallback((files: Array<{ path: string; displayPath: string }>, rootPaths: string[]) => {
+  const addToStaging = useCallback(async (files: Array<{ path: string; displayPath: string }>, rootPaths: string[]) => {
     const existingPaths = new Set(itemsRef.current.map(i => i.path));
     const seen = new Set<string>();
     const newItems: StagedItem[] = files
@@ -130,8 +151,26 @@ export function AppShell() {
       const actual = newItems.filter(i => !cur.has(i.path));
       return actual.length > 0 ? [...prev, ...actual] : prev;
     });
-    for (const item of newItems) ingestItem(item);
-  }, [ingestItem]);
+
+    // Snapshot the graph before ingest so we can show a one-line "what changed" toast once
+    // the whole batch settles. The export must complete before any indexPath() write starts,
+    // and we diff a single before/after pair per batch to avoid racing concurrent ingests.
+    let before: GraphExportV1 | null = null;
+    try { before = await transport.exportJson(); } catch { before = null; }
+
+    await Promise.all(newItems.map(item => ingestItem(item)));
+
+    if (before) {
+      try {
+        const after = await transport.exportJson();
+        const diff = await transport.graphDiff(before, after);
+        const summary = formatDiffSummary(diff, after);
+        if (summary) setDiffToast(summary);
+      } catch (err) {
+        console.warn("[diff] skipped:", err);
+      }
+    }
+  }, [ingestItem, transport]);
 
   const onRemove = useCallback((id: string) => {
     setItems(prev => prev.filter(i => i.id !== id));
@@ -139,7 +178,7 @@ export function AppShell() {
 
   // ── Drop handling ─────────────────────────────────────────────────────────────
 
-  const onPaths = useCallback(async (rawPaths: string[]) => {
+  const summarizePaths = useCallback(async (rawPaths: string[]): Promise<PathSummary | null> => {
     setDropError(null);
     let results: Array<{ root: string; entries: DirFileEntry[]; isDir: boolean }>;
     try {
@@ -152,7 +191,7 @@ export function AppShell() {
       );
     } catch (err) {
       setDropError(`list_dir_files failed — restart bun tauri dev so Rust recompiles. ${String(err)}`);
-      return;
+      return null;
     }
 
     const accepted: Array<{ path: string; displayPath: string }> = [];
@@ -171,12 +210,71 @@ export function AppShell() {
       }
     }
 
-    if (hasDir) {
-      setFolderSummary({ rootPaths: rawPaths, accepted, rejected });
+    return { rootPaths: rawPaths, accepted, rejected, hasDir };
+  }, []);
+
+  const onPaths = useCallback(async (rawPaths: string[]) => {
+    const summary = await summarizePaths(rawPaths);
+    if (!summary) return;
+
+    if (summary.hasDir) {
+      setFolderSummary({
+        rootPaths: summary.rootPaths,
+        accepted: summary.accepted,
+        rejected: summary.rejected,
+      });
     } else {
-      addToStaging(accepted, rawPaths);
+      addToStaging(summary.accepted, summary.rootPaths);
     }
-  }, [addToStaging]);
+  }, [addToStaging, summarizePaths]);
+
+  const addAttachmentToFolderSummary = useCallback(async () => {
+    let selected: string | string[] | null;
+    try {
+      selected = await open({
+        multiple: true,
+        filters: [{
+          name: "Documents",
+          extensions: ["md", "txt", "csv", "xlsx", "docx", "pdf", "pptx"],
+        }],
+      });
+    } catch (err) {
+      setDropError(`open file dialog failed. ${String(err)}`);
+      return;
+    }
+
+    if (!selected) return;
+    const rawPaths = Array.isArray(selected) ? selected : [selected];
+    if (rawPaths.length === 0) return;
+
+    const summary = await summarizePaths(rawPaths);
+    if (!summary) return;
+
+    setFolderSummary(prev => {
+      if (!prev) {
+        return {
+          rootPaths: summary.rootPaths,
+          accepted: summary.accepted,
+          rejected: summary.rejected,
+        };
+      }
+
+      const existingPaths = new Set(prev.accepted.map(f => f.path));
+      const accepted = [...prev.accepted];
+      for (const file of summary.accepted) {
+        if (!existingPaths.has(file.path)) {
+          existingPaths.add(file.path);
+          accepted.push(file);
+        }
+      }
+
+      return {
+        rootPaths: [...prev.rootPaths, ...summary.rootPaths],
+        accepted,
+        rejected: [...prev.rejected, ...summary.rejected],
+      };
+    });
+  }, [summarizePaths]);
 
   const confirmFolderSummary = useCallback(() => {
     if (!folderSummary) return;
@@ -272,6 +370,7 @@ export function AppShell() {
           <FolderSummaryModal
             acceptedCount={folderSummary.accepted.length}
             rejected={folderSummary.rejected}
+            onAddAttachment={addAttachmentToFolderSummary}
             onConfirm={confirmFolderSummary}
             onCancel={() => setFolderSummary(null)}
           />
@@ -287,6 +386,8 @@ export function AppShell() {
             onKeysChanged={refreshHasActiveKey}
           />
         )}
+
+        {diffToast && <DiffToast message={diffToast} onClose={() => setDiffToast(null)} />}
 
       </div>
     );
@@ -391,6 +492,8 @@ export function AppShell() {
           onKeysChanged={refreshHasActiveKey}
         />
       )}
+
+      {diffToast && <DiffToast message={diffToast} onClose={() => setDiffToast(null)} />}
 
     </div>
   );

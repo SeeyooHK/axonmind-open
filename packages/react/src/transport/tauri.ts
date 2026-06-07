@@ -21,7 +21,7 @@ import type {
   ScopedSummaryModeInput, SuggestedSummary, SummaryResolution, LensResolution,
   SummaryConfigSnapshot, SummaryConfigEdit, DocumentSummary,
   IndexMarkdownOptions, IndexPathOptions,
-  GraphExportV1,
+  GraphExportV1, GraphStatsOutput, GraphDiff,
 } from "@axonmind/types";
 
 type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
@@ -40,9 +40,12 @@ export class TauriTransport implements AxonMindTransport {
     fallbackCommand: string,
     args?: Record<string, unknown>,
   ): Promise<T> {
-    return this.invoke<T>(CMD(pluginCommand), args).catch(() =>
-      this.invoke<T>(fallbackCommand, args),
-    );
+    return this.invoke<T>(CMD(pluginCommand), args).catch((primaryErr) => {
+      console.warn(`[AxonMind] Primary command ${pluginCommand} failed:`, primaryErr);
+      return this.invoke<T>(fallbackCommand, args).catch((fallbackErr) => {
+        throw primaryErr; // throw the primary error so it bubbles up accurately
+      });
+    });
   }
 
   focusKpi(input: FocusKpiInput): Promise<FocusKpiOutput> {
@@ -79,6 +82,21 @@ export class TauriTransport implements AxonMindTransport {
 
   exportJson(): Promise<GraphExportV1> {
     return this.invoke(CMD("export_json"));
+  }
+
+  graphStats(): Promise<GraphStatsOutput> {
+    return this.invokeWithFallback<GraphStatsOutput>(
+      "graph_stats",
+      "axonmind_graph_stats",
+    );
+  }
+
+  graphDiff(before: GraphExportV1, after: GraphExportV1): Promise<GraphDiff> {
+    return this.invokeWithFallback<GraphDiff>(
+      "graph_diff",
+      "axonmind_graph_diff",
+      { before, after },
+    );
   }
 
   suggestSummary(

@@ -7,6 +7,8 @@ export { useGraphSearch } from "./hooks/useGraphSearch";
 export { useEvidence } from "./hooks/useEvidence";
 export { useImpactRadius } from "./hooks/useImpactRadius";
 export { useEngineEvents } from "./hooks/useEngineEvents";
+export { useGraphStats } from "./hooks/useGraphStats";
+export { useGraphDiff } from "./hooks/useGraphDiff";
 
 export { TauriTransport } from "./transport/tauri";
 

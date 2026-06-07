@@ -7,6 +7,7 @@ pub mod mcp;
 pub mod pageindex;
 pub mod query;
 pub mod store;
+pub(crate) mod util;
 pub mod workers;
 
 use axonmind_core::{AxonMindError, EdgeKind, KpiAttrs, KpiUnit, Node, NodeId, NodeKind};
@@ -26,9 +27,10 @@ use crate::ingest::{
 use crate::pageindex::{PageIndexSearchCfg, PageIndexStore};
 use crate::query::{
     ExplainKpiInput, ExplainKpiOutput, FocusKpiInput, FocusKpiOutput, GetEvidenceInput,
-    GetEvidenceOutput, GraphSearchInput, GraphSearchOutput, ImpactRadiusInput, ImpactRadiusOutput,
-    ReasoningSearchInput, ReasoningSearchOutput, SuggestActionsInput, SuggestActionsOutput,
-    TraceDecisionInput, TraceDecisionOutput,
+    GetEvidenceOutput, GraphDiff, GraphSearchInput, GraphSearchOutput, GraphStatsOutput,
+    ImpactRadiusInput, ImpactRadiusOutput, NodeKindCount, ReasoningSearchInput,
+    ReasoningSearchOutput, SuggestActionsInput, SuggestActionsOutput, TraceDecisionInput,
+    TraceDecisionOutput,
 };
 use crate::store::{
     DocumentSummary, GraphCache, GraphMutation, GraphStore,
@@ -723,6 +725,105 @@ impl AxonMindEngine {
         pageindex::search::reasoning_search(input, &store, llm.as_deref(), &cfg).await
     }
 
+    pub async fn graph_stats(&self) -> Result<GraphStatsOutput, AxonMindError> {
+        let conn = self
+            .store
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(|conn| -> Result<GraphStatsOutput, AxonMindError> {
+            let total_nodes: i64 = conn
+                .query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let document_nodes: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM nodes WHERE kind = 'Document'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let total_edges: i64 = conn
+                .query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let total_evidence: i64 = conn
+                .query_row("SELECT COUNT(*) FROM evidence", [], |r| r.get(0))
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let avg_confidence: f64 = conn
+                .query_row(
+                    "SELECT COALESCE(AVG(confidence), 0.0) FROM nodes WHERE kind != 'Document'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let tainted_nodes: i64 = conn
+                .query_row("SELECT COUNT(*) FROM nodes WHERE is_tainted = 1", [], |r| {
+                    r.get(0)
+                })
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let tainted_edges: i64 = conn
+                .query_row("SELECT COUNT(*) FROM edges WHERE is_tainted = 1", [], |r| {
+                    r.get(0)
+                })
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let review_required_nodes: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM nodes WHERE requires_human_review = 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+
+            let mut stmt = conn
+                .prepare("SELECT kind, COUNT(*) FROM nodes GROUP BY kind ORDER BY kind")
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let nodes_by_kind: Vec<NodeKindCount> = stmt
+                .query_map([], |row| {
+                    let kind_str: String = row.get(0)?;
+                    let count: i64 = row.get(1)?;
+                    Ok((kind_str, count))
+                })
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .filter_map(|r| r.ok())
+                .filter_map(|(kind_str, count)| {
+                    let kind = serde_json::from_str::<axonmind_core::NodeKind>(&format!(
+                        "\"{}\"",
+                        kind_str
+                    ))
+                    .ok()?;
+                    Some(NodeKindCount {
+                        kind,
+                        count: count as usize,
+                    })
+                })
+                .collect();
+
+            Ok(GraphStatsOutput {
+                total_nodes: total_nodes as usize,
+                document_nodes: document_nodes as usize,
+                concept_nodes: (total_nodes - document_nodes) as usize,
+                total_edges: total_edges as usize,
+                total_evidence: total_evidence as usize,
+                avg_confidence,
+                tainted_nodes: tainted_nodes as usize,
+                tainted_edges: tainted_edges as usize,
+                review_required_nodes: review_required_nodes as usize,
+                nodes_by_kind,
+            })
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub fn graph_diff(
+        &self,
+        before: &query::GraphExportV1,
+        after: &query::GraphExportV1,
+    ) -> GraphDiff {
+        query::diff::diff_exports(before, after)
+    }
+
     // ── Export / import ───────────────────────────────────────────────────────
 
     /// Import a `GraphExportV1` into this workspace.
@@ -1328,6 +1429,62 @@ impl AxonMindEngine {
             .await
             .map_err(|e| AxonMindError::Database(format!("interact: {e}")))??;
         Ok(())
+    }
+
+    /// Walk `document_cache`, re-parse each blob, and repopulate the `page_*` tables without
+    /// touching graph tables. Skips documents whose page-index sha already matches.
+    /// Returns (processed, skipped, errors).
+    pub async fn rebuild_page_index(&self) -> Result<(usize, usize, Vec<String>), AxonMindError> {
+        let docs = self.store.list_document_summaries().await?;
+        let page_store = PageIndexStore::new(self.store.db.0.clone());
+        let llm = self.llm_provider.read().await.clone();
+
+        let mut processed = 0usize;
+        let mut skipped = 0usize;
+        let mut errors: Vec<String> = Vec::new();
+
+        for doc in docs {
+            let (sha, src) = match (doc.sha256, doc.source_path) {
+                (Some(s), Some(p)) => (s, p),
+                _ => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+
+            let blob_path = self.config.blob_dir.join(&sha);
+            let bytes = match tokio::fs::read(&blob_path).await {
+                Ok(b) => b,
+                Err(e) => {
+                    errors.push(format!("{}: blob read failed: {e}", doc.node_id));
+                    continue;
+                }
+            };
+
+            let path = std::path::PathBuf::from(&src);
+            let normalized = match dispatch_parse(&path, &bytes) {
+                Ok(d) => d,
+                Err(e) => {
+                    errors.push(format!("{}: parse failed: {e}", doc.node_id));
+                    continue;
+                }
+            };
+
+            match pageindex::index_document(
+                &normalized,
+                &doc.node_id,
+                &page_store,
+                llm.as_deref(),
+                &self.config,
+            )
+            .await
+            {
+                Ok(()) => processed += 1,
+                Err(e) => errors.push(format!("{}: index failed: {e}", doc.node_id)),
+            }
+        }
+
+        Ok((processed, skipped, errors))
     }
 }
 

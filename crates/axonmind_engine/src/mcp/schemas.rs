@@ -130,5 +130,22 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 "required": ["query"]
             }),
         },
+        ToolDef {
+            name: "graph_stats",
+            description: "Return node/edge/evidence counts, average confidence, taint and review-required counts, and a per-kind node breakdown.",
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDef {
+            name: "graph_diff",
+            description: "Diff two GraphExportV1 snapshots. Returns added/removed/modified nodes and edges keyed by stable logical identity (not UUID).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "before": { "type": "object", "description": "GraphExportV1 JSON of the before state (produced by export-json)." },
+                    "after":  { "type": "object", "description": "GraphExportV1 JSON of the after state." }
+                },
+                "required": ["before", "after"]
+            }),
+        },
     ]
 }

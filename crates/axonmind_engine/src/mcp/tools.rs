@@ -4,8 +4,8 @@ use serde_json::Value;
 use crate::AxonMindEngine;
 use crate::mcp::schemas::{self, ToolDef};
 use crate::query::{
-    ExplainKpiInput, FocusKpiInput, GetEvidenceInput, GraphSearchInput, ImpactRadiusInput,
-    ReasoningSearchInput, SuggestActionsInput, TraceDecisionInput,
+    ExplainKpiInput, FocusKpiInput, GetEvidenceInput, GraphExportV1, GraphSearchInput,
+    ImpactRadiusInput, ReasoningSearchInput, SuggestActionsInput, TraceDecisionInput, diff_exports,
 };
 
 pub fn list_tools() -> Vec<ToolDef> {
@@ -62,6 +62,16 @@ pub async fn call_tool(
                 .reasoning_search(parse!(ReasoningSearchInput))
                 .await?
         )),
+        "graph_stats" => Ok(serialize!(engine.graph_stats().await?)),
+        "graph_diff" => {
+            #[derive(serde::Deserialize)]
+            struct GraphDiffArgs {
+                before: GraphExportV1,
+                after: GraphExportV1,
+            }
+            let parsed = parse!(GraphDiffArgs);
+            Ok(serialize!(diff_exports(&parsed.before, &parsed.after)))
+        }
         _ => Err(AxonMindError::ToolNotFound {
             name: name.to_owned(),
         }),

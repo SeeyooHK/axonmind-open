@@ -15,6 +15,7 @@ function makeTransport(overrides: Partial<AxonMindTransport> = {}): AxonMindTran
     listDocuments: stub, removeDocument: stub, regenerateDocument: stub,
     indexPath: stub, indexMarkdown: stub,
     createGenerationFromPaths: stub, listGenerations: stub, exportGeneration: stub,
+    graphStats: stub, graphDiff: stub,
     ...overrides,
   }
 }
