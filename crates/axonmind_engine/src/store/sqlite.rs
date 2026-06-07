@@ -45,6 +45,15 @@ impl GraphDb {
         let pool = config
             .builder(Runtime::Tokio1)
             .map_err(|e| AxonMindError::Database(format!("pool builder: {e}")))?
+            .post_create(deadpool_sqlite::Hook::async_fn(|conn, _| {
+                Box::pin(async move {
+                    conn.interact(|c| c.execute_batch("PRAGMA foreign_keys = ON;"))
+                        .await
+                        .map_err(|e| deadpool_sqlite::HookError::Message(e.to_string().into()))?
+                        .map_err(|e| deadpool_sqlite::HookError::Message(e.to_string().into()))?;
+                    Ok(())
+                })
+            }))
             .build()
             .map_err(|e| AxonMindError::Database(format!("pool build: {e}")))?;
 

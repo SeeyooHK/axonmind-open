@@ -8,11 +8,12 @@ interface RejectedEntry {
 interface Props {
   acceptedCount: number;
   rejected: RejectedEntry[];
+  onAddAttachment: () => void;
   onConfirm: () => void;
   onCancel: () => void;
 }
 
-export function FolderSummaryModal({ acceptedCount, rejected, onConfirm, onCancel }: Props) {
+export function FolderSummaryModal({ acceptedCount, rejected, onAddAttachment, onConfirm, onCancel }: Props) {
   return (
     <div style={{
       position: "fixed", inset: 0, zIndex: 100,
@@ -56,25 +57,33 @@ export function FolderSummaryModal({ acceptedCount, rejected, onConfirm, onCance
           </>
         )}
 
-        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: rejected.length === 0 ? 16 : 0 }}>
+        <div style={{ display: "flex", gap: 10, justifyContent: "space-between", marginTop: rejected.length === 0 ? 16 : 0 }}>
           <button
-            onClick={onCancel}
-            style={{ padding: "8px 18px", borderRadius: 8, border: "1px solid #334155", background: "transparent", color: "#94a3b8", fontSize: 13, cursor: "pointer" }}
+            onClick={onAddAttachment}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #334155", background: "transparent", color: "#cbd5e1", fontSize: 13, cursor: "pointer" }}
           >
-            Cancel
+            + Add Attachment
           </button>
-          <button
-            onClick={onConfirm}
-            disabled={acceptedCount === 0}
-            style={{
-              padding: "8px 18px", borderRadius: 8, border: "none",
-              background: acceptedCount > 0 ? "#254cff" : "#1e293b",
-              color: acceptedCount > 0 ? "#fff" : "#475569",
-              fontSize: 13, fontWeight: 600, cursor: acceptedCount > 0 ? "pointer" : "not-allowed",
-            }}
-          >
-            Index {acceptedCount} {acceptedCount === 1 ? "file" : "files"}
-          </button>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button
+              onClick={onCancel}
+              style={{ padding: "8px 18px", borderRadius: 8, border: "1px solid #334155", background: "transparent", color: "#94a3b8", fontSize: 13, cursor: "pointer" }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={onConfirm}
+              disabled={acceptedCount === 0}
+              style={{
+                padding: "8px 18px", borderRadius: 8, border: "none",
+                background: acceptedCount > 0 ? "#254cff" : "#1e293b",
+                color: acceptedCount > 0 ? "#fff" : "#475569",
+                fontSize: 13, fontWeight: 600, cursor: acceptedCount > 0 ? "pointer" : "not-allowed",
+              }}
+            >
+              Index {acceptedCount} {acceptedCount === 1 ? "file" : "files"}
+            </button>
+          </div>
         </div>
       </div>
     </div>

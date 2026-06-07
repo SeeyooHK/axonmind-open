@@ -40,9 +40,12 @@ export class TauriTransport implements AxonMindTransport {
     fallbackCommand: string,
     args?: Record<string, unknown>,
   ): Promise<T> {
-    return this.invoke<T>(CMD(pluginCommand), args).catch(() =>
-      this.invoke<T>(fallbackCommand, args),
-    );
+    return this.invoke<T>(CMD(pluginCommand), args).catch((primaryErr) => {
+      console.warn(`[AxonMind] Primary command ${pluginCommand} failed:`, primaryErr);
+      return this.invoke<T>(fallbackCommand, args).catch((fallbackErr) => {
+        throw primaryErr; // throw the primary error so it bubbles up accurately
+      });
+    });
   }
 
   focusKpi(input: FocusKpiInput): Promise<FocusKpiOutput> {

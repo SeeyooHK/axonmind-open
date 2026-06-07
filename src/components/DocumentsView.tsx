@@ -9,6 +9,7 @@ import { useAxonMind, toGraphElements } from "@axonmind/react";
 import type { AxonGraphElements, AxonGraphNode } from "@axonmind/react";
 import { DiffToast } from "./DiffToast";
 import type { GraphDiff, GraphExportV1 } from "@axonmind/types";
+import { GraphDiffModal } from "./GraphDiffModal";
 
 // One-line "what changed" banner for the re-index toast.
 function formatDiffSummary(diff: GraphDiff, after: GraphExportV1): string | null {
@@ -56,6 +57,20 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<{ message: string; run: () => Promise<void> } | null>(null);
+  const [storedDiffs, setStoredDiffs] = useState<Record<string, {
+    fileName: string;
+    completedAt: string;
+    beforeCount: { nodes: number; edges: number };
+    afterCount: { nodes: number; edges: number };
+    diff: GraphDiff;
+  }>>({});
+  const [graphDiffResult, setGraphDiffResult] = useState<{
+    fileName: string;
+    completedAt: string;
+    beforeCount: { nodes: number; edges: number };
+    afterCount: { nodes: number; edges: number };
+    diff: GraphDiff;
+  } | null>(null);
   const [summaryData, setSummaryData] = useState<Summary | null>(null);
   const [summaryView, setSummaryView] = useState<"graph" | "json">("graph");
   const [summaryBusy, setSummaryBusy] = useState(false);
@@ -182,9 +197,38 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
       run: async () => {
         setBusyId(id); setBusyKind("regenerating");
         try {
-          await withDiffToast(async () => {
-            await regenerateOne(id);
-          });
+          let before: GraphExportV1 | null = null;
+          try { before = await transport.exportJson(); } catch (e) { console.warn("Failed to export before:", e); }
+          
+          await regenerateOne(id);
+          
+          let after: GraphExportV1 | null = null;
+          if (before) {
+            try { after = await transport.exportJson(); } catch (e) { console.warn("Failed to export after:", e); }
+          }
+
+          if (before && after) {
+            try {
+              const diff = await transport.graphDiff(before, after);
+              const summary = formatDiffSummary(diff, after);
+              if (summary) setDiffToast(summary);
+
+              setStoredDiffs(prev => ({
+                ...prev,
+                [id]: {
+                  fileName: label,
+                  completedAt: new Date().toISOString(),
+                  beforeCount: { nodes: before.nodes.length, edges: before.edges.length },
+                  afterCount: { nodes: after.nodes.length, edges: after.edges.length },
+                  diff,
+                }
+              }));
+            } catch (err) {
+              console.warn("Failed to compute graph diff:", err);
+              setDiffToast(`Graph Diff Error: ${err}`);
+            }
+          }
+
           await reload();
           onChanged?.();
         } catch (e) { setError(String(e)); } finally { setBusyId(null); setBusyKind(null); }
@@ -227,7 +271,7 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
     });
   }
 
-  async function revealPath(d: DocumentSummary) {
+  async function copyPath(d: DocumentSummary) {
     if (!d.source_path) return;
     try {
       await navigator.clipboard.writeText(d.source_path);
@@ -361,7 +405,21 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
                     <tr style={{ borderTop: "1px solid #1e293b" }}>
                       <td style={td}><input type="checkbox" checked={selected.has(d.node_id)} onChange={() => toggleSelect(d.node_id)} /></td>
                       <td style={{ ...td, textAlign: "left", maxWidth: 420 }}>
-                        <div style={{ color: "#e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                          <div style={{ color: "#e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                            {d.name}
+                          </div>
+                          {d.source_path && (
+                            <button
+                              onClick={() => void copyPath(d)}
+                              title={copiedId === d.node_id ? "Copied" : "Copy file path"}
+                              aria-label="Copy file path"
+                              style={copyIconBtn}
+                            >
+                              <CopyIcon copied={copiedId === d.node_id} />
+                            </button>
+                          )}
+                        </div>
                         {d.source_path && <div style={{ color: "#475569", fontSize: 11, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.source_path}</div>}
                       </td>
                       <td style={{ ...td, color: "#94a3b8", fontSize: 11, whiteSpace: "nowrap" }}>{new Date(d.indexed_at * 1000).toLocaleDateString()}</td>
@@ -370,7 +428,7 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
                       <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
                         {busy ? (
                           <div style={{ display: "inline-block", minWidth: 200, textAlign: "left" }}>
-                            <IndeterminateBar label={busyKind === "regenerating" ? "Regenerating… (AI, may take a while)" : "Removing…"} />
+                            <IndeterminateBar label={busyLabel(busyKind)} />
                           </div>
                         ) : (
                           <>
@@ -385,7 +443,17 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
                               style={actionBtn}
                               title="Inspect"
                             >Inspect</button>
-                            <button onClick={() => void revealPath(d)} disabled={!d.source_path} style={actionBtn} title="Copy file path">{copiedId === d.node_id ? "Copied" : "Reveal"}</button>
+                            <button
+                              onClick={() => {
+                                const stored = storedDiffs[d.node_id];
+                                if (stored) setGraphDiffResult(stored);
+                              }}
+                              disabled={!storedDiffs[d.node_id]}
+                              style={{ ...actionBtn, opacity: storedDiffs[d.node_id] ? 1 : 0.5, cursor: storedDiffs[d.node_id] ? "pointer" : "default" }}
+                              title={storedDiffs[d.node_id] ? "View last captured graph diff" : "No graph diff captured yet"}
+                            >
+                              Graph Diff
+                            </button>
                             <button onClick={() => askRegenerate(d.node_id, d.name)} style={actionBtn} title="Reprocess from scratch">Regenerate</button>
                             <button onClick={() => askRemove(d.node_id, d.name)} style={{ ...actionBtn, color: "#f87171", borderColor: "#7f1d1d" }} title="Remove">Remove</button>
                           </>
@@ -525,6 +593,13 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
       )}
 
       {diffToast && <DiffToast message={diffToast} onClose={() => setDiffToast(null)} />}
+      
+      {graphDiffResult && (
+        <GraphDiffModal
+          {...graphDiffResult}
+          onClose={() => setGraphDiffResult(null)}
+        />
+      )}
     </div>
   );
 }
@@ -559,3 +634,35 @@ const pageBtn: React.CSSProperties = {
   fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "1px solid #334155",
   background: "transparent", color: "#94a3b8", cursor: "pointer",
 };
+const copyIconBtn: React.CSSProperties = {
+  flexShrink: 0,
+  width: 22,
+  height: 22,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  border: "1px solid transparent",
+  borderRadius: 5,
+  background: "transparent",
+  color: "#64748b",
+  cursor: "pointer",
+};
+
+function CopyIcon({ copied }: { copied: boolean }) {
+  return copied ? (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  ) : (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="9" y="9" width="13" height="13" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+function busyLabel(kind: "removing" | "regenerating" | null): string {
+  if (kind === "regenerating") return "Regenerating... (AI, may take a while)";
+  if (kind === "removing") return "Removing...";
+  return "Working...";
+}

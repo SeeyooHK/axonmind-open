@@ -16,6 +16,7 @@ fn ensure_workspace(workspace_dir: &PathBuf) -> Result<(), Box<dyn std::error::E
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let workspace_dir = app.path().app_data_dir()?.join("axonmind");
             ensure_workspace(&workspace_dir)?;

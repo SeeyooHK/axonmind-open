@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useAxonMind, toGraphElements } from "@axonmind/react";
 import type { AxonGraphElements, AxonGraphNode, AxonGraphEdge } from "@axonmind/react";
 import type { GraphDiff, GraphExportV1 } from "@axonmind/types";
@@ -28,6 +29,10 @@ interface FolderSummaryState {
   rootPaths: string[];
   accepted: Array<{ path: string; displayPath: string }>;
   rejected: Array<{ displayPath: string; reason: string }>;
+}
+
+interface PathSummary extends FolderSummaryState {
+  hasDir: boolean;
 }
 
 function computeDisplayPath(filePath: string, dropRoot: string): string {
@@ -173,7 +178,7 @@ export function AppShell() {
 
   // ── Drop handling ─────────────────────────────────────────────────────────────
 
-  const onPaths = useCallback(async (rawPaths: string[]) => {
+  const summarizePaths = useCallback(async (rawPaths: string[]): Promise<PathSummary | null> => {
     setDropError(null);
     let results: Array<{ root: string; entries: DirFileEntry[]; isDir: boolean }>;
     try {
@@ -186,7 +191,7 @@ export function AppShell() {
       );
     } catch (err) {
       setDropError(`list_dir_files failed — restart bun tauri dev so Rust recompiles. ${String(err)}`);
-      return;
+      return null;
     }
 
     const accepted: Array<{ path: string; displayPath: string }> = [];
@@ -205,12 +210,71 @@ export function AppShell() {
       }
     }
 
-    if (hasDir) {
-      setFolderSummary({ rootPaths: rawPaths, accepted, rejected });
+    return { rootPaths: rawPaths, accepted, rejected, hasDir };
+  }, []);
+
+  const onPaths = useCallback(async (rawPaths: string[]) => {
+    const summary = await summarizePaths(rawPaths);
+    if (!summary) return;
+
+    if (summary.hasDir) {
+      setFolderSummary({
+        rootPaths: summary.rootPaths,
+        accepted: summary.accepted,
+        rejected: summary.rejected,
+      });
     } else {
-      addToStaging(accepted, rawPaths);
+      addToStaging(summary.accepted, summary.rootPaths);
     }
-  }, [addToStaging]);
+  }, [addToStaging, summarizePaths]);
+
+  const addAttachmentToFolderSummary = useCallback(async () => {
+    let selected: string | string[] | null;
+    try {
+      selected = await open({
+        multiple: true,
+        filters: [{
+          name: "Documents",
+          extensions: ["md", "txt", "csv", "xlsx", "docx", "pdf", "pptx"],
+        }],
+      });
+    } catch (err) {
+      setDropError(`open file dialog failed. ${String(err)}`);
+      return;
+    }
+
+    if (!selected) return;
+    const rawPaths = Array.isArray(selected) ? selected : [selected];
+    if (rawPaths.length === 0) return;
+
+    const summary = await summarizePaths(rawPaths);
+    if (!summary) return;
+
+    setFolderSummary(prev => {
+      if (!prev) {
+        return {
+          rootPaths: summary.rootPaths,
+          accepted: summary.accepted,
+          rejected: summary.rejected,
+        };
+      }
+
+      const existingPaths = new Set(prev.accepted.map(f => f.path));
+      const accepted = [...prev.accepted];
+      for (const file of summary.accepted) {
+        if (!existingPaths.has(file.path)) {
+          existingPaths.add(file.path);
+          accepted.push(file);
+        }
+      }
+
+      return {
+        rootPaths: [...prev.rootPaths, ...summary.rootPaths],
+        accepted,
+        rejected: [...prev.rejected, ...summary.rejected],
+      };
+    });
+  }, [summarizePaths]);
 
   const confirmFolderSummary = useCallback(() => {
     if (!folderSummary) return;
@@ -306,6 +370,7 @@ export function AppShell() {
           <FolderSummaryModal
             acceptedCount={folderSummary.accepted.length}
             rejected={folderSummary.rejected}
+            onAddAttachment={addAttachmentToFolderSummary}
             onConfirm={confirmFolderSummary}
             onCancel={() => setFolderSummary(null)}
           />

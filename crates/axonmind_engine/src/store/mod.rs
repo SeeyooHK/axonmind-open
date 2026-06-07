@@ -513,8 +513,27 @@ fn apply_in_tx(
             // FTS5 must be deleted manually before the node row (no FK cascade on virtual tables)
             conn.execute("DELETE FROM search_index WHERE node_id=?1", [&node_id.0])
                 .map_err(|e| AxonMindError::Database(e.to_string()))?;
+
+            // Delete the node, which cascades to evidence and edge_evidence, and edges attached directly
             conn.execute("DELETE FROM nodes WHERE id=?1", [&node_id.0])
                 .map_err(|e| AxonMindError::Database(e.to_string()))?;
+
+            // Clean up any edges that lost all their evidence due to the cascade
+            let mut stmt = conn
+                .prepare("SELECT id, from_id, to_id FROM edges WHERE NOT EXISTS (SELECT 1 FROM edge_evidence WHERE edge_id = edges.id)")
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let orphaned_edges: Vec<(String, String, String)> = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            for (edge_id, from_id, to_id) in orphaned_edges {
+                conn.execute("DELETE FROM edges WHERE id=?1", [&edge_id])
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                sqlite::sync_node_fts(conn, &from_id)?;
+                sqlite::sync_node_fts(conn, &to_id)?;
+            }
 
             Ok((
                 GraphOp::RemoveNode(node_id.clone()),
