@@ -13,6 +13,40 @@ use async_trait::async_trait;
 use axonmind_core::AxonMindError;
 use serde::{Deserialize, Serialize};
 
+/// Strip markdown fences and provider preambles around a JSON object.
+#[cfg(any(feature = "llm", test))]
+pub(crate) fn extract_json_object(text: &str) -> &str {
+    let t = strip_json_fences(text);
+    if t.starts_with('{') {
+        return t;
+    }
+    let Some(start) = t.find('{') else {
+        return t;
+    };
+    let Some(end) = t.rfind('}') else {
+        return t;
+    };
+    if end <= start {
+        return t;
+    }
+    t[start..=end].trim()
+}
+
+#[cfg(any(feature = "llm", test))]
+fn strip_json_fences(text: &str) -> &str {
+    let t = text.trim();
+    if let Some(inner) = t
+        .strip_prefix("```json")
+        .and_then(|s| s.strip_suffix("```"))
+    {
+        inner.trim()
+    } else if let Some(inner) = t.strip_prefix("```").and_then(|s| s.strip_suffix("```")) {
+        inner.trim()
+    } else {
+        t
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityExtractionInput {
     pub document_text: String,
@@ -105,7 +139,8 @@ pub trait LlmProvider: Send + Sync {
 
     /// Transcribe an image to markdown text using the provider's vision capability.
     /// `bytes` is the raw image data; `mime_type` is e.g. "image/png".
-    /// Default returns Err so providers that don't support vision fall back to Tesseract.
+    /// Default returns Err; `parse_with_llm` will attempt Tesseract OCR on failure, then surface
+    /// this error if OCR is also unavailable.
     async fn transcribe_image(
         &self,
         _bytes: &[u8],
@@ -114,5 +149,26 @@ pub trait LlmProvider: Send + Sync {
         Err(AxonMindError::LlmProvider(
             "vision not supported by this provider".into(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_json_object;
+
+    #[test]
+    fn extracts_json_from_fenced_output() {
+        assert_eq!(
+            extract_json_object("```json\n{\"entities\":[]}\n```"),
+            "{\"entities\":[]}"
+        );
+    }
+
+    #[test]
+    fn extracts_json_from_provider_preamble() {
+        assert_eq!(
+            extract_json_object("Sure, here is the JSON:\n{\"entities\":[]}\nDone."),
+            "{\"entities\":[]}"
+        );
     }
 }

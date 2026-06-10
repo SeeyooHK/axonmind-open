@@ -104,6 +104,10 @@ cargo run -p axonmind_cli -- query --workspace ./demo --json focus-kpi kpi.reven
 # 5. 추론 기반 검색을 구동하거나 MCP 서버를 시작합니다.
 cargo run -p axonmind_cli -- query --workspace ./demo reasoning-search "what drives revenue?"
 cargo run -p axonmind_cli -- mcp --workspace ./demo
+
+# 6. 그래프 통계 검사 또는 내보낸 두 스냅샷의 차이 비교.
+cargo run -p axonmind_cli -- graph-stats --workspace ./demo
+cargo run -p axonmind_cli -- graph-diff before.json after.json
 ```
 
 기본 규칙 추출기는 헤더에서 KPI를 감지하고, 동일한 단락에 명명된 KPI가 "influences"나 "blocks" 같은 연결 표현과 함께 나타날 때 주도/차단 에지를 생성합니다. 이러한 패턴이 없는 문서는 관계가 없는 KPI 노드만 생성할 수 있으며 이는 정상입니다. 자유로운 텍스트에서 더 복잡하고 유기적인 관계를 찾아내려면 선택적인 LLM 추출 방식을 사용하십시오.
@@ -148,7 +152,7 @@ bun run build
 bun run tauri:build
 ```
 
-현재 로컬 검증은 159개의 Rust 테스트와 19개의 TypeScript 테스트를 다룹니다.
+현재 로컬 검증은 193개의 Rust 테스트와 19개의 TypeScript 테스트를 다룹니다.
 
 ## 선택적 기능
 
@@ -289,11 +293,13 @@ src-tauri/          로컬 데모 프로그램의 메인 호스트 코드
 | 관계 추출 | 기본적 규칙 감지 엔진 내장 및 선택적 LLM 관계 추출 지원 |
 | 분석 범위 제어 | 단일 문서 분석, 일부 선택 문서군 분석, 혹은 인덱싱된 전체 라이브러리 분석 |
 | 비즈니스 쿼리 | 특정 KPI 집중 탐색, KPI 분석 설명, 증거 찾기, 영향 반경 계산, 결정 추적, 추천 액션 제안, 그래프 검색, 추론 검색 |
+| 그래프 비교 | 두 그래프 스냅샷 간의 타입 지정된 이전/이후 비교 — 변경된 필드 목록과 함께 추가, 수정 및 제거된 노드와 에지 표시 |
+| 그래프 통계 | 엔진 메서드, CLI 및 MCP 도구를 통한 유형별 노드 수 및 총 에지 수 |
 | 증거 추적성 | 관계를 나타내는 연결선과 원문 텍스트 내 스팬 정보가 일급 시민 데이터로 저장됨 |
 | 비동기 워커 | KPI 자동 감지 및 KPI 재계산 인프라 탑재 |
 | SDK 지원 | 자동 생성된 TypeScript 타입 정의, React 전용 훅, Tauri 인터페이스 계층 제공 |
 | 연동성 | AI 에이전트를 위한 표준 MCP(Model Context Protocol) 서버 |
-| 데모 환경 | Brain Map 시각화 화면, 문서 관리 목록, 좌우 배치형 속성 검사기 및 설정 화면을 탑재한 로컬 Tauri 앱 |
+| 데모 환경 | Brain Map 시각화 화면, 문서 관리 목록, 그래프 비교 모달, 좌우 배치형 속성 검사기 및 설정 화면을 탑재한 로컬 Tauri 앱 |
 
 ## 주요 불변값
 

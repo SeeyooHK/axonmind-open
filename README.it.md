@@ -104,6 +104,10 @@ cargo run -p axonmind_cli -- query --workspace ./demo --json focus-kpi kpi.reven
 # 5. Esegui il recupero basato sul ragionamento o avvia il server MCP.
 cargo run -p axonmind_cli -- query --workspace ./demo reasoning-search "what drives revenue?"
 cargo run -p axonmind_cli -- mcp --workspace ./demo
+
+# 6. Ispeziona le statistiche del grafo o confronta due snapshot esportati.
+cargo run -p axonmind_cli -- graph-stats --workspace ./demo
+cargo run -p axonmind_cli -- graph-diff before.json after.json
 ```
 
 L'estrattore di regole predefinito rileva i KPI dalle intestazioni e crea archi driver/blocker quando i KPI denominati appaiono nello stesso paragrafo con parole di collegamento come "influences" o "blocks". I documenti senza questi pattern possono produrre nodi KPI senza relazioni; questo è previsto. Utilizza l'estrazione LLM opzionale quando hai bisogno di una scoperta delle relazioni più ricca dalla prosa libera.
@@ -148,7 +152,7 @@ bun run build
 bun run tauri:build
 ```
 
-La validazione locale attuale copre 159 test Rust e 19 test TypeScript.
+La validazione locale attuale copre 193 test Rust e 19 test TypeScript.
 
 ## Funzionalità Opzionali
 
@@ -289,11 +293,13 @@ src-tauri/          Host demo locale minimale
 | Estrazione | Regole deterministiche per impostazione predefinita; estrazione LLM opzionale |
 | Analisi dell'ambito | Analizza un documento, documenti selezionati o l'intera libreria indicizzata |
 | Query | Focus KPI, spiega KPI, ricerca prove, raggio di impatto, tracciamento decisioni, suggerimento azioni, ricerca nel grafo, ricerca ragionamento |
+| Confronto grafo | Confronto tipizzato prima/dopo di due snapshot di grafi — nodi ed archi aggiunti, modificati e rimossi con elenchi di campi modificati |
+| Statistiche grafo | Conteggio dei nodi per tipo e conteggio totale degli archi tramite metodo del motore, CLI e strumento MCP |
 | Prove | Riferimenti alle relazioni e intervalli di origine sono dati del grafo di prima classe |
 | Worker | Infrastruttura di scoperta KPI e ricalcolo KPI |
 | SDK | Tipi TypeScript generati, hook React, trasporto Tauri |
 | Integrazione | Server MCP (Model Context Protocol) standard per agenti AI |
-| Demo | App Tauri locale con Brain Map, elenco documenti, inspector affiancato e impostazioni |
+| Demo | App Tauri locale con Brain Map, elenco documenti, modal di confronto grafo, inspector affiancato e impostazioni |
 
 ## Invarianti Chiave
 

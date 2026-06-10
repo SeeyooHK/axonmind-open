@@ -26,7 +26,9 @@ pub async fn parse_with_llm(
     let mime = mime_for_path(path);
     match llm.transcribe_image(bytes, mime).await {
         Ok(text) => super::markdown::parse_text(path, &text, sha256),
-        Err(_) => parse(path, bytes),
+        // OCR fallback: if OCR feature is absent or Tesseract unavailable, surface the LLM error
+        // (more actionable than "rebuild with --features ocr").
+        Err(llm_err) => parse(path, bytes).map_err(|_| llm_err),
     }
 }
 

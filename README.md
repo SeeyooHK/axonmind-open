@@ -105,6 +105,10 @@ cargo run -p axonmind_cli -- query --workspace ./demo --json focus-kpi kpi.reven
 # 5. Run reasoning-based retrieval or start the MCP server.
 cargo run -p axonmind_cli -- query --workspace ./demo reasoning-search "what drives revenue?"
 cargo run -p axonmind_cli -- mcp --workspace ./demo
+
+# 6. Inspect graph stats or diff two exported snapshots.
+cargo run -p axonmind_cli -- graph-stats --workspace ./demo
+cargo run -p axonmind_cli -- graph-diff before.json after.json
 ```
 
 The default rule extractor detects KPIs from headings and creates driver/blocker edges when named KPIs appear in the same paragraph with linking language such as "influences" or "blocks". Documents without those patterns may produce KPI nodes without relationships; that is expected. Use optional LLM extraction when you need richer relationship discovery from free-form prose.
@@ -149,7 +153,7 @@ bun run build
 bun run tauri:build
 ```
 
-Current local validation covers 159 Rust tests and 19 TypeScript tests.
+Current local validation covers 193 Rust tests and 19 TypeScript tests.
 
 ## Optional Features
 
@@ -290,11 +294,13 @@ src-tauri/          Minimal local demo host
 | Extraction | Deterministic rules by default; optional LLM extraction |
 | Scope analysis | Analyze one document, selected documents, or the full indexed library |
 | Queries | KPI focus, explain KPI, evidence lookup, impact radius, trace decision, suggest actions, graph search, reasoning search |
+| Graph diff | Typed before/after diff of any two graph snapshots — added, modified, and removed nodes and edges with changed-field lists |
+| Graph stats | Per-kind node counts and total edge count via engine method, CLI, and MCP tool |
 | Evidence | Relationship citations and source spans are first-class graph data |
 | Workers | KPI discovery and KPI recomputation infrastructure |
 | SDK | Generated TypeScript types, React hooks, Tauri transport |
 | Integration | Standard MCP (Model Context Protocol) server for AI agents |
-| Demo | Local Tauri app with Brain Map, document list, side-by-side file inspector, and settings |
+| Demo | Local Tauri app with Brain Map, document list, graph diff modal, side-by-side file inspector, and settings |
 
 ## Key Invariants
 

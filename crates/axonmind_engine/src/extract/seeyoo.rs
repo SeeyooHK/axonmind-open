@@ -1,6 +1,7 @@
 use super::llm::{
     EntityExtractionInput, EntityExtractionOutput, LlmProvider, RelationExtractionInput,
     RelationExtractionOutput, SemanticLink, SemanticLinkInput, SemanticLinkOutput,
+    extract_json_object,
 };
 use async_trait::async_trait;
 use axonmind_core::AxonMindError;
@@ -42,21 +43,6 @@ impl SeeyooAdapter {
     }
 }
 
-/// Strip markdown code fences that some providers wrap around JSON output.
-fn strip_json_fences(text: &str) -> &str {
-    let t = text.trim();
-    if let Some(inner) = t
-        .strip_prefix("```json")
-        .and_then(|s| s.strip_suffix("```"))
-    {
-        inner.trim()
-    } else if let Some(inner) = t.strip_prefix("```").and_then(|s| s.strip_suffix("```")) {
-        inner.trim()
-    } else {
-        t
-    }
-}
-
 async fn complete_json(
     provider: &dyn ApiProvider,
     api_key: &str,
@@ -89,7 +75,7 @@ impl LlmProvider for SeeyooAdapter {
             user,
         )
         .await?;
-        Ok(strip_json_fences(&raw).to_string())
+        Ok(extract_json_object(&raw).to_string())
     }
 
     async fn extract_entities(
@@ -128,11 +114,14 @@ impl LlmProvider for SeeyooAdapter {
         )
         .await?;
 
+        if raw.trim().is_empty() {
+            return Ok(EntityExtractionOutput { entities: vec![] });
+        }
         #[derive(Deserialize)]
         struct Resp {
             entities: Vec<(String, String, String)>,
         }
-        let parsed: Resp = serde_json::from_str(strip_json_fences(&raw))
+        let parsed: Resp = serde_json::from_str(extract_json_object(&raw))
             .map_err(|e| AxonMindError::LlmProvider(format!("entity parse: {e}")))?;
 
         Ok(EntityExtractionOutput {
@@ -172,7 +161,7 @@ impl LlmProvider for SeeyooAdapter {
             confidence: f32,
             quote: String,
         }
-        let parsed: Resp = serde_json::from_str(strip_json_fences(&raw))
+        let parsed: Resp = serde_json::from_str(extract_json_object(&raw))
             .map_err(|e| AxonMindError::LlmProvider(format!("relation parse: {e}")))?;
 
         Ok(RelationExtractionOutput {
@@ -219,7 +208,7 @@ impl LlmProvider for SeeyooAdapter {
         struct Resp {
             links: Vec<SemanticLink>,
         }
-        let parsed: Resp = serde_json::from_str(strip_json_fences(&raw))
+        let parsed: Resp = serde_json::from_str(extract_json_object(&raw))
             .map_err(|e| AxonMindError::LlmProvider(format!("semantic link parse: {e}")))?;
 
         Ok(SemanticLinkOutput {
@@ -227,7 +216,11 @@ impl LlmProvider for SeeyooAdapter {
         })
     }
 
-    async fn transcribe_image(&self, bytes: &[u8], mime_type: &str) -> Result<String, AxonMindError> {
+    async fn transcribe_image(
+        &self,
+        bytes: &[u8],
+        mime_type: &str,
+    ) -> Result<String, AxonMindError> {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
         let data_base64 = STANDARD.encode(bytes);
         let messages = vec![ProviderMessage::User(vec![
@@ -285,7 +278,7 @@ impl LlmProvider for SeeyooAdapter {
         struct Resp {
             rationale: String,
         }
-        let parsed: Resp = serde_json::from_str(strip_json_fences(&raw))
+        let parsed: Resp = serde_json::from_str(extract_json_object(&raw))
             .map_err(|e| AxonMindError::LlmProvider(format!("rationale parse: {e}")))?;
 
         Ok(parsed.rationale)

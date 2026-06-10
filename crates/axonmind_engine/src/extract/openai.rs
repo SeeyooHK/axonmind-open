@@ -1,6 +1,7 @@
 use super::llm::{
     EntityExtractionInput, EntityExtractionOutput, LlmProvider, RelationExtractionInput,
     RelationExtractionOutput, SemanticLink, SemanticLinkInput, SemanticLinkOutput,
+    extract_json_object,
 };
 use async_trait::async_trait;
 use axonmind_core::AxonMindError;
@@ -116,12 +117,15 @@ impl LlmProvider for OpenAiProvider {
         );
 
         let content = self.complete_json(&system, &input.document_text).await?;
+        if content.trim().is_empty() {
+            return Ok(EntityExtractionOutput { entities: vec![] });
+        }
 
         #[derive(Deserialize)]
         struct Resp {
             entities: Vec<(String, String, String)>,
         }
-        let parsed: Resp = serde_json::from_str(&content)
+        let parsed: Resp = serde_json::from_str(extract_json_object(&content))
             .map_err(|e| AxonMindError::LlmProvider(format!("entity parse: {e}")))?;
 
         Ok(EntityExtractionOutput {
@@ -153,7 +157,7 @@ impl LlmProvider for OpenAiProvider {
             confidence: f32,
             quote: String,
         }
-        let parsed: Resp = serde_json::from_str(&content)
+        let parsed: Resp = serde_json::from_str(extract_json_object(&content))
             .map_err(|e| AxonMindError::LlmProvider(format!("relation parse: {e}")))?;
 
         Ok(RelationExtractionOutput {
@@ -192,12 +196,59 @@ impl LlmProvider for OpenAiProvider {
         struct Resp {
             links: Vec<SemanticLink>,
         }
-        let parsed: Resp = serde_json::from_str(&content)
+        let parsed: Resp = serde_json::from_str(extract_json_object(&content))
             .map_err(|e| AxonMindError::LlmProvider(format!("semantic link parse: {e}")))?;
 
         Ok(SemanticLinkOutput {
             links: parsed.links,
         })
+    }
+
+    async fn transcribe_image(
+        &self,
+        bytes: &[u8],
+        mime_type: &str,
+    ) -> Result<String, AxonMindError> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let data_url = format!("data:{};base64,{}", mime_type, STANDARD.encode(bytes));
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let body = serde_json::json!({
+            "model": self.model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "image_url", "image_url": { "url": data_url } },
+                    { "type": "text", "text": "Transcribe all visible text exactly as written. \
+                       For diagrams, charts, or handwritten content, describe them clearly in \
+                       markdown. Return only the transcribed content with no commentary." }
+                ]
+            }]
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AxonMindError::LlmProvider(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AxonMindError::LlmProvider(format!("HTTP {status}: {text}")));
+        }
+
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AxonMindError::LlmProvider(e.to_string()))?;
+
+        json["choices"][0]["message"]["content"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| AxonMindError::LlmProvider("no content in vision response".into()))
     }
 
     async fn explain_kpi_rationale(
@@ -223,7 +274,7 @@ impl LlmProvider for OpenAiProvider {
         struct Resp {
             rationale: String,
         }
-        let parsed: Resp = serde_json::from_str(&content)
+        let parsed: Resp = serde_json::from_str(extract_json_object(&content))
             .map_err(|e| AxonMindError::LlmProvider(format!("rationale parse: {e}")))?;
 
         Ok(parsed.rationale)

@@ -104,6 +104,10 @@ cargo run -p axonmind_cli -- query --workspace ./demo --json focus-kpi kpi.reven
 # 5. 推論ベースの検索を実行するか、MCP サーバーを起動します。
 cargo run -p axonmind_cli -- query --workspace ./demo reasoning-search "what drives revenue?"
 cargo run -p axonmind_cli -- mcp --workspace ./demo
+
+# 6. グラフ統計の検査またはエクスポートされた2つのスナップショットの差分比較。
+cargo run -p axonmind_cli -- graph-stats --workspace ./demo
+cargo run -p axonmind_cli -- graph-diff before.json after.json
 ```
 
 デフォルトのルール抽出器は見出しから KPI を検出し、名前付き KPI が同じ段落内に “influences” や “blocks” などの接続語と共に現れた場合に駆動要因/阻害要因のエッジを作成します。これらのパターンを持たないドキュメントは、関係のない KPI ノードを生成する可能性がありますが、これは想定内です。自由な文章からより豊かな関係を発見する必要がある場合は、オプションの LLM 抽出を使用してください。
@@ -148,7 +152,7 @@ bun run build
 bun run tauri:build
 ```
 
-現在のローカル検証は、159個の Rust テストと19個の TypeScript テストをカバーしています。
+現在のローカル検証は、193個の Rust テストと19個の TypeScript テストをカバーしています。
 
 ## オプション機能
 
@@ -289,11 +293,13 @@ src-tauri/          最小限のローカルデモホスト
 | 抽出 | デフォルトで決定論的ルール、オプションで LLM 抽出 |
 | スコープ分析 | 1つのドキュメント、選択したドキュメント、またはインデックス化されたライブラリ全体の分析 |
 | クエリ | KPI フォーカス、KPI 説明、エビデンス検索、影響半径、意思決定追跡、アクションの提案、グラフ検索、推論検索 |
+| グラフの差分比較 | 任意の2つのグラフスナップショットの型定義された前後比較 — 変更されたフィールドリストとともに、追加,変更,削除されたノードとエッジを表示 |
+| グラフの統計 | エンジンメソッド、CLI、およびMCPツールを介した、タイプごとのノード数と総エッジ数 |
 | エビデンス | 関係の引用とソースの範囲は最優先のグラフデータです |
 | ワーカー | KPI 発見および KPI 再計算のインフラストラクチャ |
 | SDK | 生成された TypeScript 型、React フック、Tauri 転送 |
 | 統合 | AI エージェント用の標準 MCP (Model Context Protocol) サーバー |
-| デモ | Brain Map、ドキュメントリスト、左右に並んだインスペクター、設定を備えたローカルの Tauri アプリ |
+| デモ | Brain Map、ドキュメントリスト、グラフの差分比較モーダル、左右に並んだインスペクター、設定を備えたローカルの Tauri アプリ |
 
 ## 重要な不変条件
 

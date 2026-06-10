@@ -74,6 +74,25 @@ fn make_document_node(doc: &NormalizedDocument) -> Node {
     }
 }
 
+fn is_image_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "jpg" | "jpeg" | "png" | "bmp" | "webp" | "tiff" | "tif" | "gif"
+            )
+        })
+}
+
+fn is_image_doc(doc: &NormalizedDocument) -> bool {
+    doc.source_path.as_deref().is_some_and(is_image_path)
+}
+
+fn is_llm_entity_parse_error(error: &AxonMindError) -> bool {
+    matches!(error, AxonMindError::LlmProvider(message) if message.starts_with("entity parse:"))
+}
+
 impl AxonMindEngine {
     /// Open (or create) a workspace. Runs migrations, rebuilds cache, starts workers.
     pub async fn open(config: EngineConfig) -> Result<Self, AxonMindError> {
@@ -254,17 +273,18 @@ impl AxonMindEngine {
         let doc = {
             #[cfg(feature = "llm")]
             {
-                let is_image = matches!(
-                    path.extension().and_then(|e| e.to_str()),
-                    Some("jpg" | "jpeg" | "png" | "bmp" | "webp" | "tiff" | "tif" | "gif")
-                );
-                if is_image {
+                if is_image_path(path) {
                     let llm_guard = self.llm_provider.read().await;
                     if let Some(llm) = llm_guard.as_deref() {
                         ingest::image::parse_with_llm(path, &bytes, content_sha256.clone(), llm)
                             .await?
                     } else {
-                        dispatch_parse(path, &bytes)?
+                        dispatch_parse(path, &bytes).map_err(|_| AxonMindError::Ingest {
+                            message: "image ingest requires an active LLM provider (configure \
+                                      one in Settings) or rebuild with `--features ocr` for \
+                                      Tesseract OCR"
+                                .into(),
+                        })?
                     }
                 } else {
                     dispatch_parse(path, &bytes)?
@@ -463,11 +483,18 @@ impl AxonMindEngine {
                 existing_graph_names,
                 rule_edge_pairs,
             )
-            .await
-            .map_err(|e| AxonMindError::Ingest {
-                message: format!("LLM extraction failed: {e}"),
-            })?;
-            mutations.extend(llm_muts);
+            .await;
+            match llm_muts {
+                Ok(llm_muts) => mutations.extend(llm_muts),
+                Err(e) if is_image_doc(doc) && is_llm_entity_parse_error(&e) => {
+                    tracing::warn!("skipping image LLM entity extraction after parse error: {e}");
+                }
+                Err(e) => {
+                    return Err(AxonMindError::Ingest {
+                        message: format!("LLM extraction failed: {e}"),
+                    });
+                }
+            }
         }
 
         let new_concepts: Vec<(NodeId, String)> = mutations
@@ -630,7 +657,28 @@ impl AxonMindEngine {
                 message: format!("blob read failed for {}: {e}", node_id.0),
             })?;
         let path = std::path::PathBuf::from(&source_path);
-        let doc = dispatch_parse(&path, &bytes)?;
+        let doc = {
+            #[cfg(feature = "llm")]
+            {
+                if is_image_path(&path) {
+                    let llm_guard = self.llm_provider.read().await;
+                    if let Some(llm) = llm_guard.as_deref() {
+                        ingest::image::parse_with_llm(&path, &bytes, sha.clone(), llm).await?
+                    } else {
+                        dispatch_parse(&path, &bytes).map_err(|_| AxonMindError::Ingest {
+                            message: "image ingest requires an active LLM provider (configure \
+                                      one in Settings) or rebuild with `--features ocr` for \
+                                      Tesseract OCR"
+                                .into(),
+                        })?
+                    }
+                } else {
+                    dispatch_parse(&path, &bytes)?
+                }
+            }
+            #[cfg(not(feature = "llm"))]
+            dispatch_parse(&path, &bytes)?
+        };
         let fingerprint = DocFingerprint {
             content_sha256: sha,
             structural_sha256: structural_signature(&doc),
