@@ -1167,9 +1167,10 @@ impl GraphStore {
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
-    /// Concept node IDs this document points at via `MentionedIn` edges. Captured before a
-    /// document is deleted so the caller can sweep any that become orphaned afterward.
-    pub(crate) async fn fetch_mentioned_node_ids(
+    /// Node IDs this document contributes to, either via `MentionedIn` or via evidence-backed
+    /// relation edges. Captured before a document is deleted so the caller can sweep any nodes
+    /// that become orphaned afterward.
+    pub(crate) async fn fetch_document_related_node_ids(
         &self,
         doc_node_id: &NodeId,
     ) -> Result<Vec<NodeId>, AxonMindError> {
@@ -1181,11 +1182,27 @@ impl GraphStore {
             .await
             .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
         conn.interact(move |conn| -> Result<Vec<NodeId>, AxonMindError> {
-            // DISTINCT: a document may have several MentionedIn edges to the same concept
-            // (e.g. rule + LLM extraction); the caller must not try to delete it twice.
             let mut stmt = conn
                 .prepare(
-                    "SELECT DISTINCT to_id FROM edges WHERE from_id = ?1 AND kind = 'MentionedIn'",
+                    "SELECT DISTINCT node_id
+                     FROM (
+                         SELECT to_id AS node_id
+                         FROM edges
+                         WHERE from_id = ?1 AND kind = 'MentionedIn'
+                         UNION
+                         SELECT ed.from_id AS node_id
+                         FROM evidence ev
+                         JOIN edge_evidence ee ON ee.evidence_id = ev.id
+                         JOIN edges ed ON ed.id = ee.edge_id
+                         WHERE ev.source_node_id = ?1
+                         UNION
+                         SELECT ed.to_id AS node_id
+                         FROM evidence ev
+                         JOIN edge_evidence ee ON ee.evidence_id = ev.id
+                         JOIN edges ed ON ed.id = ee.edge_id
+                         WHERE ev.source_node_id = ?1
+                     )
+                     WHERE node_id <> ?1",
                 )
                 .map_err(|e| AxonMindError::Database(e.to_string()))?;
             let x = stmt
@@ -1267,7 +1284,8 @@ impl GraphStore {
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
-    /// Count distinct Document nodes that have a MentionedIn edge pointing to `node_id`.
+    /// Count distinct Document nodes that contribute evidence or a `MentionedIn` edge to
+    /// `node_id`.
     pub(crate) async fn count_source_documents_for_node(
         &self,
         node_id: &NodeId,
@@ -1282,10 +1300,23 @@ impl GraphStore {
         conn.interact(move |conn| -> Result<usize, AxonMindError> {
             let n: i64 = conn
                 .query_row(
-                    "SELECT COUNT(DISTINCT e.from_id)
-                 FROM edges e
-                 JOIN nodes n ON n.id = e.from_id
-                 WHERE e.to_id = ?1 AND e.kind = 'MentionedIn' AND n.kind = 'Document'",
+                    "SELECT COUNT(DISTINCT doc_id)
+                     FROM (
+                         SELECT e.from_id AS doc_id
+                         FROM edges e
+                         JOIN nodes n ON n.id = e.from_id
+                         WHERE e.to_id = ?1
+                           AND e.kind = 'MentionedIn'
+                           AND n.kind = 'Document'
+                         UNION
+                         SELECT ev.source_node_id AS doc_id
+                         FROM evidence ev
+                         JOIN edge_evidence ee ON ee.evidence_id = ev.id
+                         JOIN edges ed ON ed.id = ee.edge_id
+                         JOIN nodes n ON n.id = ev.source_node_id
+                         WHERE (ed.from_id = ?1 OR ed.to_id = ?1)
+                           AND n.kind = 'Document'
+                     )",
                     [&id],
                     |row| row.get(0),
                 )
@@ -1677,11 +1708,10 @@ mod tests {
     }
 
     /// WHY: a document can hold multiple MentionedIn edges to the same concept (rule + LLM both
-    /// emit one). If `fetch_mentioned_node_ids` returned duplicates, `remove_document` would try
-    /// to delete that concept twice and fail with NodeNotFound — the bug behind "node not found"
-    /// on Regenerate. The query must collapse them to one id.
+    /// emit one). If `fetch_document_related_node_ids` returned duplicates, `remove_document`
+    /// would try to delete that concept twice and fail with NodeNotFound.
     #[tokio::test]
-    async fn fetch_mentioned_node_ids_dedupes_duplicate_edges() {
+    async fn fetch_document_related_node_ids_dedupes_duplicate_edges() {
         let dir = TempDir::new().unwrap();
         let (store, cache, tx) = open_store(&dir).await;
 
@@ -1758,13 +1788,107 @@ mod tests {
         .unwrap();
 
         let mentioned = store
-            .fetch_mentioned_node_ids(&NodeId("doc.x".to_owned()))
+            .fetch_document_related_node_ids(&NodeId("doc.x".to_owned()))
             .await
             .unwrap();
         assert_eq!(
             mentioned,
             vec![NodeId("kpi.dr".to_owned())],
             "duplicate MentionedIn edges must collapse to one id"
+        );
+    }
+
+    /// WHY: some document-derived nodes may only remain discoverable through evidence-backed
+    /// relation edges. Removal must still sweep them, or deleting and re-adding the same file can
+    /// stack duplicate concepts/evidence onto a reused content-hash document id.
+    #[tokio::test]
+    async fn fetch_document_related_node_ids_includes_relation_endpoints() {
+        let dir = TempDir::new().unwrap();
+        let (store, cache, tx) = open_store(&dir).await;
+
+        apply(
+            &store,
+            &cache,
+            &tx,
+            GraphMutation::UpsertNode {
+                node: Node {
+                    kind: NodeKind::Document,
+                    ..node("doc.x")
+                },
+            },
+        )
+        .await
+        .unwrap();
+        apply(
+            &store,
+            &cache,
+            &tx,
+            GraphMutation::UpsertNode {
+                node: node("kpi.alpha"),
+            },
+        )
+        .await
+        .unwrap();
+        apply(
+            &store,
+            &cache,
+            &tx,
+            GraphMutation::UpsertNode {
+                node: node("risk.beta"),
+            },
+        )
+        .await
+        .unwrap();
+        apply(
+            &store,
+            &cache,
+            &tx,
+            GraphMutation::UpsertEvidence {
+                evidence: evidence("ev1", "doc.x"),
+            },
+        )
+        .await
+        .unwrap();
+        apply(
+            &store,
+            &cache,
+            &tx,
+            GraphMutation::UpsertEdge {
+                edge: Edge {
+                    evidence: vec![EvidenceId("ev1".to_owned())],
+                    ..edge("rel1", "kpi.alpha", "risk.beta")
+                },
+                evidence_ids: vec![EvidenceId("ev1".to_owned())],
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut related = store
+            .fetch_document_related_node_ids(&NodeId("doc.x".to_owned()))
+            .await
+            .unwrap();
+        related.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            related,
+            vec![
+                NodeId("kpi.alpha".to_owned()),
+                NodeId("risk.beta".to_owned())
+            ]
+        );
+        assert_eq!(
+            store
+                .count_source_documents_for_node(&NodeId("kpi.alpha".to_owned()))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .count_source_documents_for_node(&NodeId("risk.beta".to_owned()))
+                .await
+                .unwrap(),
+            1
         );
     }
 

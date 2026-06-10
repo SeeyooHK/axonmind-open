@@ -179,6 +179,181 @@ async fn remove_document_sweeps_orphans_but_keeps_shared_concepts() {
     }));
 }
 
+/// Removing a processed document must clear its derived rows so re-ingesting the same file
+/// recreates the same graph state instead of stacking duplicate evidence/edges onto the reused
+/// content-hash document id.
+#[tokio::test]
+async fn remove_then_reingest_same_file_does_not_duplicate_graph_state() {
+    let dir = TempDir::new().unwrap();
+    let file_dir = TempDir::new().unwrap();
+    let engine = open_engine(&dir).await;
+    let md_path = file_dir.path().join("doc.md");
+    std::fs::write(&md_path, MARKDOWN_FIXTURE).unwrap();
+
+    let opts = IngestOptions {
+        recursive: false,
+        skip_unchanged: false,
+        max_file_size_bytes: 10 * 1024 * 1024,
+    };
+
+    engine
+        .ingest_sync(IngestSource::File(md_path.clone()), opts.clone())
+        .await
+        .unwrap();
+    let first = engine.export_json().await.expect("first export failed");
+
+    let doc_id = engine
+        .list_documents()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|d| {
+            d.source_path
+                .as_deref()
+                .is_some_and(|p| p.ends_with("doc.md"))
+        })
+        .map(|d| NodeId(d.node_id))
+        .expect("doc should be listed after first ingest");
+    engine.remove_document(doc_id, true).await.unwrap();
+
+    let after_remove = engine
+        .export_json()
+        .await
+        .expect("post-remove export failed");
+    assert!(
+        after_remove.nodes.is_empty()
+            && after_remove.edges.is_empty()
+            && after_remove.evidence.is_empty(),
+        "removing the only document should leave an empty graph; got {} nodes, {} edges, {} evidence",
+        after_remove.nodes.len(),
+        after_remove.edges.len(),
+        after_remove.evidence.len()
+    );
+
+    engine
+        .ingest_sync(IngestSource::File(md_path), opts)
+        .await
+        .unwrap();
+    let second = engine.export_json().await.expect("second export failed");
+
+    assert_eq!(
+        first.nodes.len(),
+        second.nodes.len(),
+        "re-ingesting the same file after removal must recreate the same node count"
+    );
+    assert_eq!(
+        first.edges.len(),
+        second.edges.len(),
+        "re-ingesting the same file after removal must recreate the same edge count"
+    );
+    assert_eq!(
+        first.evidence.len(),
+        second.evidence.len(),
+        "re-ingesting the same file after removal must recreate the same evidence count"
+    );
+}
+
+/// Removing a document must also sweep nodes that are only connected through document-backed
+/// relation evidence, not just nodes reached by MentionedIn. This protects the LLM/image path,
+/// where relation evidence can otherwise leave behind nodes that double on re-ingest.
+#[tokio::test]
+async fn remove_document_clears_relation_only_document_lineage() {
+    let dir = TempDir::new().unwrap();
+    let engine = open_engine(&dir).await;
+    let now = Utc::now();
+
+    engine
+        .apply_mutation(GraphMutation::UpsertNode {
+            node: Node {
+                id: NodeId("doc.image".into()),
+                kind: NodeKind::Document,
+                name: "image.png".into(),
+                attrs: serde_json::json!({}),
+                confidence: Confidence::RULE,
+                created_at: now,
+                updated_at: now,
+                is_tainted: false,
+                requires_human_review: false,
+            },
+        })
+        .await
+        .unwrap();
+    for (id, kind, name) in [
+        ("kpi.alpha", NodeKind::Kpi, "Alpha"),
+        ("risk.beta", NodeKind::Risk, "Beta"),
+    ] {
+        engine
+            .apply_mutation(GraphMutation::UpsertNode {
+                node: Node {
+                    id: NodeId(id.into()),
+                    kind,
+                    name: name.into(),
+                    attrs: serde_json::Value::Null,
+                    confidence: Confidence::LLM,
+                    created_at: now,
+                    updated_at: now,
+                    is_tainted: true,
+                    requires_human_review: false,
+                },
+            })
+            .await
+            .unwrap();
+    }
+    engine
+        .apply_mutation(GraphMutation::UpsertEvidence {
+            evidence: axonmind_core::Evidence {
+                id: EvidenceId("ev.image".into()),
+                source_node_id: NodeId("doc.image".into()),
+                source_type: axonmind_core::SourceType::Document,
+                quote: Some("image relation".into()),
+                row_ref: None,
+                blob_sha256: None,
+                timestamp: Some(now),
+                extractor: ExtractorKind::Llm,
+                confidence: Confidence::LLM,
+                is_tainted: true,
+                requires_human_review: false,
+            },
+        })
+        .await
+        .unwrap();
+    engine
+        .apply_mutation(GraphMutation::UpsertEdge {
+            edge: Edge {
+                id: EdgeId("edge.image".into()),
+                from: NodeId("kpi.alpha".into()),
+                to: NodeId("risk.beta".into()),
+                kind: EdgeKind::Influences,
+                evidence: vec![EvidenceId("ev.image".into())],
+                confidence: Confidence::LLM,
+                created_at: now,
+                created_by: ExtractorKind::Llm,
+                is_tainted: true,
+                requires_human_review: false,
+            },
+            evidence_ids: vec![EvidenceId("ev.image".into())],
+        })
+        .await
+        .unwrap();
+
+    engine
+        .remove_document(NodeId("doc.image".into()), false)
+        .await
+        .unwrap();
+
+    let after = engine
+        .export_json()
+        .await
+        .expect("export after remove failed");
+    assert!(
+        after.nodes.is_empty() && after.edges.is_empty() && after.evidence.is_empty(),
+        "document-backed relation-only lineage should be swept on remove; got {} nodes, {} edges, {} evidence",
+        after.nodes.len(),
+        after.edges.len(),
+        after.evidence.len()
+    );
+}
+
 /// UpsertEdge with empty evidence_ids must return EvidenceMissing.
 /// WHY: this is the single most important invariant; breaking it silently
 /// corrupts the evidence chain for all downstream queries.

@@ -574,7 +574,7 @@ impl AxonMindEngine {
             });
         }
 
-        let mentioned = self.store.fetch_mentioned_node_ids(doc_id).await?;
+        let mentioned = self.store.fetch_document_related_node_ids(doc_id).await?;
         let mut mutations = Vec::new();
         for concept_id in mentioned {
             // Exactly one source document (this one) → the concept becomes an orphan on removal.
@@ -1164,7 +1164,7 @@ impl AxonMindEngine {
             // edges whose both endpoints are in that set (drops cross-doc and MentionedIn).
             let mut members = std::collections::HashSet::new();
             for id in &scoped_doc_ids {
-                for concept in self.store.fetch_mentioned_node_ids(id).await? {
+                for concept in self.store.fetch_document_related_node_ids(id).await? {
                     members.insert(concept.0);
                 }
             }
