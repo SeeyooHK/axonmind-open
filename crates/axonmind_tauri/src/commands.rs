@@ -244,7 +244,8 @@ pub struct DirFileEntry {
 }
 
 const SUPPORTED_EXTS: &[&str] = &[
-    "md", "markdown", "txt", "csv", "xlsx", "docx", "pdf", "pptx",
+    "md", "markdown", "txt", "csv", "xlsx", "docx", "pdf", "pptx", "jpg", "jpeg", "png", "bmp",
+    "webp", "tiff", "tif", "gif",
 ];
 
 #[derive(Debug, Clone)]
@@ -361,10 +362,15 @@ pub async fn list_dir_files(path: String) -> Result<Vec<DirFileEntry>, String> {
 }
 
 #[tauri::command]
-pub async fn read_file_text(path: String) -> Result<String, String> {
-    use axonmind_engine::ingest::{DocumentBlock, dispatch_parse};
-
-    const BINARY_EXTS: &[&str] = &["pptx", "docx", "xlsx", "xls", "ods", "xlsb", "pdf"];
+pub async fn read_file_text(
+    state: State<'_, EngineState>,
+    path: String,
+    node_id: Option<String>,
+) -> Result<String, String> {
+    const PARSED_EXTS: &[&str] = &[
+        "pptx", "docx", "xlsx", "xls", "ods", "xlsb", "pdf", "jpg", "jpeg", "png", "bmp", "webp",
+        "tiff", "tif", "gif",
+    ];
     let p = std::path::PathBuf::from(&path);
     let ext = p
         .extension()
@@ -372,13 +378,50 @@ pub async fn read_file_text(path: String) -> Result<String, String> {
         .unwrap_or("")
         .to_ascii_lowercase();
 
-    if !BINARY_EXTS.contains(&ext.as_str()) {
+    if !PARSED_EXTS.contains(&ext.as_str()) {
         return std::fs::read_to_string(&path).map_err(|e| format!("cannot read: {e}"));
     }
 
-    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-    let doc = dispatch_parse(&p, &bytes).map_err(|e| e.to_string())?;
+    if let Some(node_id) = node_id.as_deref().filter(|id| id.starts_with("doc.")) {
+        let sections = state
+            .0
+            .parsed_document_sections(node_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !sections.is_empty() {
+            return Ok(render_section_rows(&sections));
+        }
+    }
 
+    let doc = state
+        .0
+        .parse_file_preview(&p)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(render_normalized_document(&doc))
+}
+
+fn render_section_rows(sections: &[axonmind_engine::pageindex::SectionRow]) -> String {
+    let mut lines = Vec::new();
+    for section in sections {
+        lines.push(format!(
+            "{} {}",
+            "#".repeat(section.level.max(1) as usize),
+            section.title
+        ));
+        if let Some(text) = &section.text {
+            if !text.trim().is_empty() {
+                lines.push(String::new());
+                lines.push(text.clone());
+            }
+        }
+        lines.push(String::new());
+    }
+    lines.join("\n")
+}
+
+fn render_normalized_document(doc: &axonmind_engine::ingest::NormalizedDocument) -> String {
     let mut lines: Vec<String> = Vec::new();
     if let Some(title) = &doc.title {
         lines.push(format!("# {title}"));
@@ -386,19 +429,19 @@ pub async fn read_file_text(path: String) -> Result<String, String> {
     }
     for block in &doc.blocks {
         match block {
-            DocumentBlock::Heading { level, text, .. } => {
+            axonmind_engine::ingest::DocumentBlock::Heading { level, text, .. } => {
                 lines.push(format!("{} {text}", "#".repeat(*level as usize)));
             }
-            DocumentBlock::Paragraph { text, .. } => {
+            axonmind_engine::ingest::DocumentBlock::Paragraph { text, .. } => {
                 if !text.trim().is_empty() {
                     lines.push(text.clone());
                     lines.push(String::new());
                 }
             }
-            DocumentBlock::ListItem { text, .. } => {
+            axonmind_engine::ingest::DocumentBlock::ListItem { text, .. } => {
                 lines.push(format!("• {text}"));
             }
-            DocumentBlock::CodeBlock { text, .. } => {
+            axonmind_engine::ingest::DocumentBlock::CodeBlock { text, .. } => {
                 lines.push(text.clone());
             }
         }
@@ -413,7 +456,7 @@ pub async fn read_file_text(path: String) -> Result<String, String> {
         lines.push(String::new());
     }
 
-    Ok(lines.join("\n"))
+    lines.join("\n")
 }
 
 // ── API key management commands ───────────────────────────────────────────────

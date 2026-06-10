@@ -249,6 +249,56 @@ fn merge_prompt(system_prompt: &str, messages: &[ProviderMessage]) -> String {
     parts.join("\n\n")
 }
 
+fn image_extension(mime_type: &str) -> &'static str {
+    match mime_type {
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/png" => "png",
+        "image/webp" => "webp",
+        "image/bmp" => "bmp",
+        "image/tiff" => "tiff",
+        "image/gif" => "gif",
+        _ => "img",
+    }
+}
+
+fn write_prompt_images(messages: &[ProviderMessage], dir: &Path) -> Result<Vec<PathBuf>, LlmError> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    let mut paths = Vec::new();
+    for msg in messages {
+        let blocks = match msg {
+            ProviderMessage::User(blocks)
+            | ProviderMessage::Assistant(blocks)
+            | ProviderMessage::System(blocks) => blocks,
+        };
+        for block in blocks {
+            let MessageBlock::Image {
+                data_base64,
+                mime_type,
+            } = block
+            else {
+                continue;
+            };
+            let bytes = STANDARD.decode(data_base64).map_err(|e| {
+                LlmError::Config(format!("Failed to decode Codex image attachment: {e}"))
+            })?;
+            let path = dir.join(format!(
+                "prompt-image-{}.{}",
+                paths.len() + 1,
+                image_extension(mime_type)
+            ));
+            std::fs::write(&path, bytes).map_err(|e| {
+                LlmError::Config(format!(
+                    "Failed to write Codex image attachment {}: {e}",
+                    path.display()
+                ))
+            })?;
+            paths.push(path);
+        }
+    }
+    Ok(paths)
+}
+
 fn reasoning_effort(intelligence: Option<&str>) -> Option<&'static str> {
     intelligence.and_then(normalize_intelligence)
 }
@@ -383,6 +433,7 @@ impl ApiProvider for CodexApiProvider {
 
         let (isolated_home, _guard) = codex_isolation_dir()?;
         copy_auth_files(&isolated_home)?;
+        let image_paths = write_prompt_images(&messages, &isolated_home)?;
 
         let mut cmd = tokio::process::Command::new(binary);
         cmd.arg("--ask-for-approval")
@@ -405,10 +456,33 @@ impl ApiProvider for CodexApiProvider {
             cmd.arg("-c")
                 .arg(format!("model_reasoning_effort=\"{effort}\""));
         }
+        for image_path in &image_paths {
+            cmd.arg("--image").arg(image_path);
+        }
 
-        let output = cmd
-            .arg(prompt)
-            .output()
+        use std::process::Stdio;
+        use tokio::io::AsyncWriteExt;
+
+        cmd.arg("-")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| LlmError::RequestFailed(format!("Failed to run codex exec: {e}")))?;
+        let Some(mut stdin) = child.stdin.take() else {
+            return Err(LlmError::RequestFailed(
+                "Failed to open stdin for codex exec".to_string(),
+            ));
+        };
+        stdin
+            .write_all(prompt.as_bytes())
+            .await
+            .map_err(|e| LlmError::RequestFailed(format!("Failed to write Codex prompt: {e}")))?;
+        drop(stdin);
+
+        let output = child
+            .wait_with_output()
             .await
             .map_err(|e| LlmError::RequestFailed(format!("Failed to run codex exec: {e}")))?;
 

@@ -158,6 +158,52 @@ impl PageIndexStore {
         .map_err(|e: rusqlite::Error| AxonMindError::Database(format!("pageindex bm25: {e}")))
     }
 
+    /// Fetch every section for one document in document order.
+    pub async fn fetch_document_sections(
+        &self,
+        doc_node_id: &str,
+    ) -> Result<Vec<SectionRow>, AxonMindError> {
+        let doc_node_id = doc_node_id.to_string();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("pageindex get conn: {e}")))?;
+
+        conn.interact(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT section_id, doc_node_id, parent_section_id, ordinal, level, title, path,
+                        summary, text, span_start, span_end
+                 FROM page_sections
+                 WHERE doc_node_id = ?1
+                 ORDER BY ordinal",
+            )?;
+            let rows: Vec<SectionRow> = stmt
+                .query_map(rusqlite::params![doc_node_id], |row| {
+                    Ok(SectionRow {
+                        section_id: row.get(0)?,
+                        doc_node_id: row.get(1)?,
+                        parent_section_id: row.get(2)?,
+                        ordinal: row.get(3)?,
+                        level: row.get(4)?,
+                        title: row.get(5)?,
+                        path: row.get(6)?,
+                        summary: row.get(7)?,
+                        text: row.get(8)?,
+                        span_start: row.get(9)?,
+                        span_end: row.get(10)?,
+                    })
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok::<Vec<SectionRow>, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("pageindex interact: {e}")))?
+        .map_err(|e: rusqlite::Error| AxonMindError::Database(format!("pageindex fetch doc: {e}")))
+    }
+
     /// Fetch full section rows by id.
     pub async fn fetch_sections(&self, ids: &[String]) -> Result<Vec<SectionRow>, AxonMindError> {
         if ids.is_empty() {

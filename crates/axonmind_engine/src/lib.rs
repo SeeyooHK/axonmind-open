@@ -74,6 +74,18 @@ fn make_document_node(doc: &NormalizedDocument) -> Node {
     }
 }
 
+#[cfg(feature = "llm")]
+fn is_image_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "jpg" | "jpeg" | "png" | "bmp" | "webp" | "tiff" | "tif" | "gif"
+            )
+        })
+}
+
 impl AxonMindEngine {
     /// Open (or create) a workspace. Runs migrations, rebuilds cache, starts workers.
     pub async fn open(config: EngineConfig) -> Result<Self, AxonMindError> {
@@ -116,6 +128,41 @@ impl AxonMindEngine {
     /// Returns true if an LLM provider is currently configured.
     pub async fn has_llm_provider(&self) -> bool {
         self.llm_provider.read().await.is_some()
+    }
+
+    /// Parse a source file for preview without mutating the graph.
+    pub async fn parse_file_preview(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<NormalizedDocument, AxonMindError> {
+        let bytes = tokio::fs::read(path).await?;
+
+        #[cfg(feature = "llm")]
+        {
+            if is_image_path(path) {
+                use sha2::Digest as _;
+                let content_sha256: String = sha2::Sha256::digest(&bytes)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                let llm_guard = self.llm_provider.read().await;
+                if let Some(llm) = llm_guard.as_deref() {
+                    return ingest::image::parse_with_llm(path, &bytes, content_sha256, llm).await;
+                }
+            }
+        }
+
+        dispatch_parse(path, &bytes)
+    }
+
+    /// Read the already-built pageindex preview for a processed document.
+    pub async fn parsed_document_sections(
+        &self,
+        doc_node_id: &str,
+    ) -> Result<Vec<pageindex::SectionRow>, AxonMindError> {
+        PageIndexStore::new(self.store.db.0.clone())
+            .fetch_document_sections(doc_node_id)
+            .await
     }
 
     /// Spawn background workers if enabled in config. Called automatically by `open`.
@@ -250,7 +297,30 @@ impl AxonMindEngine {
         }
 
         // Parse to compute structural fingerprint.
-        let doc = dispatch_parse(path, &bytes)?;
+        // Images go through the async LLM-vision path first (falls back to Tesseract on failure).
+        let doc = {
+            #[cfg(feature = "llm")]
+            {
+                if is_image_path(path) {
+                    let llm_guard = self.llm_provider.read().await;
+                    if let Some(llm) = llm_guard.as_deref() {
+                        ingest::image::parse_with_llm(path, &bytes, content_sha256.clone(), llm)
+                            .await?
+                    } else {
+                        dispatch_parse(path, &bytes).map_err(|_| AxonMindError::Ingest {
+                            message: "image ingest requires an active LLM provider (configure \
+                                      one in Settings) or rebuild with `--features ocr` for \
+                                      Tesseract OCR"
+                                .into(),
+                        })?
+                    }
+                } else {
+                    dispatch_parse(path, &bytes)?
+                }
+            }
+            #[cfg(not(feature = "llm"))]
+            dispatch_parse(path, &bytes)?
+        };
         let structural_sha256 = structural_signature(&doc);
         let next_fp = DocFingerprint {
             content_sha256,
@@ -608,7 +678,28 @@ impl AxonMindEngine {
                 message: format!("blob read failed for {}: {e}", node_id.0),
             })?;
         let path = std::path::PathBuf::from(&source_path);
-        let doc = dispatch_parse(&path, &bytes)?;
+        let doc = {
+            #[cfg(feature = "llm")]
+            {
+                if is_image_path(&path) {
+                    let llm_guard = self.llm_provider.read().await;
+                    if let Some(llm) = llm_guard.as_deref() {
+                        ingest::image::parse_with_llm(&path, &bytes, sha.clone(), llm).await?
+                    } else {
+                        dispatch_parse(&path, &bytes).map_err(|_| AxonMindError::Ingest {
+                            message: "image ingest requires an active LLM provider (configure \
+                                      one in Settings) or rebuild with `--features ocr` for \
+                                      Tesseract OCR"
+                                .into(),
+                        })?
+                    }
+                } else {
+                    dispatch_parse(&path, &bytes)?
+                }
+            }
+            #[cfg(not(feature = "llm"))]
+            dispatch_parse(&path, &bytes)?
+        };
         let fingerprint = DocFingerprint {
             content_sha256: sha,
             structural_sha256: structural_signature(&doc),
@@ -653,6 +744,12 @@ impl AxonMindEngine {
             .apply_batch(batch, &self.graph_cache, &self.event_tx)
             .await?;
 
+        if let Err(e) = PageIndexStore::new(self.store.db.0.clone())
+            .delete_document(&doc_node_id.0)
+            .await
+        {
+            summary.errors.push(format!("pageindex delete: {e}"));
+        }
         self.run_ingest_tail(&doc, &fingerprint, &doc_node_id, &mut summary)
             .await;
 

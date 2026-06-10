@@ -17,8 +17,12 @@ export function FileVisualizationModal({ item, onClose, zIndex = 200 }: Props) {
   const [rawErr, setRawErr] = useState<string | null>(null);
 
   useEffect(() => {
-    // Load raw file content
-    invoke<string>("plugin:axonmind|read_file_text", { path: item.path })
+    setRawText(null);
+    setRawErr(null);
+    setNodes(null);
+
+    // Load parsed file content
+    invoke<string>("plugin:axonmind|read_file_text", { path: item.path, nodeId: item.id })
       .then(setRawText)
       .catch(e => setRawErr(String(e)));
 

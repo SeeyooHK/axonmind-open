@@ -387,6 +387,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axonmind_core",
+ "base64 0.22.1",
  "calamine",
  "chrono",
  "comrak",
@@ -4517,6 +4518,7 @@ name = "seeyoo_llm"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "eventsource-stream",
  "futures-util",

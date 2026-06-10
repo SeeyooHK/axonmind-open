@@ -1,10 +1,11 @@
 use super::llm::{
     EntityExtractionInput, EntityExtractionOutput, LlmProvider, RelationExtractionInput,
     RelationExtractionOutput, SemanticLink, SemanticLinkInput, SemanticLinkOutput,
+    extract_json_object,
 };
 use async_trait::async_trait;
 use axonmind_core::AxonMindError;
-use seeyoo_llm::api_mod::{ApiProvider, ProviderMessage};
+use seeyoo_llm::api_mod::{ApiProvider, MessageBlock, ProviderMessage};
 use seeyoo_llm::types::ToolDefinition;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -42,21 +43,6 @@ impl SeeyooAdapter {
     }
 }
 
-/// Strip markdown code fences that some providers wrap around JSON output.
-fn strip_json_fences(text: &str) -> &str {
-    let t = text.trim();
-    if let Some(inner) = t
-        .strip_prefix("```json")
-        .and_then(|s| s.strip_suffix("```"))
-    {
-        inner.trim()
-    } else if let Some(inner) = t.strip_prefix("```").and_then(|s| s.strip_suffix("```")) {
-        inner.trim()
-    } else {
-        t
-    }
-}
-
 async fn complete_json(
     provider: &dyn ApiProvider,
     api_key: &str,
@@ -89,7 +75,7 @@ impl LlmProvider for SeeyooAdapter {
             user,
         )
         .await?;
-        Ok(strip_json_fences(&raw).to_string())
+        Ok(extract_json_object(&raw).to_string())
     }
 
     async fn extract_entities(
@@ -128,11 +114,14 @@ impl LlmProvider for SeeyooAdapter {
         )
         .await?;
 
+        if raw.trim().is_empty() {
+            return Ok(EntityExtractionOutput { entities: vec![] });
+        }
         #[derive(Deserialize)]
         struct Resp {
             entities: Vec<(String, String, String)>,
         }
-        let parsed: Resp = serde_json::from_str(strip_json_fences(&raw))
+        let parsed: Resp = serde_json::from_str(extract_json_object(&raw))
             .map_err(|e| AxonMindError::LlmProvider(format!("entity parse: {e}")))?;
 
         Ok(EntityExtractionOutput {
@@ -172,7 +161,7 @@ impl LlmProvider for SeeyooAdapter {
             confidence: f32,
             quote: String,
         }
-        let parsed: Resp = serde_json::from_str(strip_json_fences(&raw))
+        let parsed: Resp = serde_json::from_str(extract_json_object(&raw))
             .map_err(|e| AxonMindError::LlmProvider(format!("relation parse: {e}")))?;
 
         Ok(RelationExtractionOutput {
@@ -219,12 +208,58 @@ impl LlmProvider for SeeyooAdapter {
         struct Resp {
             links: Vec<SemanticLink>,
         }
-        let parsed: Resp = serde_json::from_str(strip_json_fences(&raw))
+        let parsed: Resp = serde_json::from_str(extract_json_object(&raw))
             .map_err(|e| AxonMindError::LlmProvider(format!("semantic link parse: {e}")))?;
 
         Ok(SemanticLinkOutput {
             links: parsed.links,
         })
+    }
+
+    async fn transcribe_image(
+        &self,
+        bytes: &[u8],
+        mime_type: &str,
+    ) -> Result<String, AxonMindError> {
+        match self.provider.id() {
+            seeyoo_llm::types::LlmProvider::Local | seeyoo_llm::types::LlmProvider::Ollama => {
+                return Err(AxonMindError::LlmProvider(format!(
+                    "{} does not support image OCR through this provider path",
+                    self.provider.display_name()
+                )));
+            }
+            _ => {}
+        }
+
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let data_base64 = STANDARD.encode(bytes);
+        let messages = vec![ProviderMessage::User(vec![
+            MessageBlock::Image {
+                data_base64,
+                mime_type: mime_type.to_string(),
+            },
+            MessageBlock::Text {
+                text: "You're a skilled image content extractor. Extract the rich text content \
+                       from the image in structured markdown format. Preserve headings, lists, \
+                       tables, footers, small print, internal charts/graphs/images, bold and \
+                       italic text, and paragraphs. If there are tables, extract them as markdown \
+                       tables. Do not repeat the same information multiple times. Follow standard \
+                       markdown format and do not translate special characters. Do not add \
+                       commentary outside the markdown structure. Review the extraction carefully \
+                       and ensure it accurately represents the image content."
+                    .to_string(),
+            },
+        ])];
+        self.provider
+            .complete(
+                "You are a document transcriber. Extract all text and describe visual content as markdown.",
+                messages,
+                Vec::<seeyoo_llm::types::ToolDefinition>::new(),
+                &self.api_key,
+                self.model.as_deref(),
+            )
+            .await
+            .map_err(|e| AxonMindError::LlmProvider(e.to_string()))
     }
 
     async fn explain_kpi_rationale(
@@ -258,7 +293,7 @@ impl LlmProvider for SeeyooAdapter {
         struct Resp {
             rationale: String,
         }
-        let parsed: Resp = serde_json::from_str(strip_json_fences(&raw))
+        let parsed: Resp = serde_json::from_str(extract_json_object(&raw))
             .map_err(|e| AxonMindError::LlmProvider(format!("rationale parse: {e}")))?;
 
         Ok(parsed.rationale)
