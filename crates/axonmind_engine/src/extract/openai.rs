@@ -45,9 +45,10 @@ impl OpenAiProvider {
 
     async fn complete_json(&self, system: &str, user: &str) -> Result<String, AxonMindError> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        // No response_format: json_object — Anthropic's compat endpoint returns empty content
+        // with that flag; callers apply extract_json_object() to find the JSON in the response.
         let body = serde_json::json!({
             "model": self.model,
-            "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user",   "content": user}
@@ -84,9 +85,8 @@ impl OpenAiProvider {
 #[async_trait]
 impl LlmProvider for OpenAiProvider {
     async fn complete(&self, system: &str, user: &str) -> Result<String, AxonMindError> {
-        // `complete_json` requests `response_format: json_object`, so the content is already
-        // clean JSON with no markdown fences.
-        self.complete_json(system, user).await
+        let raw = self.complete_json(system, user).await?;
+        Ok(extract_json_object(&raw).to_string())
     }
 
     async fn extract_entities(
@@ -218,9 +218,14 @@ impl LlmProvider for OpenAiProvider {
                 "role": "user",
                 "content": [
                     { "type": "image_url", "image_url": { "url": data_url } },
-                    { "type": "text", "text": "Transcribe all visible text exactly as written. \
-                       For diagrams, charts, or handwritten content, describe them clearly in \
-                       markdown. Return only the transcribed content with no commentary." }
+                    { "type": "text", "text": "You're a skilled image content extractor. Extract \
+                       the rich text content from the image in structured markdown format. Preserve \
+                       headings, lists, tables, footers, small print, internal charts/graphs/images, \
+                       bold and italic text, and paragraphs. If there are tables, extract them as \
+                       markdown tables. Do not repeat the same information multiple times. Follow \
+                       standard markdown format and do not translate special characters. Do not add \
+                       commentary outside the markdown structure. Review the extraction carefully \
+                       and ensure it accurately represents the image content." }
                 ]
             }]
         });

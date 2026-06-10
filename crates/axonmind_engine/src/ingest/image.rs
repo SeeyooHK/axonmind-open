@@ -25,7 +25,10 @@ pub async fn parse_with_llm(
 ) -> Result<NormalizedDocument, AxonMindError> {
     let mime = mime_for_path(path);
     match llm.transcribe_image(bytes, mime).await {
-        Ok(text) => super::markdown::parse_text(path, &text, sha256),
+        Ok(text) if !text.trim().is_empty() => super::markdown::parse_text(path, &text, sha256),
+        Ok(_) => parse(path, bytes).map_err(|_| AxonMindError::Ingest {
+            message: "image transcription returned empty content".into(),
+        }),
         // OCR fallback: if OCR feature is absent or Tesseract unavailable, surface the LLM error
         // (more actionable than "rebuild with --features ocr").
         Err(llm_err) => parse(path, bytes).map_err(|_| llm_err),

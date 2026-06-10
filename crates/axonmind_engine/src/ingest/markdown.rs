@@ -159,3 +159,34 @@ fn collect_text<'a>(node: &'a AstNode<'a>) -> String {
     }
     text
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_text;
+
+    #[test]
+    fn parses_markdown_blocks_from_ocr_text() {
+        let doc = parse_text(
+            std::path::Path::new("receipt.png"),
+            "# Invoice\n\n- Customer: Acme\n- Total: $42\n\n| Metric | Value |\n| --- | --- |\n| Revenue | 42 |",
+            "0123456789abcdef".to_string(),
+        )
+        .expect("valid OCR markdown should parse");
+
+        assert!(
+            doc.blocks.iter().any(|block| matches!(
+                block,
+                crate::ingest::DocumentBlock::Heading { text, .. } if text == "Invoice"
+            )),
+            "OCR markdown headings must become searchable document blocks"
+        );
+        assert!(
+            doc.blocks.iter().any(|block| matches!(
+                block,
+                crate::ingest::DocumentBlock::ListItem { text, .. } if text.contains("Customer")
+            )),
+            "OCR markdown list items must not be dropped before extraction"
+        );
+        assert_eq!(doc.tables.len(), 1, "OCR markdown tables must be retained");
+    }
+}

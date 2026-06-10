@@ -221,6 +221,16 @@ impl LlmProvider for SeeyooAdapter {
         bytes: &[u8],
         mime_type: &str,
     ) -> Result<String, AxonMindError> {
+        match self.provider.id() {
+            seeyoo_llm::types::LlmProvider::Local | seeyoo_llm::types::LlmProvider::Ollama => {
+                return Err(AxonMindError::LlmProvider(format!(
+                    "{} does not support image OCR through this provider path",
+                    self.provider.display_name()
+                )));
+            }
+            _ => {}
+        }
+
         use base64::{Engine as _, engine::general_purpose::STANDARD};
         let data_base64 = STANDARD.encode(bytes);
         let messages = vec![ProviderMessage::User(vec![
@@ -229,9 +239,14 @@ impl LlmProvider for SeeyooAdapter {
                 mime_type: mime_type.to_string(),
             },
             MessageBlock::Text {
-                text: "Transcribe all visible text exactly as written. For diagrams, charts, or \
-                       handwritten content, describe them clearly in markdown. Return only the \
-                       transcribed content with no commentary."
+                text: "You're a skilled image content extractor. Extract the rich text content \
+                       from the image in structured markdown format. Preserve headings, lists, \
+                       tables, footers, small print, internal charts/graphs/images, bold and \
+                       italic text, and paragraphs. If there are tables, extract them as markdown \
+                       tables. Do not repeat the same information multiple times. Follow standard \
+                       markdown format and do not translate special characters. Do not add \
+                       commentary outside the markdown structure. Review the extraction carefully \
+                       and ensure it accurately represents the image content."
                     .to_string(),
             },
         ])];

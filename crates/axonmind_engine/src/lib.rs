@@ -74,6 +74,7 @@ fn make_document_node(doc: &NormalizedDocument) -> Node {
     }
 }
 
+#[cfg(feature = "llm")]
 fn is_image_path(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -83,14 +84,6 @@ fn is_image_path(path: &std::path::Path) -> bool {
                 "jpg" | "jpeg" | "png" | "bmp" | "webp" | "tiff" | "tif" | "gif"
             )
         })
-}
-
-fn is_image_doc(doc: &NormalizedDocument) -> bool {
-    doc.source_path.as_deref().is_some_and(is_image_path)
-}
-
-fn is_llm_entity_parse_error(error: &AxonMindError) -> bool {
-    matches!(error, AxonMindError::LlmProvider(message) if message.starts_with("entity parse:"))
 }
 
 impl AxonMindEngine {
@@ -135,6 +128,41 @@ impl AxonMindEngine {
     /// Returns true if an LLM provider is currently configured.
     pub async fn has_llm_provider(&self) -> bool {
         self.llm_provider.read().await.is_some()
+    }
+
+    /// Parse a source file for preview without mutating the graph.
+    pub async fn parse_file_preview(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<NormalizedDocument, AxonMindError> {
+        let bytes = tokio::fs::read(path).await?;
+
+        #[cfg(feature = "llm")]
+        {
+            if is_image_path(path) {
+                use sha2::Digest as _;
+                let content_sha256: String = sha2::Sha256::digest(&bytes)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                let llm_guard = self.llm_provider.read().await;
+                if let Some(llm) = llm_guard.as_deref() {
+                    return ingest::image::parse_with_llm(path, &bytes, content_sha256, llm).await;
+                }
+            }
+        }
+
+        dispatch_parse(path, &bytes)
+    }
+
+    /// Read the already-built pageindex preview for a processed document.
+    pub async fn parsed_document_sections(
+        &self,
+        doc_node_id: &str,
+    ) -> Result<Vec<pageindex::SectionRow>, AxonMindError> {
+        PageIndexStore::new(self.store.db.0.clone())
+            .fetch_document_sections(doc_node_id)
+            .await
     }
 
     /// Spawn background workers if enabled in config. Called automatically by `open`.
@@ -483,18 +511,11 @@ impl AxonMindEngine {
                 existing_graph_names,
                 rule_edge_pairs,
             )
-            .await;
-            match llm_muts {
-                Ok(llm_muts) => mutations.extend(llm_muts),
-                Err(e) if is_image_doc(doc) && is_llm_entity_parse_error(&e) => {
-                    tracing::warn!("skipping image LLM entity extraction after parse error: {e}");
-                }
-                Err(e) => {
-                    return Err(AxonMindError::Ingest {
-                        message: format!("LLM extraction failed: {e}"),
-                    });
-                }
-            }
+            .await
+            .map_err(|e| AxonMindError::Ingest {
+                message: format!("LLM extraction failed: {e}"),
+            })?;
+            mutations.extend(llm_muts);
         }
 
         let new_concepts: Vec<(NodeId, String)> = mutations
@@ -723,6 +744,12 @@ impl AxonMindEngine {
             .apply_batch(batch, &self.graph_cache, &self.event_tx)
             .await?;
 
+        if let Err(e) = PageIndexStore::new(self.store.db.0.clone())
+            .delete_document(&doc_node_id.0)
+            .await
+        {
+            summary.errors.push(format!("pageindex delete: {e}"));
+        }
         self.run_ingest_tail(&doc, &fingerprint, &doc_node_id, &mut summary)
             .await;
 
