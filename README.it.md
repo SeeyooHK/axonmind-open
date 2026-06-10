@@ -76,7 +76,7 @@ Puoi quindi:
 - Esporre il grafo della conoscenza agli agenti AI tramite il server MCP integrato
 - Esportare o importare lo stato del grafo come JSON
 - Integrare il motore dietro l'interfaccia utente del tuo prodotto
-- Eseguire un'app demo Tauri locale con viste Brain Map, documenti e inspector affiancati
+- Eseguire un'app demo Tauri locale con viste Brain Map, documenti, ingestione di immagini e inspector affiancati
 
 **Fuori ambito:** SaaS ospitato, fatturazione, sincronizzazione cloud, SSO, RBAC, gestione del team o un piano di controllo gestito.
 
@@ -133,7 +133,7 @@ Compila il pacchetto macOS `.app`:
 bun run tauri:build
 ```
 
-La demo funziona in modalità solo regole senza una chiave API. Per Brain Map supportate da LLM ed estrazioni più ricche, aggiungi una chiave provider nelle impostazioni dell'app o esegui un server di modelli locale compatibile.
+La demo funziona in modalità solo regole senza una chiave API. Per Brain Map supportate da LLM, estrazioni più ricche o trascrizione di immagini, aggiungi una chiave provider nelle impostazioni dell'app o esegui un server di modelli locale compatibile.
 
 I provider cloud supportati includono Anthropic, OpenAI, Google Gemini, Groq, DeepSeek e OpenRouter. I percorsi del server locale supportati includono Ollama, LM Studio, llama.cpp, Jan e vLLM.
 
@@ -177,6 +177,8 @@ I provider cloud possono essere configurati con chiavi API. Se usi l'avvio guida
 | DeepSeek | `DEEPSEEK_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
 
+Se compilato con `--features llm`, anche i file immagine possono essere trascritti tramite il provider attivo e convertiti in markdown strutturato prima dell'indicizzazione.
+
 ### Impostazioni dell'Ambiente
 
 Copia il modello e imposta i valori per il tuo ambiente locale:
@@ -219,13 +221,30 @@ I provider locali non richiedono una chiave API quando il loro server è già in
 
 ### Ingestione di immagini OCR
 
-Abilita l'OCR delle immagini tramite Tesseract locale:
+AxonMind PR4 aggiunge l'ingestione di immagini per `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif` e `gif`.
+
+Ora sono supportati due percorsi:
+
+1. `--features llm` con un provider attivo: i file immagine vengono trascritti in markdown tramite il percorso di visione del provider, quindi indicizzati come gli altri documenti analizzati.
+2. `--features ocr`: fallback Tesseract locale per ambienti in cui si desidera l'OCR senza un provider compatibile con la visione.
+
+Abilita l'OCR Tesseract locale con:
 
 ```bash
 cargo build -p axonmind_engine --features ocr
 ```
 
-Le estensioni di immagine supportate includono `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif` e `gif`. Se si tenta l'ingestione di immagini senza la funzionalità `ocr`, AxonMind restituisce un errore chiaro invece di produrre silenziosamente un documento vuoto.
+Compila con entrambi i percorsi disponibili se desideri prima la trascrizione del provider e l'OCR locale come fallback:
+
+```bash
+cargo build -p axonmind_engine --features "llm ocr"
+```
+
+Se si tenta l'ingestione di immagini senza un provider LLM attivo e senza la funzionalità `ocr`, AxonMind restituisce un errore chiaro invece di produrre silenziosamente un documento vuoto.
+
+Non tutti gli adattatori di provider espongono la trascrizione delle immagini. Se un provider configurato segnala che l'OCR delle immagini non è supportato su quel percorso, usa un provider compatibile con la visione o abilita il fallback locale `ocr`.
+
+L'inspector di Tauri mostra il markdown/testo analizzato per le immagini elaborate proprio come per gli altri formati binari. Per i file già indicizzati preferisce le sezioni pageindex memorizzate nella cache, quindi esegue il fallback a un'analisi di anteprima se non esistono ancora sezioni memorizzate nella cache.
 
 ## Ottimizzazione Personalizzata
 
@@ -289,8 +308,8 @@ src-tauri/          Host demo locale minimale
 | Funzionalità | Dettagli |
 |---|---|
 | Store del grafo | Database SQLite con modalità WAL e cache `petgraph` |
-| Ingestione | Markdown, testo, PDF, DOCX, fogli di calcolo, HTML, OCR immagini opzionale |
-| Estrazione | Regole deterministiche per impostazione predefinita; estrazione LLM opzionale |
+| Ingestione | Markdown, testo, PDF, DOCX, fogli di calcolo, HTML e file immagine con OCR/trascrizione opzionale |
+| Estrazione | Regole deterministiche per impostazione predefinita; estrazione LLM opzionale e trascrizione di immagini |
 | Analisi dell'ambito | Analizza un documento, documenti selezionati o l'intera libreria indicizzata |
 | Query | Focus KPI, spiega KPI, ricerca prove, raggio di impatto, tracciamento decisioni, suggerimento azioni, ricerca nel grafo, ricerca ragionamento |
 | Confronto grafo | Confronto tipizzato prima/dopo di due snapshot di grafi — nodi ed archi aggiunti, modificati e rimossi con elenchi di campi modificati |
@@ -299,7 +318,7 @@ src-tauri/          Host demo locale minimale
 | Worker | Infrastruttura di scoperta KPI e ricalcolo KPI |
 | SDK | Tipi TypeScript generati, hook React, trasporto Tauri |
 | Integrazione | Server MCP (Model Context Protocol) standard per agenti AI |
-| Demo | App Tauri locale con Brain Map, elenco documenti, modal di confronto grafo, inspector affiancato e impostazioni |
+| Demo | App Tauri locale con Brain Map, elenco documenti, modal di confronto grafo, ingestione di immagini, inspector affiancato e impostazioni |
 
 ## Invarianti Chiave
 
@@ -317,6 +336,7 @@ src-tauri/          Host demo locale minimale
 ## Stato dell'Autenticazione della Sessione CLI
 
 - Testato: il percorso del provider LLM basato su sessione/login Codex CLI funziona nell'app Tauri.
+- PR4: il percorso del provider Codex ora supporta allegati di immagini per la trascrizione di immagini durante l'ingestione.
 > Il modello predefinito selezionato per Codex è `gpt-5.4-mini` e il livello di intelligenza predefinito è `low`. OpenAI e Codex potrebbero modificare i modelli disponibili in qualsiasi momento, quindi si prega di verificare la documentazione della CLI di Codex per le informazioni più recenti. Le sovrascritture del modello utilizzano `AXONMIND_CODEX_MODEL` (pass-through) e quelle dell'intelligenza utilizzano `AXONMIND_CODEX_INTELLIGENCE` (`minimal|low|medium|high|xhigh`) come mostrato in `env_example`.
 
 ## Funzionalità di Indicizzazione delle Pagine
@@ -329,7 +349,7 @@ Il controllo di obsolescenza in `index_document` lo conferma: cerca `page_tree_s
 
 ### Cosa fare nell'interfaccia utente
 
-Nella vista Processed Files (File Elaborati): seleziona tutti i documenti → Regenerate selected (Rigenera selezionati). Questo legge dal blob già memorizzato (nessun caricamento richiesto), esegue nuovamente il parsing del file, ricostruisce l'albero delle sezioni e lo memorizza. Se non è connesso alcun provider AI, è veloce: solo estrazione delle regole, nessuna chiamata LLM.
+Nella vista Processed Files (File Elaborati): seleziona tutti i documenti → Regenerate selected (Rigenera selezionati). Questo legge dal blob già memorizzato (nessun caricamento richiesto), esegue nuovamente il parsing del file, ricostruisce l'albero delle sezioni e lo memorizza. Se non è connesso alcun provider AI, i documenti basati su testo sono comunque veloci e rimangono solo con regole; i file immagine richiedono un provider LLM attivo o una build con `--features ocr`.
 
 In alternativa, per documento: il pulsante Regenerate (Rigenera) nella colonna Actions esegue la stessa operazione per un file alla volta.
 
@@ -341,7 +361,7 @@ Senza `--skip-unchanged`, questo re-inserisce tutti i file e popola l'indice del
 
 ### Cosa non viene toccato
 
-L'albero delle sezioni è costruito interamente dalla struttura del documento analizzato — nessuna estrazione LLM coinvolta a meno che `pageindex_enrich = true` (che per impostazione predefinita è false). Quindi re-inserire i file esistenti senza un provider AI costa poco: parsing dal blob → costruzione dell'albero delle intestazioni → scrittura su SQLite FTS. Vengono rieseguiti anche gli upsert dei nodi e degli archi del grafo, ma l'operazione è leggera (esistono già, quindi sono per lo più no-op).
+Per i documenti basati su testo, l'albero delle sezioni viene creato esclusivamente dalla struttura del documento analizzato, senza alcuna estrazione LLM a meno che `pageindex_enrich = true` (che per impostazione predefinita è false). Quindi la re-ingestione dei file di testo esistenti senza un provider AI è economica: analisi dal blob → creazione dell'albero delle intestazioni → scrittura su SQLite FTS. I file immagine fanno eccezione: richiedono la trascrizione del provider o l'OCR prima che esista la struttura analizzata. Anche i nodi e gli archi del grafo vengono re-inseriti, ma si tratta di un'operazione leggera (esistono già, quindi sono per lo più no-op).
 
 ### La rigenerazione e la generazione con l'AI potrebbero richiedere molto tempo
 

@@ -76,7 +76,7 @@ Vous pouvez ensuite :
 - Exposer le graphe de connaissances aux agents IA via le serveur MCP intégré
 - Exporter ou importer l'état du graphe au format JSON
 - Intégrer le moteur derrière l'interface utilisateur de votre propre produit
-- Exécuter une application de démonstration Tauri locale avec des vues Brain Map, documents et inspecteur côte à côte
+- Exécuter une application de démonstration Tauri locale avec des vues Brain Map, documents, importation d'images et inspecteur côte à côte
 
 **Hors périmètre :** SaaS hébergé, facturation, synchronisation cloud, SSO, RBAC, gestion d'équipe ou plan de contrôle managé.
 
@@ -133,7 +133,7 @@ Construisez le bundle macOS `.app` :
 bun run tauri:build
 ```
 
-La démo fonctionne en mode règles uniquement sans clé API. Pour une Brain Map alimentée par LLM et une extraction plus riche, ajoutez une clé de fournisseur dans les paramètres de l'application ou exécutez un serveur de modèles local compatible.
+La démo fonctionne en mode règles uniquement sans clé API. Pour une Brain Map alimentée par LLM, une extraction plus riche ou la transcription d'images, ajoutez une clé de fournisseur dans les paramètres de l'application ou exécutez un serveur de modèles local compatible.
 
 Les fournisseurs de cloud pris en charge incluent Anthropic, OpenAI, Google Gemini, Groq, DeepSeek et OpenRouter. Les chemins de serveurs locaux pris en charge incluent Ollama, LM Studio, llama.cpp, Jan et vLLM.
 
@@ -177,6 +177,8 @@ Les fournisseurs de cloud peuvent être configurés avec des clés API. Si vous 
 | DeepSeek | `DEEPSEEK_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
 
+Lorsqu'il est construit avec `--features llm`, les fichiers d'images peuvent également être transcrits via le fournisseur actif et convertis en markdown structuré avant l'indexation.
+
 ### Paramètres d'environnement
 
 Copiez le modèle et définissez les valeurs pour votre environnement local :
@@ -219,13 +221,30 @@ Les fournisseurs locaux ne nécessitent pas de clé API lorsque leur serveur est
 
 ### Importation d'images OCR
 
-Activez l'OCR des images via un Tesseract local :
+AxonMind PR4 ajoute l'importation d'images pour `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif` et `gif`.
+
+Deux voies sont désormais prises en charge :
+
+1. `--features llm` avec un fournisseur actif : les fichiers d'images sont transcrits en markdown via le chemin de vision du fournisseur, puis indexés comme les autres documents analysés.
+2. `--features ocr` : solution de repli locale Tesseract pour les environnements où vous souhaitez un OCR sans fournisseur compatible avec la vision.
+
+Activez l'OCR local Tesseract avec :
 
 ```bash
 cargo build -p axonmind_engine --features ocr
 ```
 
-Les extensions d'images prises en charge incluent `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif` et `gif`. Si l'importation d'une image est tentée sans la fonctionnalité `ocr`, AxonMind renvoie une erreur explicite au lieu de générer silencieusement un document vide.
+Construisez avec les deux voies disponibles si vous souhaitez d'abord la transcription du fournisseur et l'OCR local en guise de repli :
+
+```bash
+cargo build -p axonmind_engine --features "llm ocr"
+```
+
+Si l'importation d'une image est tentée sans fournisseur LLM actif et sans la fonctionnalité `ocr`, AxonMind renvoie une erreur explicite au lieu de générer silencieusement un document vide.
+
+Tous les adaptateurs de fournisseurs ne proposent pas la transcription d'images. Si un fournisseur configuré indique que l'OCR d'images n'est pas pris en charge sur cette voie, utilisez un fournisseur compatible avec la vision ou activez la solution de repli locale `ocr`.
+
+L'inspecteur Tauri affiche le markdown/texte analysé pour les images traitées tout comme pour les autres formats binaires. Pour les fichiers déjà indexés, il préfère les sections pageindex mises en cache, puis revient à une analyse de prévisualisation si aucune section mise en cache n'existe encore.
 
 ## Optimisation personnalisée
 
@@ -289,8 +308,8 @@ src-tauri/          Hôte de démonstration local minimal
 | Capacité | Détail |
 |---|---|
 | Stockage de graphe | Magasin basé sur SQLite avec mode WAL et cache `petgraph` |
-| Ingestion | Markdown, texte, PDF, DOCX, tableurs, HTML, OCR d'images optionnel |
-| Extraction | Règles déterministes par défaut ; extraction LLM optionnelle |
+| Ingestion | Markdown, texte, PDF, DOCX, tableurs, HTML et fichiers d'images avec OCR/transcription optionnelle |
+| Extraction | Règles déterministes par défaut ; extraction LLM optionnelle et transcription d'images |
 | Analyse de périmètre | Analyse un document, les documents sélectionnés ou l'ensemble de la bibliothèque indexée |
 | Requêtes | Focus KPI, expliquer KPI, recherche de preuves, rayon d'impact, tracé de décision, suggestion d'actions, recherche de graphe, recherche de raisonnement |
 | Comparaison de graphe | Comparaison typée (avant/après) de deux instantanés de graphes — nœuds et arêtes ajoutés, modifiés et supprimés avec listes de champs modifiés |
@@ -299,7 +318,7 @@ src-tauri/          Hôte de démonstration local minimal
 | Workers | Infrastructure de découverte et de recalcul de KPI |
 | SDK | Types TypeScript générés, hooks React, transport Tauri |
 | Intégration | Serveur MCP (Model Context Protocol) standard pour les agents IA |
-| Démo | Application Tauri locale avec Brain Map, liste de documents, modal de comparaison de graphe, inspecteur côte à côte et paramètres |
+| Démo | Application Tauri locale avec Brain Map, liste de documents, modal de comparaison de graphe, importation d'images, inspecteur côte à côte et paramètres |
 
 ## Invariants clés
 
@@ -317,6 +336,7 @@ src-tauri/          Hôte de démonstration local minimal
 ## Statut d'authentification de session CLI
 
 - Testé : Le chemin d'accès du fournisseur LLM basé sur la session/connexion de Codex CLI fonctionne dans l'application Tauri.
+- PR4 : le chemin du fournisseur Codex prend désormais en charge les pièces jointes d'images pour la transcription d'images lors de l'importation.
 > Le modèle par défaut sélectionné pour Codex est `gpt-5.4-mini`, et le niveau d'intelligence par défaut est `low`. OpenAI et Codex peuvent modifier les modèles disponibles à tout moment, veuillez donc consulter la documentation de Codex CLI pour les dernières informations. Les surcharges de modèles utilisent `AXONMIND_CODEX_MODEL` (transmission), et les surcharges d'intelligence utilisent `AXONMIND_CODEX_INTELLIGENCE` (`minimal|low|medium|high|xhigh`) comme indiqué dans `env_example`.
 
 ## Fonctionnalités d'indexation de pages
@@ -329,7 +349,7 @@ La vérification de péremption dans `index_document` le confirme : elle recherc
 
 ### Ce qu'il faut faire dans l'interface utilisateur
 
-Dans la vue Processed Files : sélectionnez tous les documents → Regenerate selected. Cela lit à partir du blob déjà stocké (aucun nouveau téléversement requis), re-parse le fichier, reconstruit l'arborescence des sections et la stocke. Si aucun fournisseur d'IA n'est connecté, c'est très rapide — extraction de règles uniquement, pas d'appels LLM.
+Dans la vue Processed Files : sélectionnez tous les documents → Regenerate selected. Cela lit à partir du blob déjà stocké (aucun nouveau téléversement requis), re-parse le fichier, reconstruit l'arborescence des sections et la stocke. Si aucun fournisseur d'IA n'est connecté, les documents texte restent rapides et limités aux règles ; les fichiers d'images nécessitent soit un fournisseur LLM actif, soit une construction avec `--features ocr`.
 
 Alternativement, par document : le bouton Regenerate dans la colonne Actions fait la même chose pour un fichier à la fois.
 
@@ -341,7 +361,7 @@ Sans `--skip-unchanged`, cela ré-ingère tous les fichiers et alimente l'index 
 
 ### Ce qui n'est pas touché
 
-L'arborescence des sections est construite uniquement à partir de la structure du document analysé — aucune extraction LLM n'est impliquée à moins que `pageindex_enrich = true` (qui vaut false par défaut). Ré-ingérer des fichiers existants sans fournisseur d'IA est donc peu coûteux : analyse depuis le blob → construction de l'arborescence des en-têtes → écriture dans SQLite FTS. Les nœuds et arêtes du graphe sont également ré-insérés (upsert), mais c'est léger (ils existent déjà, c'est donc principalement des no-op).
+Pour les documents texte, l'arborescence des sections est construite uniquement à partir de la structure du document analysé — aucune extraction LLM n'est impliquée à moins que `pageindex_enrich = true` (qui vaut false par défaut). Ainsi, la réimportation de fichiers texte existants sans fournisseur d'IA est peu coûteuse : analyse à partir du blob → construction de l'arborescence des en-têtes → écriture dans SQLite FTS. Les fichiers d'images font exception : ils nécessitent une transcription par le fournisseur ou un OCR avant que cette structure analysée n'existe. Les nœuds et arêtes du graphe sont également ré-insérés (upsert), mais c'est léger (ils existent déjà, c'est donc principalement des no-ops).
 
 ### La régénération et la génération avec l'IA peuvent prendre du temps
 

@@ -77,7 +77,7 @@ You can then:
 - expose the knowledge graph to AI agents via the built-in MCP server
 - export or import graph state as JSON
 - embed the engine behind your own product UI
-- run a local Tauri demo app with Brain Map, documents, and side-by-side inspector views
+- run a local Tauri demo app with Brain Map, documents, image ingest, and side-by-side inspector views
 
 **Not in scope:** hosted SaaS, billing, cloud sync, SSO, RBAC, team management, or a managed control plane.
 
@@ -134,7 +134,7 @@ Build the macOS `.app` bundle:
 bun run tauri:build
 ```
 
-The demo works in rule-only mode without an API key. For LLM-backed Brain Map and richer extraction, add a provider key in the app settings or run a compatible local model server.
+The demo works in rule-only mode without an API key. For LLM-backed Brain Map, richer extraction, or image transcription, add a provider key in the app settings or run a compatible local model server.
 
 Supported cloud providers include Anthropic, OpenAI, Google Gemini, Groq, DeepSeek, and OpenRouter. Supported local server paths include Ollama, LM Studio, llama.cpp, Jan, and vLLM.
 
@@ -178,6 +178,8 @@ Cloud providers can be configured with API keys. If you use env-driven startup, 
 | DeepSeek | `DEEPSEEK_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
 
+When built with `--features llm`, image files can also be transcribed through the active provider and converted into structured markdown before indexing.
+
 ### Environment Settings
 
 Copy the template and set values for your local environment:
@@ -220,13 +222,30 @@ Local providers do not require an API key when their server is already running:
 
 ### OCR image ingestion
 
-Enable image OCR via local Tesseract:
+AxonMind PR4 adds image ingest for `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif`, and `gif`.
+
+There are now two supported paths:
+
+1. `--features llm` with an active provider: image files are transcribed into markdown through the provider's vision path, then indexed like other parsed documents.
+2. `--features ocr`: local Tesseract fallback for environments where you want OCR without a vision-capable provider.
+
+Enable local Tesseract OCR with:
 
 ```bash
 cargo build -p axonmind_engine --features ocr
 ```
 
-Supported image extensions include `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif`, and `gif`. If image ingestion is attempted without the `ocr` feature, AxonMind returns a clear error instead of silently producing an empty document.
+Build with both paths available if you want provider transcription first and local OCR as fallback:
+
+```bash
+cargo build -p axonmind_engine --features "llm ocr"
+```
+
+If image ingestion is attempted without an active LLM provider and without the `ocr` feature, AxonMind returns a clear error instead of silently producing an empty document.
+
+Not every provider adapter exposes image transcription. If a configured provider reports that image OCR is unsupported on that path, use a vision-capable provider or enable the local `ocr` fallback.
+
+The Tauri inspector shows parsed markdown/text for processed images just like other binary formats. For already-indexed files it prefers cached pageindex sections, then falls back to a preview parse if no cached sections exist yet.
 
 ## Personalized Optimization
 
@@ -290,8 +309,8 @@ src-tauri/          Minimal local demo host
 | Capability | Detail |
 |---|---|
 | Graph store | SQLite-backed store with WAL mode and `petgraph` cache |
-| Ingestion | Markdown, text, PDF, DOCX, spreadsheets, HTML, optional image OCR |
-| Extraction | Deterministic rules by default; optional LLM extraction |
+| Ingestion | Markdown, text, PDF, DOCX, spreadsheets, HTML, and image files with optional OCR/transcription |
+| Extraction | Deterministic rules by default; optional LLM extraction and image transcription |
 | Scope analysis | Analyze one document, selected documents, or the full indexed library |
 | Queries | KPI focus, explain KPI, evidence lookup, impact radius, trace decision, suggest actions, graph search, reasoning search |
 | Graph diff | Typed before/after diff of any two graph snapshots — added, modified, and removed nodes and edges with changed-field lists |
@@ -300,7 +319,7 @@ src-tauri/          Minimal local demo host
 | Workers | KPI discovery and KPI recomputation infrastructure |
 | SDK | Generated TypeScript types, React hooks, Tauri transport |
 | Integration | Standard MCP (Model Context Protocol) server for AI agents |
-| Demo | Local Tauri app with Brain Map, document list, graph diff modal, side-by-side file inspector, and settings |
+| Demo | Local Tauri app with Brain Map, document list, graph diff modal, image ingest, side-by-side file inspector, and settings |
 
 ## Key Invariants
 
@@ -318,6 +337,7 @@ src-tauri/          Minimal local demo host
 ## CLI Session Auth Status
 
 - Tested: Codex CLI login/session-based LLM provider path works in the Tauri app.
+- PR4: the Codex provider path now supports image attachments for image transcription during ingest.
 > The default model selected for Codex is `gpt-5.4-mini`, and the default intelligence level is `low`. OpenAI and Codex might change available models at any time, so please check the Codex CLI documentation for the latest information. Model overrides use `AXONMIND_CODEX_MODEL` (pass-through), and intelligence overrides use `AXONMIND_CODEX_INTELLIGENCE` (`minimal|low|medium|high|xhigh`) as shown in `env_example`.
 
 ## Page Indexing Features
@@ -330,7 +350,7 @@ The staleness check in `index_document` confirms this: it looks up `page_tree_sh
 
 ### What to do in the UI
 
-In the Processed Files view: select all documents → Regenerate selected. This reads from the already-stored blob (no re-upload needed), re-parses the file, rebuilds the section tree, and stores it. If no AI provider is connected, it's fast — rule extraction only, no LLM calls.
+In the Processed Files view: select all documents → Regenerate selected. This reads from the already-stored blob (no re-upload needed), re-parses the file, rebuilds the section tree, and stores it. If no AI provider is connected, text-based documents are still fast and stay rule-only; image files need either an active LLM provider or a build with `--features ocr`.
 
 Alternatively, per-document: the Regenerate button in the Actions column does the same for one file at a time.
 
@@ -342,7 +362,7 @@ Without `--skip-unchanged`, this re-ingests all files and populates the page ind
 
 ### What this does not touch
 
-The section tree is built purely from the parsed document structure — no LLM extraction involved unless pageindex_enrich = true (which defaults to false). So re-ingesting existing files without an AI provider is cheap: parse from blob → build headings tree → write to SQLite FTS. The graph nodes and edges also get re-upserted but that's lightweight (they already exist, so it's mostly no-ops).
+For text-based documents, the section tree is built purely from the parsed document structure — no LLM extraction involved unless `pageindex_enrich = true` (which defaults to false). So re-ingesting existing text files without an AI provider is cheap: parse from blob → build headings tree → write to SQLite FTS. Image files are the exception: they need provider transcription or OCR before that parsed structure exists. The graph nodes and edges also get re-upserted but that's lightweight (they already exist, so it's mostly no-ops).
 
 ### Regeneration and Generation with AI might take long
 

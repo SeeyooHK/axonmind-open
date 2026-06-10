@@ -76,7 +76,7 @@ flowchart LR
 - 通过内置的 MCP 服务将知识图谱开放给 AI Agent
 - 将图谱状态导出或导入为 JSON
 - 在你自己的产品 UI 后嵌入该引擎
-- 运行一个带有 Brain Map、文档和双栏文件检查器视图的本地 Tauri 演示应用
+- 运行一个带有 Brain Map、文档、图像摄取和双栏文件检查器视图的本地 Tauri 演示应用
 
 **不在范围内：** 托管的 SaaS、计费、云同步、SSO、RBAC、团队管理或托管的控制平面。
 
@@ -133,7 +133,7 @@ pkill -f "tauri dev"; pkill -f "axonmind-host"; bun tauri dev
 bun run tauri:build
 ```
 
-演示应用在没有 API 密钥的情况下运行在仅规则模式下。若要体验 LLM 支持的 Brain Map 和更丰富的提取，请在应用设置中添加提供商密钥，或运行兼容的本地模型服务器。
+演示应用在没有 API 密钥的情况下运行在仅规则模式下。若要体验 LLM 支持的 Brain Map、更丰富的提取或图像转录，请在应用设置中添加提供商密钥，或运行兼容的本地模型服务器。
 
 支持的云提供商包括 Anthropic、OpenAI、Google Gemini、Groq、DeepSeek 和 OpenRouter。支持的本地服务器路径包括 Ollama、LM Studio、llama.cpp、Jan 和 vLLM。
 
@@ -177,6 +177,8 @@ cargo build -p axonmind_engine --features llm
 | DeepSeek | `DEEPSEEK_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
 
+当使用 `--features llm` 构建时，图像文件也可以通过当前启用的提供商进行转录，并在索引之前转换为结构化的 markdown。
+
 ### 环境设置
 
 复制模板并为你的本地环境设置值：
@@ -219,13 +221,30 @@ cp env_example .env.local
 
 ### OCR 图像摄取
 
-通过本地 Tesseract 启用图像 OCR：
+AxonMind PR4 增加了对 `jpg`、`jpeg`、`png`、`bmp`、`webp`、`tiff`、`tif` 和 `gif` 的图像摄取支持。
+
+目前支持以下两种路径：
+
+1. `--features llm` 且有启用的提供商：图像文件会通过提供商的视觉路径转录为 markdown，然后像其他解析的文档一样被索引。
+2. `--features ocr`：在没有支持视觉的提供商的环境中，作为本地 Tesseract 的后备方案。
+
+通过以下方式启用本地 Tesseract OCR：
 
 ```bash
 cargo build -p axonmind_engine --features ocr
 ```
 
-支持的图像扩展名包括 `jpg`、`jpeg`、`png`、`bmp`、`webp`、`tiff`、`tif` 和 `gif`。如果在没有启用 `ocr` 特性的情况下尝试摄取图像，AxonMind 会返回明确的错误，而不是静默生成空文档。
+如果您希望首选提供商转录，并将本地 OCR 作为后备方案，请在构建时同时启用这两种路径：
+
+```bash
+cargo build -p axonmind_engine --features "llm ocr"
+```
+
+如果在没有启用的 LLM 提供商且没有 `ocr` 特性的情况下尝试摄取图像，AxonMind 会返回明确的错误，而不是静默生成空文档。
+
+并非所有提供商适配器都支持图像转录。如果配置的提供商报告该路径不支持图像 OCR，请使用支持视觉的提供商或启用本地 `ocr` 后备方案。
+
+Tauri 检查器会像处理其他二进制格式一样，显示已处理图像解析后的 markdown/文本。对于已索引的文件，它会优先使用缓存的 pageindex 章节，如果缓存章节尚不存在，则会回退到预览解析。
 
 ## 个性化优化
 
@@ -289,8 +308,8 @@ src-tauri/          极简本地演示宿主
 | 功能 | 详情 |
 |---|---|
 | 图谱存储 | 带有 WAL 模式和 `petgraph` 缓存的 SQLite 后端存储 |
-| 摄取 | Markdown、文本、PDF、DOCX、电子表格、HTML，可选的图像 OCR |
-| 提取 | 默认使用确定性规则；可选的 LLM 提取 |
+| 摄取 | Markdown、文本、PDF、DOCX、电子表格、HTML，以及可选 OCR/转录的图像文件 |
+| 提取 | 默认使用确定性规则；可选的 LLM 提取和图像转录 |
 | 范围分析 | 分析单个文档、选定的文档或完整的已索引库 |
 | 查询 | KPI 关注、KPI 解释、证据查找、影响半径、决策追溯、操作建议、图谱搜索、推理搜索 |
 | 图谱对比 | 对任意两个图谱快照进行有类型的对比（前/后）—— 包含新增、修改和删除的节点与边，以及变化字段列表 |
@@ -299,7 +318,7 @@ src-tauri/          极简本地演示宿主
 | 工作协程 | KPI 发现和 KPI 重新计算基础设施 |
 | SDK | 生成的 TypeScript 类型、React hooks、Tauri 传输 |
 | 集成 | 面向 AI Agent 的标准 MCP (Model Context Protocol) 服务 |
-| 演示 | 带有 Brain Map、文档列表、图谱对比弹窗、双栏文件检查器和设置的本地 Tauri 应用 |
+| 演示 | 带有 Brain Map、文档列表、图谱对比弹窗、图像摄取、双栏文件检查器和设置的本地 Tauri 应用 |
 
 ## 关键不变性
 
@@ -317,6 +336,7 @@ src-tauri/          极简本地演示宿主
 ## CLI 会话身份验证状态
 
 - 已测试：Codex CLI 登录/基于会话的 LLM 提供商路径在 Tauri 应用中运行正常。
+- PR4：Codex 提供商路径现在支持图像附件，用于摄取期间的图像转录。
 > Codex 的默认选择模型为 `gpt-5.4-mini`，默认智能级别为 `low`。OpenAI 和 Codex 随时可能更改可用模型，请查看 Codex CLI 文档以获取最新信息。模型覆盖使用 `AXONMIND_CODEX_MODEL`（透传），智能级别覆盖使用 `AXONMIND_CODEX_INTELLIGENCE`（`minimal|low|medium|high|xhigh`），如 `env_example` 所示。
 
 ## 页面索引特性
@@ -329,7 +349,7 @@ src-tauri/          极简本地演示宿主
 
 ### 在 UI 中该怎么做
 
-在 Processed Files（已处理文件）视图中：选择所有文档 → Regenerate selected（重新生成选定内容）。这将从已存储的 blob 中读取（无需重新上传），重新解析文件，重新构建部分树并将其存入。如果没有连接 AI 提供商，这会非常快——仅进行规则提取，没有 LLM 调用。
+在 Processed Files（已处理文件）视图中：选择所有文档 → Regenerate selected（重新生成选定内容）。这将从已存储的 blob 中读取（无需重新上传），重新解析文件，重新构建部分树并将其存入。如果没有连接 AI 提供商，文本类型的文档仍然很快并保持仅限规则；图像文件则需要有启用的 LLM 提供商或带有 `--features ocr` 的构建版本。
 
 或者，针对单个文档：Actions 列中的 Regenerate 按钮可以对单个文件执行相同操作。
 
@@ -341,7 +361,7 @@ src-tauri/          极简本地演示宿主
 
 ### 这不会触及什么
 
-部分树纯粹从解析的文档结构构建——除非 `pageindex_enrich = true`（默认值为 false），否则不涉及 LLM 提取。因此，在没有 AI 提供商的情况下重新摄入现有文件非常廉价：从 blob 解析 → 构建标题树 → 写入 SQLite FTS。图谱节点和边也会被重新 upsert，但那是轻量级的（它们已存在，所以大多是无操作）。
+对于文本类型的文档，部分树纯粹从解析的文档结构构建——除非 `pageindex_enrich = true`（默认值为 false），否则不涉及 LLM 提取。因此，在没有 AI 提供商的情况下重新摄入现有文本文件非常廉价：从 blob 解析 → 构建标题树 → 写入 SQLite FTS。图像文件是例外：在获得其解析的结构之前，它们需要提供商转录或 OCR。图谱节点和边也会被重新 upsert，但那是轻量级的（它们已存在，所以大多是无操作）。
 
 ### 使用 AI 重新生成和生成可能需要很长时间
 
