@@ -532,6 +532,134 @@ async fn test_funnel_doc_filter() {
     );
 }
 
+// ── rebuild_page_index tests ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_rebuild_page_index_restores_searchability() {
+    // rebuild_page_index must re-populate page_* for a document whose page_tree row was deleted
+    // (simulating documents indexed before the pageindex feature existed). This is the primary
+    // use case the command exists for — without it, "Search Contents" silently returns nothing
+    // for pre-existing docs and the user has no targeted fix short of full regeneration.
+    let dir = TempDir::new().unwrap();
+    let cfg = engine_config(&dir);
+    let engine = AxonMindEngine::open(cfg.clone()).await.expect("engine open");
+
+    let content = "# Revenue Growth\n\nRevenue grew 20% driven by enterprise deals.\n\n## Q2 Results\n\nQ2 revenue was $8M.";
+    let md_dir = TempDir::new().unwrap();
+    let md_path = md_dir.path().join("revenue.md");
+    std::fs::write(&md_path, content).unwrap();
+
+    engine
+        .ingest_sync(
+            IngestSource::File(md_path),
+            IngestOptions {
+                recursive: false,
+                skip_unchanged: false,
+                max_file_size_bytes: 10 * 1024 * 1024,
+            },
+        )
+        .await
+        .expect("ingest failed");
+
+    // Confirm sections exist after normal ingest.
+    let before = engine
+        .reasoning_search(ReasoningSearchInput {
+            query: "revenue".to_string(),
+            doc_node_ids: None,
+            max_results: Some(5),
+        })
+        .await
+        .expect("search before delete");
+    assert!(!before.sections.is_empty(), "sections must exist after ingest");
+
+    // Simulate pre-pageindex state: delete page_tree and page_sections rows.
+    // After this, page_tree_sha returns None, which causes index_document to rebuild.
+    let pool = deadpool_sqlite::Config::new(&cfg.database_path)
+        .builder(deadpool_sqlite::Runtime::Tokio1)
+        .expect("pool builder")
+        .build()
+        .expect("pool build");
+    let conn = pool.get().await.expect("get conn");
+    conn.interact(|conn| {
+        conn.execute_batch(
+            "DELETE FROM page_section_fts;
+             DELETE FROM page_sections;
+             DELETE FROM page_tree;",
+        )
+    })
+    .await
+    .expect("interact")
+    .expect("delete page rows");
+
+    // Confirm search no longer works.
+    let after_delete = engine
+        .reasoning_search(ReasoningSearchInput {
+            query: "revenue".to_string(),
+            doc_node_ids: None,
+            max_results: Some(5),
+        })
+        .await
+        .expect("search after delete");
+    assert!(
+        after_delete.sections.is_empty(),
+        "search must return nothing after page_* rows are deleted"
+    );
+
+    // rebuild_page_index should restore searchability without touching graph tables.
+    let (processed, skipped, errors) = engine.rebuild_page_index().await.expect("rebuild failed");
+    assert!(errors.is_empty(), "rebuild errors: {errors:?}");
+    assert_eq!(skipped, 0, "no docs should be skipped (all have sha256 + source_path)");
+    assert!(processed >= 1, "at least one document must be processed");
+
+    let after_rebuild = engine
+        .reasoning_search(ReasoningSearchInput {
+            query: "revenue".to_string(),
+            doc_node_ids: None,
+            max_results: Some(5),
+        })
+        .await
+        .expect("search after rebuild");
+    assert!(
+        !after_rebuild.sections.is_empty(),
+        "sections must be searchable after rebuild_page_index"
+    );
+}
+
+#[tokio::test]
+async fn test_rebuild_page_index_skips_unchanged() {
+    // A second consecutive rebuild_page_index must not error on documents whose page_tree sha
+    // already matches — index_document is a no-op in this case (staleness check inside).
+    // The engine counts both outcomes as "processed" (index_document returns Ok for both);
+    // this test pins that behaviour so a future counter fix gets a failing test to guide it.
+    let dir = TempDir::new().unwrap();
+    let engine = open_engine(&dir).await;
+
+    let content = "# Churn\n\nWe track monthly churn as a key metric.";
+    let md_dir = TempDir::new().unwrap();
+    let md_path = md_dir.path().join("churn2.md");
+    std::fs::write(&md_path, content).unwrap();
+
+    engine
+        .ingest_sync(
+            IngestSource::File(md_path),
+            IngestOptions {
+                recursive: false,
+                skip_unchanged: false,
+                max_file_size_bytes: 10 * 1024 * 1024,
+            },
+        )
+        .await
+        .expect("ingest failed");
+
+    // First rebuild (sha already matches after normal ingest — staleness check fires immediately).
+    let (_, _, errors1) = engine.rebuild_page_index().await.expect("first rebuild");
+    assert!(errors1.is_empty(), "no errors on first rebuild: {errors1:?}");
+
+    // Second rebuild — must also be error-free.
+    let (_, _, errors2) = engine.rebuild_page_index().await.expect("second rebuild");
+    assert!(errors2.is_empty(), "no errors on second rebuild: {errors2:?}");
+}
+
 // ── Engine-level ingest hook test ─────────────────────────────────────────────
 
 #[tokio::test]

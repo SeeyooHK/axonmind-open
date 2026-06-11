@@ -1,7 +1,7 @@
 use super::llm::{
-    EntityExtractionInput, EntityExtractionOutput, LlmProvider, RelationExtractionInput,
-    RelationExtractionOutput, SemanticLink, SemanticLinkInput, SemanticLinkOutput,
-    extract_json_object,
+    BatchRelation, EntityExtractionInput, EntityExtractionOutput, LlmProvider,
+    RelationBatchInput, RelationBatchOutput, RelationExtractionInput, RelationExtractionOutput,
+    SemanticLink, SemanticLinkInput, SemanticLinkOutput, extract_json_object,
 };
 use async_trait::async_trait;
 use axonmind_core::AxonMindError;
@@ -164,6 +164,49 @@ impl LlmProvider for OpenAiProvider {
             edge_kind: parsed.edge_kind,
             confidence: parsed.confidence.clamp(0.0, 1.0),
             quote: parsed.quote,
+        })
+    }
+
+    async fn extract_relations_batch(
+        &self,
+        input: RelationBatchInput,
+    ) -> Result<RelationBatchOutput, AxonMindError> {
+        if input.candidate_pairs.is_empty() {
+            return Ok(RelationBatchOutput { relations: vec![] });
+        }
+        let entity_list = numbered(&input.entities);
+        let pair_list = input
+            .candidate_pairs
+            .iter()
+            .map(|(a, b)| format!("({a}, {b})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let system = "You are a business knowledge graph relation extractor.\n\
+             You are given a numbered list of entities and candidate pairs to judge from a single paragraph.\n\
+             Return ONLY pairs where the paragraph text explicitly states or clearly implies a relationship.\n\
+             Returning an empty list is correct when none of the pairs are substantiated.\n\
+             Return JSON: {\"relations\": [{\"from\": <int>, \"to\": <int>, \"edge_kind\": \"...\", \
+             \"confidence\": 0.0–1.0, \"quote\": \"verbatim_text\"}, ...]}\n\
+             from and to must be indices from the submitted candidate pairs.\n\
+             edge_kind must be one of: Influences, Causes, CorrelatesWith, DependsOn, Blocks, \
+             DerivedFrom, Improves, Degrades, OwnedBy, MeasuredBy, MentionedIn, DecidedBy, \
+             AssignedTo, InFunction, ForProduct, Impacts, NextAction.";
+        let user = format!(
+            "Entities:\n{entity_list}\n\nCandidate pairs (from, to): {pair_list}\n\nParagraph:\n{}",
+            input.context_paragraph
+        );
+        let content = self.complete_json(system, &user).await?;
+        if content.trim().is_empty() {
+            return Ok(RelationBatchOutput { relations: vec![] });
+        }
+        #[derive(Deserialize)]
+        struct Resp {
+            relations: Vec<BatchRelation>,
+        }
+        let parsed: Resp = serde_json::from_str(extract_json_object(&content))
+            .map_err(|e| AxonMindError::LlmProvider(format!("relation batch parse: {e}")))?;
+        Ok(RelationBatchOutput {
+            relations: parsed.relations,
         })
     }
 

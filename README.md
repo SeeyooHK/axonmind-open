@@ -366,13 +366,18 @@ Practical options right now:
 # No LLM key in config → rule-only + pageindex, very fast
 `axonmind index <path> --workspace <dir>`
 
-### Future improvement worth noting (TODO)
+### Backfill with rebuild-page-index
 
-A dedicated rebuild-page-index command — analogous to the existing rebuild-search-index — that walks document_cache, reads each blob, and populates page_* without touching graph tables at all. That would be the cleanest backfill path, but it doesn't exist yet.
+To repopulate page_* tables for pre-existing documents without touching graph tables:
+
+```bash
+axonmind rebuild-page-index --workspace <dir>
+```
+
+This reads each document from its stored blob, rebuilds the section tree, and writes to `page_tree` and `page_sections` only. No LLM calls are made unless `pageindex_enrich = true`. It is the recommended backfill path — cheaper and more targeted than bulk Regenerate from the UI, which also re-runs graph extraction.
 
 ## TODO
 1. Test Claude Code and Antigravity LLM provider paths end-to-end.
-2. A dedicated rebuild-page-index command mentioned above.
 
 ## Contributing
 ### 🚀 Contribution Policy
