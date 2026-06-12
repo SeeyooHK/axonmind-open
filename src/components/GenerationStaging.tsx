@@ -138,7 +138,7 @@ export function GenerationStaging({ items, generationName, onNameChange, onGener
                 )}
                 <button
                   onClick={() => onRemove(item.id)}
-                  title="Remove from list"
+                  title="Remove from this batch only"
                   style={{ background: "none", border: "none", color: "#334155", cursor: "pointer", fontSize: 16, padding: "0 2px", flexShrink: 0, lineHeight: 1 }}
                 >
                   ×
@@ -147,6 +147,10 @@ export function GenerationStaging({ items, generationName, onNameChange, onGener
 
             </div>
           ))}
+        </div>
+
+        <div style={{ marginTop: "-0.75rem", marginBottom: "1rem", fontSize: 11, color: "#64748b" }}>
+          Removing an item here only clears it from this batch. To delete indexed concepts and evidence, use Remove in Processed Files.
         </div>
 
         {/* Generate button */}

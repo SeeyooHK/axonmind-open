@@ -74,6 +74,35 @@ pub struct RelationExtractionOutput {
     pub quote: String,
 }
 
+/// Batch relation extraction for a single paragraph: all candidate pairs at once.
+///
+/// `entities` is index-ordered; `candidate_pairs` lists (from_idx, to_idx) pairs the caller
+/// wants judged. Pairs already covered by rule extraction are excluded by the caller.
+/// The model should return only pairs where the paragraph actually expresses a relationship —
+/// returning an empty list is correct when none of the pairs are substantiated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelationBatchInput {
+    pub entities: Vec<String>,
+    pub candidate_pairs: Vec<(usize, usize)>,
+    pub context_paragraph: String,
+}
+
+/// One relation found in a batch call. `from` and `to` are indices into
+/// `RelationBatchInput::entities` and must be values the caller actually submitted as candidates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchRelation {
+    pub from: usize,
+    pub to: usize,
+    pub edge_kind: String,
+    pub confidence: f32,
+    pub quote: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelationBatchOutput {
+    pub relations: Vec<BatchRelation>,
+}
+
 /// Phase 3 (E v2): input for cross-document semantic linking. Both lists are index-ordered;
 /// returned links refer to concepts by their position in these vectors.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +148,40 @@ pub trait LlmProvider: Send + Sync {
         &self,
         input: RelationExtractionInput,
     ) -> Result<RelationExtractionOutput, AxonMindError>;
+
+    /// Batch variant: judge all candidate entity pairs in a single paragraph with one LLM call.
+    ///
+    /// Default implementation loops over `candidate_pairs` and calls `extract_relations` for each.
+    /// Providers should override this to issue a single structured-output call instead.
+    /// Returning an empty `relations` vec is valid when none of the pairs are substantiated.
+    async fn extract_relations_batch(
+        &self,
+        input: RelationBatchInput,
+    ) -> Result<RelationBatchOutput, AxonMindError> {
+        let mut relations = Vec::new();
+        for (from, to) in &input.candidate_pairs {
+            let a = input.entities.get(*from).cloned().unwrap_or_default();
+            let b = input.entities.get(*to).cloned().unwrap_or_default();
+            if a.is_empty() || b.is_empty() {
+                continue;
+            }
+            let result = self
+                .extract_relations(RelationExtractionInput {
+                    entity_a: a,
+                    entity_b: b,
+                    context_paragraph: input.context_paragraph.clone(),
+                })
+                .await?;
+            relations.push(BatchRelation {
+                from: *from,
+                to: *to,
+                edge_kind: result.edge_kind,
+                confidence: result.confidence,
+                quote: result.quote,
+            });
+        }
+        Ok(RelationBatchOutput { relations })
+    }
 
     /// Phase 3 (E v2): find meaningful business relationships between concepts from the document
     /// just ingested and concepts already in the graph (from other documents). Returns only

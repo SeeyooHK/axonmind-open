@@ -16,7 +16,7 @@ fn test_engine_config(dir: &TempDir) -> EngineConfig {
 #[test]
 fn tool_defs_count_and_names() {
     let defs = tool_defs();
-    assert_eq!(defs.len(), 10);
+    assert_eq!(defs.len(), 11);
     let names: Vec<_> = defs.iter().map(|t| t.name).collect();
     assert!(names.contains(&"focus_kpi"));
     assert!(names.contains(&"explain_kpi"));
@@ -28,6 +28,7 @@ fn tool_defs_count_and_names() {
     assert!(names.contains(&"reasoning_search"));
     assert!(names.contains(&"graph_stats"));
     assert!(names.contains(&"graph_diff"));
+    assert!(names.contains(&"find_conflicts"));
 }
 
 #[test]
@@ -107,6 +108,7 @@ fn sample_args(tool_name: &str) -> Value {
             });
             json!({ "before": empty_export.clone(), "after": empty_export })
         }
+        "find_conflicts" => json!({ "node_id": "kpi.test", "limit": 10 }),
         _ => json!({}),
     }
 }

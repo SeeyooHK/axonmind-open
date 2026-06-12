@@ -147,5 +147,16 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 "required": ["before", "after"]
             }),
         },
+        ToolDef {
+            name: "find_conflicts",
+            description: "Surface node pairs where the graph holds contradictory claims: one side improves/corroborates, the other degrades/blocks/contradicts. Each pair is returned with its cited evidence on both sides.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "node_id": { "type": "string", "description": "Restrict to conflicts touching this node id. Default: scan the whole graph." },
+                    "limit": { "type": "integer", "description": "Max conflict pairs to return. Default: 50." }
+                }
+            }),
+        },
     ]
 }
