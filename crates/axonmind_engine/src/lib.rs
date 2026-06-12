@@ -26,11 +26,11 @@ use crate::ingest::{
 };
 use crate::pageindex::{PageIndexSearchCfg, PageIndexStore};
 use crate::query::{
-    ExplainKpiInput, ExplainKpiOutput, FocusKpiInput, FocusKpiOutput, GetEvidenceInput,
-    GetEvidenceOutput, GraphDiff, GraphSearchInput, GraphSearchOutput, GraphStatsOutput,
-    ImpactRadiusInput, ImpactRadiusOutput, NodeKindCount, ReasoningSearchInput,
-    ReasoningSearchOutput, SuggestActionsInput, SuggestActionsOutput, TraceDecisionInput,
-    TraceDecisionOutput,
+    ExplainKpiInput, ExplainKpiOutput, FindConflictsInput, FindConflictsOutput, FocusKpiInput,
+    FocusKpiOutput, GetEvidenceInput, GetEvidenceOutput, GraphDiff, GraphSearchInput,
+    GraphSearchOutput, GraphStatsOutput, ImpactRadiusInput, ImpactRadiusOutput, NodeKindCount,
+    ReasoningSearchInput, ReasoningSearchOutput, SuggestActionsInput, SuggestActionsOutput,
+    TraceDecisionInput, TraceDecisionOutput,
 };
 use crate::store::{
     DocumentSummary, GraphCache, GraphMutation, GraphStore,
@@ -757,6 +757,13 @@ impl AxonMindEngine {
     }
 
     // ── Queries ───────────────────────────────────────────────────────────────
+
+    pub async fn find_conflicts(
+        &self,
+        input: FindConflictsInput,
+    ) -> Result<FindConflictsOutput, AxonMindError> {
+        query::conflicts::find_conflicts(input, &self.store, &self.graph_cache).await
+    }
 
     pub async fn focus_kpi(&self, input: FocusKpiInput) -> Result<FocusKpiOutput, AxonMindError> {
         query::focus::focus_kpi(input, &self.store, &self.graph_cache).await

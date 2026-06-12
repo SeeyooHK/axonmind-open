@@ -70,6 +70,7 @@ fn init_inner<R: Runtime>(
             crate::commands::reasoning_search,
             crate::commands::graph_diff,
             crate::commands::graph_stats,
+            crate::commands::find_conflicts,
             crate::commands::index_path,
             crate::commands::index_markdown,
             crate::commands::list_documents,

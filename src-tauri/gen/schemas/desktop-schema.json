@@ -177,10 +177,10 @@
       "description": "Permission identifier",
       "oneOf": [
         {
-          "description": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-focus-kpi`\n- `allow-explain-kpi`\n- `allow-get-evidence`\n- `allow-impact-radius`\n- `allow-trace-decision`\n- `allow-suggest-actions`\n- `allow-graph-search`\n- `allow-reasoning-search`\n- `allow-graph-diff`\n- `allow-graph-stats`\n- `allow-index-path`\n- `allow-index-markdown`\n- `allow-list-documents`\n- `allow-remove-document`\n- `allow-regenerate-document`\n- `allow-export-json`\n- `allow-suggest-summary`\n- `allow-get-brain-map-default-config`\n- `allow-update-brain-map-default-config`\n- `allow-restore-brain-map-default-config`\n- `allow-resolve-brain-map-default-summary`\n- `allow-resolve-brain-map-lens-children`\n- `allow-rebuild-search-index`\n- `allow-create-generation-from-paths`\n- `allow-list-generations`\n- `allow-export-generation`\n- `allow-list-dir-files`\n- `allow-read-file-text`\n- `allow-list-api-keys`\n- `allow-has-active-api-key`\n- `allow-get-runtime-provider-status`\n- `allow-save-api-key`\n- `allow-delete-api-key`\n- `allow-set-active-provider`\n- `allow-detect-cli-sessions`\n- `allow-get-cli-session-options`\n- `allow-use-cli-session`",
+          "description": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-focus-kpi`\n- `allow-explain-kpi`\n- `allow-get-evidence`\n- `allow-impact-radius`\n- `allow-trace-decision`\n- `allow-suggest-actions`\n- `allow-graph-search`\n- `allow-reasoning-search`\n- `allow-graph-diff`\n- `allow-graph-stats`\n- `allow-find-conflicts`\n- `allow-index-path`\n- `allow-index-markdown`\n- `allow-list-documents`\n- `allow-remove-document`\n- `allow-regenerate-document`\n- `allow-export-json`\n- `allow-suggest-summary`\n- `allow-get-brain-map-default-config`\n- `allow-update-brain-map-default-config`\n- `allow-restore-brain-map-default-config`\n- `allow-resolve-brain-map-default-summary`\n- `allow-resolve-brain-map-lens-children`\n- `allow-rebuild-search-index`\n- `allow-create-generation-from-paths`\n- `allow-list-generations`\n- `allow-export-generation`\n- `allow-list-dir-files`\n- `allow-read-file-text`\n- `allow-list-api-keys`\n- `allow-has-active-api-key`\n- `allow-get-runtime-provider-status`\n- `allow-save-api-key`\n- `allow-delete-api-key`\n- `allow-set-active-provider`\n- `allow-detect-cli-sessions`\n- `allow-get-cli-session-options`\n- `allow-use-cli-session`",
           "type": "string",
           "const": "axonmind:default",
-          "markdownDescription": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-focus-kpi`\n- `allow-explain-kpi`\n- `allow-get-evidence`\n- `allow-impact-radius`\n- `allow-trace-decision`\n- `allow-suggest-actions`\n- `allow-graph-search`\n- `allow-reasoning-search`\n- `allow-graph-diff`\n- `allow-graph-stats`\n- `allow-index-path`\n- `allow-index-markdown`\n- `allow-list-documents`\n- `allow-remove-document`\n- `allow-regenerate-document`\n- `allow-export-json`\n- `allow-suggest-summary`\n- `allow-get-brain-map-default-config`\n- `allow-update-brain-map-default-config`\n- `allow-restore-brain-map-default-config`\n- `allow-resolve-brain-map-default-summary`\n- `allow-resolve-brain-map-lens-children`\n- `allow-rebuild-search-index`\n- `allow-create-generation-from-paths`\n- `allow-list-generations`\n- `allow-export-generation`\n- `allow-list-dir-files`\n- `allow-read-file-text`\n- `allow-list-api-keys`\n- `allow-has-active-api-key`\n- `allow-get-runtime-provider-status`\n- `allow-save-api-key`\n- `allow-delete-api-key`\n- `allow-set-active-provider`\n- `allow-detect-cli-sessions`\n- `allow-get-cli-session-options`\n- `allow-use-cli-session`"
+          "markdownDescription": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-focus-kpi`\n- `allow-explain-kpi`\n- `allow-get-evidence`\n- `allow-impact-radius`\n- `allow-trace-decision`\n- `allow-suggest-actions`\n- `allow-graph-search`\n- `allow-reasoning-search`\n- `allow-graph-diff`\n- `allow-graph-stats`\n- `allow-find-conflicts`\n- `allow-index-path`\n- `allow-index-markdown`\n- `allow-list-documents`\n- `allow-remove-document`\n- `allow-regenerate-document`\n- `allow-export-json`\n- `allow-suggest-summary`\n- `allow-get-brain-map-default-config`\n- `allow-update-brain-map-default-config`\n- `allow-restore-brain-map-default-config`\n- `allow-resolve-brain-map-default-summary`\n- `allow-resolve-brain-map-lens-children`\n- `allow-rebuild-search-index`\n- `allow-create-generation-from-paths`\n- `allow-list-generations`\n- `allow-export-generation`\n- `allow-list-dir-files`\n- `allow-read-file-text`\n- `allow-list-api-keys`\n- `allow-has-active-api-key`\n- `allow-get-runtime-provider-status`\n- `allow-save-api-key`\n- `allow-delete-api-key`\n- `allow-set-active-provider`\n- `allow-detect-cli-sessions`\n- `allow-get-cli-session-options`\n- `allow-use-cli-session`"
         },
         {
           "description": "Enables the create_generation_from_paths command without any pre-configured scope.",
@@ -217,6 +217,12 @@
           "type": "string",
           "const": "axonmind:allow-export-json",
           "markdownDescription": "Enables the export_json command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the find_conflicts command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:allow-find-conflicts",
+          "markdownDescription": "Enables the find_conflicts command without any pre-configured scope."
         },
         {
           "description": "Enables the focus_kpi command without any pre-configured scope.",
@@ -439,6 +445,12 @@
           "type": "string",
           "const": "axonmind:deny-export-json",
           "markdownDescription": "Denies the export_json command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the find_conflicts command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:deny-find-conflicts",
+          "markdownDescription": "Denies the find_conflicts command without any pre-configured scope."
         },
         {
           "description": "Denies the focus_kpi command without any pre-configured scope.",

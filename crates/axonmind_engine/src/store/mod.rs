@@ -856,6 +856,34 @@ impl GraphStore {
         .map_err(|e| AxonMindError::Database(e.to_string()))?
     }
 
+    pub(crate) async fn fetch_all_edges(&self) -> Result<Vec<Edge>, AxonMindError> {
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+        conn.interact(move |conn| -> Result<Vec<Edge>, AxonMindError> {
+            let edge_ids: Vec<String> = {
+                let mut stmt = conn
+                    .prepare("SELECT id FROM edges")
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                let x = stmt
+                    .query_map([], |row| row.get(0))
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?
+                    .collect::<rusqlite::Result<_>>()
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                x
+            };
+            edge_ids
+                .iter()
+                .filter_map(|eid| fetch_edge_inner(conn, eid).transpose())
+                .collect()
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(e.to_string()))?
+    }
+
     pub(crate) async fn fetch_evidence_for_node(
         &self,
         node_id: &NodeId,

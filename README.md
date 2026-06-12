@@ -294,6 +294,7 @@ src-tauri/          Minimal local demo host
 | Extraction | Deterministic rules by default; optional LLM extraction |
 | Scope analysis | Analyze one document, selected documents, or the full indexed library |
 | Queries | KPI focus, explain KPI, evidence lookup, impact radius, trace decision, suggest actions, graph search, reasoning search |
+| Contradiction detection | `find_conflicts` query — surfaces node pairs where the graph holds contradictory claims, with cited evidence on both sides |
 | Graph diff | Typed before/after diff of any two graph snapshots — added, modified, and removed nodes and edges with changed-field lists |
 | Graph stats | Per-kind node counts and total edge count via engine method, CLI, and MCP tool |
 | Evidence | Relationship citations and source spans are first-class graph data |

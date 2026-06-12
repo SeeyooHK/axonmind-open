@@ -5,11 +5,11 @@ use axonmind_core::NodeId;
 use axonmind_engine::{
     ingest::{IngestOptions, IngestSource, IngestSummary},
     query::{
-        ExplainKpiInput, ExplainKpiOutput, FocusKpiInput, FocusKpiOutput, GetEvidenceInput,
-        GetEvidenceOutput, GraphDiff, GraphExportV1, GraphSearchInput, GraphSearchOutput,
-        GraphStatsOutput, ImpactRadiusInput, ImpactRadiusOutput, ReasoningSearchInput,
-        ReasoningSearchOutput, SuggestActionsInput, SuggestActionsOutput, TraceDecisionInput,
-        TraceDecisionOutput,
+        ExplainKpiInput, ExplainKpiOutput, FindConflictsInput, FindConflictsOutput, FocusKpiInput,
+        FocusKpiOutput, GetEvidenceInput, GetEvidenceOutput, GraphDiff, GraphExportV1,
+        GraphSearchInput, GraphSearchOutput, GraphStatsOutput, ImpactRadiusInput,
+        ImpactRadiusOutput, ReasoningSearchInput, ReasoningSearchOutput, SuggestActionsInput,
+        SuggestActionsOutput, TraceDecisionInput, TraceDecisionOutput,
     },
     store::{
         DocumentSummary,
@@ -115,6 +115,18 @@ pub async fn graph_diff(
     after: GraphExportV1,
 ) -> Result<GraphDiff, String> {
     Ok(state.0.graph_diff(&before, &after))
+}
+
+#[tauri::command]
+pub async fn find_conflicts(
+    state: State<'_, EngineState>,
+    input: FindConflictsInput,
+) -> Result<FindConflictsOutput, String> {
+    state
+        .0
+        .find_conflicts(input)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ── Ingest commands ───────────────────────────────────────────────────────────
