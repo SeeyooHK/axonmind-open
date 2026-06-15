@@ -30,7 +30,7 @@ export interface SuggestActionsOutput { actions: Node[]; }
 
 // ── graph_stats ───────────────────────────────────────────────────────────────
 
-export interface NodeKindCount { kind: string; count: number; }
+export interface NodeKindCount { kind: NodeKind; count: number; }
 export interface GraphStatsOutput {
   total_nodes: number;
   document_nodes: number;
