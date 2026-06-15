@@ -12,6 +12,7 @@ const COMMANDS: &[&str] = &[
     "find_conflicts",
     "index_path",
     "index_markdown",
+    "parse_and_index",
     "list_documents",
     "remove_document",
     "regenerate_document",

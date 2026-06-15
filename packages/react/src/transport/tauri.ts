@@ -9,7 +9,7 @@
 // `invoke` and `listen` are injected so this module has zero Tauri imports
 // and works in any bundling context (Vite, Next.js, etc.).
 import type {
-  AxonMindTransport, EngineEvent, GenerationSummary, IngestSummary,
+  AxonMindTransport, EngineEvent, GenerationSummary, IngestedDocument, IngestSummary,
   FocusKpiInput, FocusKpiOutput,
   ExplainKpiInput, ExplainKpiOutput,
   GetEvidenceInput, GetEvidenceOutput,
@@ -197,6 +197,10 @@ export class TauriTransport implements AxonMindTransport {
       sourcePath: options?.sourcePath ?? null,
       sha256: options?.sha256 ?? null,
     });
+  }
+
+  parseAndIndex(path: string): Promise<IngestedDocument> {
+    return this.invoke(CMD("parse_and_index"), { path });
   }
 
   createGenerationFromPaths(name: string, paths: string[]): Promise<string> {

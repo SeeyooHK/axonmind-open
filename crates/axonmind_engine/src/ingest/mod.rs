@@ -69,6 +69,20 @@ pub struct IngestSummary {
     pub errors: Vec<String>,
 }
 
+/// Returned by `ingest_file_with_content`: ingest stats, provenance handles, and the
+/// document rendered back to markdown. The markdown lets a caller surface the parsed
+/// content (e.g. for retrieval-augmented prompts) without re-parsing, while the same
+/// call indexes the document into the graph.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestedDocument {
+    pub summary: IngestSummary,
+    /// Graph node id (`doc.<sha256[..8]>`) — stable handle for provenance and audit trails.
+    pub doc_id: String,
+    pub sha256: String,
+    pub title: Option<String>,
+    pub markdown: String,
+}
+
 // ── Normalized document model (parser-agnostic intermediate representation) ──
 
 /// Parser-agnostic intermediate representation. Extraction rules operate on this,
@@ -118,6 +132,73 @@ pub struct NormalizedTable {
 pub struct SourceSpan {
     pub start: usize,
     pub end: usize,
+}
+
+/// Render a NormalizedDocument back to markdown for retrieval or re-display.
+/// Interleaves blocks and tables by SourceSpan.start to preserve source order.
+pub fn render_markdown(doc: &NormalizedDocument) -> String {
+    enum Item<'a> {
+        Block(&'a DocumentBlock),
+        Table(&'a NormalizedTable),
+    }
+    let mut items: Vec<(usize, Item<'_>)> = Vec::new();
+    for b in &doc.blocks {
+        let start = match b {
+            DocumentBlock::Heading { span, .. }
+            | DocumentBlock::Paragraph { span, .. }
+            | DocumentBlock::ListItem { span, .. }
+            | DocumentBlock::CodeBlock { span, .. } => span.start,
+        };
+        items.push((start, Item::Block(b)));
+    }
+    for t in &doc.tables {
+        items.push((t.span.start, Item::Table(t)));
+    }
+    items.sort_by_key(|(s, _)| *s);
+
+    let mut out = String::new();
+    for (_, item) in items {
+        match item {
+            Item::Block(DocumentBlock::Heading { level, text, .. }) => {
+                out.push_str(&"#".repeat((*level).clamp(1, 6) as usize));
+                out.push(' ');
+                out.push_str(text);
+                out.push_str("\n\n");
+            }
+            Item::Block(DocumentBlock::Paragraph { text, .. }) => {
+                out.push_str(text);
+                out.push_str("\n\n");
+            }
+            Item::Block(DocumentBlock::ListItem { text, .. }) => {
+                out.push_str("- ");
+                out.push_str(text);
+                out.push('\n');
+            }
+            Item::Block(DocumentBlock::CodeBlock { language, text, .. }) => {
+                out.push_str("```");
+                out.push_str(language.as_deref().unwrap_or(""));
+                out.push('\n');
+                out.push_str(text);
+                out.push_str("\n```\n\n");
+            }
+            Item::Table(t) => {
+                if !t.headers.is_empty() {
+                    out.push_str("| ");
+                    out.push_str(&t.headers.join(" | "));
+                    out.push_str(" |\n| ");
+                    out.push_str(&vec!["---"; t.headers.len()].join(" | "));
+                    out.push_str(" |\n");
+                }
+                for row in &t.rows {
+                    out.push_str("| ");
+                    out.push_str(&row.join(" | "));
+                    out.push_str(" |\n");
+                }
+                out.push('\n');
+            }
+        }
+    }
+    out.trim_end().to_string()
 }
 
 /// Dispatch to the correct parser adapter based on file extension.

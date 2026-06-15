@@ -69,6 +69,16 @@ export interface IngestSummary {
   errors: string[];
 }
 
+/** Returned by `parseAndIndex`: ingest stats + provenance + the document rendered to markdown. */
+export interface IngestedDocument {
+  summary: IngestSummary;
+  /** Graph node id (`doc.<sha256[..8]>`) — stable handle for provenance and audit trails. */
+  doc_id: string;
+  sha256: string;
+  title: string | null;
+  markdown: string;
+}
+
 export type EngineEvent =
   | { type: "node_upserted"; node_id: NodeId }
   | { type: "node_deleted"; node_id: NodeId }

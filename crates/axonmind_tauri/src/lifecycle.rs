@@ -73,6 +73,7 @@ fn init_inner<R: Runtime>(
             crate::commands::find_conflicts,
             crate::commands::index_path,
             crate::commands::index_markdown,
+            crate::commands::parse_and_index,
             crate::commands::list_documents,
             crate::commands::remove_document,
             crate::commands::regenerate_document,
