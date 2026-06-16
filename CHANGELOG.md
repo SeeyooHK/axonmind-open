@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — Single-call Parse + Index with Content
+## PR #5 — Single-call Parse + Index with Content
 
 - **`ingest_file_with_content` engine method** (`crates/axonmind_engine/src/lib.rs`) — parses a single file, blob-retains the original, indexes it into the graph, and returns the normalized markdown alongside provenance handles (`doc_id`, `sha256`, `title`) in one call. Lets a host surface the parsed content (e.g. for retrieval-augmented prompts) without re-parsing the file it just indexed. `ingest_file` was refactored to share a private `prepare_ingest` step (read → blob copy → parse → fingerprint → skip-decision); behavior unchanged.
 - **`render_markdown` function** (`crates/axonmind_engine/src/ingest/mod.rs`) — renders a `NormalizedDocument` back to markdown for retrieval or re-display, interleaving blocks and tables by source-span order. `IngestedDocument` struct added (stats + provenance + markdown).

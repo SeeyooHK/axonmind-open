@@ -222,7 +222,7 @@ Local providers do not require an API key when their server is already running:
 
 ### OCR image ingestion
 
-AxonMind PR4 adds image ingest for `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif`, and `gif`.
+AxonMind supports image ingest for `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif`, and `gif`.
 
 There are now two supported paths:
 
@@ -338,7 +338,7 @@ src-tauri/          Minimal local demo host
 ## CLI Session Auth Status
 
 - Tested: Codex CLI login/session-based LLM provider path works in the Tauri app.
-- PR4: the Codex provider path now supports image attachments for image transcription during ingest.
+- The Codex provider path supports image attachments for image transcription during ingest.
 > The default model selected for Codex is `gpt-5.4-mini`, and the default intelligence level is `low`. OpenAI and Codex might change available models at any time, so please check the Codex CLI documentation for the latest information. Model overrides use `AXONMIND_CODEX_MODEL` (pass-through), and intelligence overrides use `AXONMIND_CODEX_INTELLIGENCE` (`minimal|low|medium|high|xhigh`) as shown in `env_example`.
 
 ## Page Indexing Features
@@ -399,6 +399,7 @@ This reads each document from its stored blob, rebuilds the section tree, and wr
 
 ## TODO
 1. Test Claude Code and Antigravity LLM provider paths end-to-end.
+2. Auto-OCR routing (render bad pages → Tesseract/LLM). Not free — pdf-inspector doesn't rasterize, so it needs a PDF→image rasterizer (pdfium native-binary).
 
 ## Contributing
 ### 🚀 Contribution Policy

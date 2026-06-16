@@ -221,7 +221,7 @@ Lokale Anbieter benötigen keinen API-Schlüssel, wenn ihr Server bereits läuft
 
 ### OCR-Bildaufnahme
 
-AxonMind PR4 fügt die Bildaufnahme für `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif` und `gif` hinzu.
+AxonMind unterstützt die Bildaufnahme für `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif` und `gif`.
 
 Es werden nun zwei Pfade unterstützt:
 
@@ -336,7 +336,7 @@ src-tauri/          Minimaler lokaler Demo-Host
 ## Status der CLI-Sitzungsauthentifizierung
 
 - Getestet: Der anmelde-/sitzungsbasierte LLM-Anbieterpfad der Codex-CLI funktioniert in der Tauri-App.
-- PR4: Der Codex-Anbieterpfad unterstützt nun Bildanhänge für die Bildtranskription während der Aufnahme.
+- Der Codex-Anbieterpfad unterstützt Bildanhänge für die Bildtranskription während der Aufnahme.
 > Das für Codex ausgewählte Standardmodell ist `gpt-5.4-mini` und die Standard-Intelligenzstufe ist `low`. OpenAI und Codex können die verfügbaren Modelle jederzeit ändern, daher lesen Sie bitte die Codex-CLI-Dokumentation für die neuesten Informationen. Modellüberschreibungen verwenden `AXONMIND_CODEX_MODEL` (Pass-Through), und Intelligenzüberschreibungen verwenden `AXONMIND_CODEX_INTELLIGENCE` (`minimal|low|medium|high|xhigh`), wie in `env_example` gezeigt.
 
 ## Seitenindizierungsfunktionen

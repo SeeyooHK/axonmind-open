@@ -221,7 +221,7 @@ Les fournisseurs locaux ne nécessitent pas de clé API lorsque leur serveur est
 
 ### Importation d'images OCR
 
-AxonMind PR4 ajoute l'importation d'images pour `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif` et `gif`.
+AxonMind prend en charge l'importation d'images pour `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif` et `gif`.
 
 Deux voies sont désormais prises en charge :
 
@@ -336,7 +336,7 @@ src-tauri/          Hôte de démonstration local minimal
 ## Statut d'authentification de session CLI
 
 - Testé : Le chemin d'accès du fournisseur LLM basé sur la session/connexion de Codex CLI fonctionne dans l'application Tauri.
-- PR4 : le chemin du fournisseur Codex prend désormais en charge les pièces jointes d'images pour la transcription d'images lors de l'importation.
+- Le chemin du fournisseur Codex prend en charge les pièces jointes d'images pour la transcription d'images lors de l'importation.
 > Le modèle par défaut sélectionné pour Codex est `gpt-5.4-mini`, et le niveau d'intelligence par défaut est `low`. OpenAI et Codex peuvent modifier les modèles disponibles à tout moment, veuillez donc consulter la documentation de Codex CLI pour les dernières informations. Les surcharges de modèles utilisent `AXONMIND_CODEX_MODEL` (transmission), et les surcharges d'intelligence utilisent `AXONMIND_CODEX_INTELLIGENCE` (`minimal|low|medium|high|xhigh`) comme indiqué dans `env_example`.
 
 ## Fonctionnalités d'indexation de pages

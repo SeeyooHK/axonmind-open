@@ -86,7 +86,7 @@ pub struct IngestedDocument {
 // ── Normalized document model (parser-agnostic intermediate representation) ──
 
 /// Parser-agnostic intermediate representation. Extraction rules operate on this,
-/// not on comrak/calamine/docx/unpdf types directly. Keeps extractors decoupled from parsers.
+/// not on comrak/calamine/docx/pdf-inspector types directly. Keeps extractors decoupled from parsers.
 #[derive(Debug, Clone)]
 pub struct NormalizedDocument {
     pub id: String,
