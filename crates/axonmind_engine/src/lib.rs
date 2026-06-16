@@ -22,15 +22,16 @@ use crate::extract::fingerprint::{
 };
 use crate::extract::llm::LlmProvider;
 use crate::ingest::{
-    IngestOptions, IngestSource, IngestSummary, NormalizedDocument, dispatch_parse,
+    IngestOptions, IngestSource, IngestSummary, IngestedDocument, NormalizedDocument,
+    dispatch_parse, render_markdown,
 };
 use crate::pageindex::{PageIndexSearchCfg, PageIndexStore};
 use crate::query::{
-    ExplainKpiInput, ExplainKpiOutput, FocusKpiInput, FocusKpiOutput, GetEvidenceInput,
-    GetEvidenceOutput, GraphDiff, GraphSearchInput, GraphSearchOutput, GraphStatsOutput,
-    ImpactRadiusInput, ImpactRadiusOutput, NodeKindCount, ReasoningSearchInput,
-    ReasoningSearchOutput, SuggestActionsInput, SuggestActionsOutput, TraceDecisionInput,
-    TraceDecisionOutput,
+    ExplainKpiInput, ExplainKpiOutput, FindConflictsInput, FindConflictsOutput, FocusKpiInput,
+    FocusKpiOutput, GetEvidenceInput, GetEvidenceOutput, GraphDiff, GraphSearchInput,
+    GraphSearchOutput, GraphStatsOutput, ImpactRadiusInput, ImpactRadiusOutput, NodeKindCount,
+    ReasoningSearchInput, ReasoningSearchOutput, SuggestActionsInput, SuggestActionsOutput,
+    TraceDecisionInput, TraceDecisionOutput,
 };
 use crate::store::{
     DocumentSummary, GraphCache, GraphMutation, GraphStore,
@@ -49,6 +50,17 @@ pub struct AxonMindEngine {
     pub(crate) event_tx: broadcast::Sender<EngineEvent>,
     pub(crate) config: EngineConfig,
     pub(crate) llm_provider: Arc<RwLock<Option<Arc<dyn LlmProvider>>>>,
+}
+
+/// Intermediate result of `prepare_ingest`: either the file was skipped (size limit /
+/// fingerprint match) or it is ready for `ingest_normalized`.
+enum PreparedIngest {
+    Skipped(IngestSummary),
+    Ready {
+        doc: NormalizedDocument,
+        fingerprint: DocFingerprint,
+        skip_llm: bool,
+    },
 }
 
 /// Build the Document node for a normalized document (id derived from content sha).
@@ -274,14 +286,71 @@ impl AxonMindEngine {
         path: &std::path::Path,
         options: &IngestOptions,
     ) -> Result<IngestSummary, AxonMindError> {
+        match self.prepare_ingest(path, options).await? {
+            PreparedIngest::Skipped(s) => Ok(s),
+            PreparedIngest::Ready {
+                doc,
+                fingerprint,
+                skip_llm,
+            } => self.ingest_normalized(doc, fingerprint, skip_llm).await,
+        }
+    }
+
+    /// Parse a single file, blob-retain it, and index it into the graph — returning the
+    /// normalized markdown alongside ingest stats and provenance handles. The markdown lets
+    /// a caller surface the parsed content without re-parsing, while the same call persists
+    /// the document into the graph for later retrieval.
+    pub async fn ingest_file_with_content(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<IngestedDocument, AxonMindError> {
+        let opts = IngestOptions {
+            recursive: false,
+            skip_unchanged: false,
+            max_file_size_bytes: 50 * 1024 * 1024,
+        };
+        match self.prepare_ingest(path, &opts).await? {
+            PreparedIngest::Skipped(summary) => Ok(IngestedDocument {
+                summary,
+                doc_id: String::new(),
+                sha256: String::new(),
+                title: None,
+                markdown: String::new(),
+            }),
+            PreparedIngest::Ready {
+                doc,
+                fingerprint,
+                skip_llm,
+            } => {
+                let doc_id = doc.id.clone();
+                let title = doc.title.clone();
+                let sha256 = fingerprint.content_sha256.clone();
+                let markdown = render_markdown(&doc);
+                let summary = self.ingest_normalized(doc, fingerprint, skip_llm).await?;
+                Ok(IngestedDocument {
+                    summary,
+                    doc_id,
+                    sha256,
+                    title,
+                    markdown,
+                })
+            }
+        }
+    }
+
+    async fn prepare_ingest(
+        &self,
+        path: &std::path::Path,
+        options: &IngestOptions,
+    ) -> Result<PreparedIngest, AxonMindError> {
         let bytes = tokio::fs::read(path).await?;
 
         if bytes.len() as u64 > options.max_file_size_bytes && options.max_file_size_bytes > 0 {
-            return Ok(IngestSummary {
+            return Ok(PreparedIngest::Skipped(IngestSummary {
                 files_skipped: 1,
                 errors: vec![format!("{}: file too large", path.display())],
                 ..Default::default()
-            });
+            }));
         }
 
         use sha2::Digest as _;
@@ -332,10 +401,10 @@ impl AxonMindEngine {
             let cached = self.store.fetch_document_fingerprint(&path_str).await?;
             match classify(cached.as_ref(), &next_fp) {
                 ReextractDecision::Skip => {
-                    return Ok(IngestSummary {
+                    return Ok(PreparedIngest::Skipped(IngestSummary {
                         files_skipped: 1,
                         ..Default::default()
-                    });
+                    }));
                 }
                 ReextractDecision::CosmeticRefresh => true,
                 ReextractDecision::FullReextract => false,
@@ -344,7 +413,11 @@ impl AxonMindEngine {
             false
         };
 
-        self.ingest_normalized(doc, next_fp, skip_llm).await
+        Ok(PreparedIngest::Ready {
+            doc,
+            fingerprint: next_fp,
+            skip_llm,
+        })
     }
 
     async fn ingest_normalized(
@@ -574,7 +647,7 @@ impl AxonMindEngine {
             });
         }
 
-        let mentioned = self.store.fetch_mentioned_node_ids(doc_id).await?;
+        let mentioned = self.store.fetch_document_related_node_ids(doc_id).await?;
         let mut mutations = Vec::new();
         for concept_id in mentioned {
             // Exactly one source document (this one) → the concept becomes an orphan on removal.
@@ -757,6 +830,13 @@ impl AxonMindEngine {
     }
 
     // ── Queries ───────────────────────────────────────────────────────────────
+
+    pub async fn find_conflicts(
+        &self,
+        input: FindConflictsInput,
+    ) -> Result<FindConflictsOutput, AxonMindError> {
+        query::conflicts::find_conflicts(input, &self.store, &self.graph_cache).await
+    }
 
     pub async fn focus_kpi(&self, input: FocusKpiInput) -> Result<FocusKpiOutput, AxonMindError> {
         query::focus::focus_kpi(input, &self.store, &self.graph_cache).await
@@ -1164,7 +1244,7 @@ impl AxonMindEngine {
             // edges whose both endpoints are in that set (drops cross-doc and MentionedIn).
             let mut members = std::collections::HashSet::new();
             for id in &scoped_doc_ids {
-                for concept in self.store.fetch_mentioned_node_ids(id).await? {
+                for concept in self.store.fetch_document_related_node_ids(id).await? {
                     members.insert(concept.0);
                 }
             }

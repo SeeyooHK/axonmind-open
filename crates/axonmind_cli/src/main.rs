@@ -6,8 +6,9 @@ use axonmind_engine::{
     config::{EngineConfig, WorkspaceManifest},
     ingest::{IngestOptions, IngestSource},
     query::{
-        ExplainKpiInput, FocusKpiInput, GetEvidenceInput, GraphExportV1, GraphSearchInput,
-        ImpactRadiusInput, ReasoningSearchInput, SuggestActionsInput, TraceDecisionInput,
+        ExplainKpiInput, FindConflictsInput, FocusKpiInput, GetEvidenceInput, GraphExportV1,
+        GraphSearchInput, ImpactRadiusInput, ReasoningSearchInput, SuggestActionsInput,
+        TraceDecisionInput,
     },
 };
 use clap::{Parser, Subcommand};
@@ -168,6 +169,15 @@ enum QueryCommands {
         #[arg(long)]
         doc: Vec<String>,
         /// Max results to return (default: 20).
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Surface node pairs where the graph holds contradictory claims.
+    FindConflicts {
+        /// Restrict to conflicts touching this node id. Default: scan the whole graph.
+        #[arg(long)]
+        node_id: Option<String>,
+        /// Max conflict pairs to return (default: 50).
         #[arg(long)]
         limit: Option<usize>,
     },
@@ -353,6 +363,29 @@ async fn main() -> anyhow::Result<()> {
                         );
                         for s in &out.sections {
                             println!("  [{}] {} — {}", s.doc_node_id, s.title, s.path.join(" › "));
+                        }
+                    }
+                }
+                QueryCommands::FindConflicts { node_id, limit } => {
+                    let out = engine
+                        .find_conflicts(FindConflictsInput {
+                            node_id: node_id.map(|s| NodeId(s)),
+                            limit,
+                        })
+                        .await?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&out)?);
+                    } else {
+                        println!("{} conflict pair(s):", out.conflicts.len());
+                        for pair in &out.conflicts {
+                            println!(
+                                "  {} ↔ {} [max_confidence={:.0}%]",
+                                pair.node_a.name,
+                                pair.node_b.name,
+                                pair.max_confidence * 100.0
+                            );
+                            println!("    positive edges: {}", pair.positive.len());
+                            println!("    negative edges: {}", pair.negative.len());
                         }
                     }
                 }

@@ -3,13 +3,13 @@
 use crate::lifecycle::EngineState;
 use axonmind_core::NodeId;
 use axonmind_engine::{
-    ingest::{IngestOptions, IngestSource, IngestSummary},
+    ingest::{IngestOptions, IngestSource, IngestSummary, IngestedDocument},
     query::{
-        ExplainKpiInput, ExplainKpiOutput, FocusKpiInput, FocusKpiOutput, GetEvidenceInput,
-        GetEvidenceOutput, GraphDiff, GraphExportV1, GraphSearchInput, GraphSearchOutput,
-        GraphStatsOutput, ImpactRadiusInput, ImpactRadiusOutput, ReasoningSearchInput,
-        ReasoningSearchOutput, SuggestActionsInput, SuggestActionsOutput, TraceDecisionInput,
-        TraceDecisionOutput,
+        ExplainKpiInput, ExplainKpiOutput, FindConflictsInput, FindConflictsOutput, FocusKpiInput,
+        FocusKpiOutput, GetEvidenceInput, GetEvidenceOutput, GraphDiff, GraphExportV1,
+        GraphSearchInput, GraphSearchOutput, GraphStatsOutput, ImpactRadiusInput,
+        ImpactRadiusOutput, ReasoningSearchInput, ReasoningSearchOutput, SuggestActionsInput,
+        SuggestActionsOutput, TraceDecisionInput, TraceDecisionOutput,
     },
     store::{
         DocumentSummary,
@@ -117,6 +117,18 @@ pub async fn graph_diff(
     Ok(state.0.graph_diff(&before, &after))
 }
 
+#[tauri::command]
+pub async fn find_conflicts(
+    state: State<'_, EngineState>,
+    input: FindConflictsInput,
+) -> Result<FindConflictsOutput, String> {
+    state
+        .0
+        .find_conflicts(input)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ── Ingest commands ───────────────────────────────────────────────────────────
 
 /// Index a file or directory path on disk.
@@ -167,6 +179,21 @@ pub async fn index_markdown(
     state
         .0
         .ingest_sync(source, opts)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Parse a single file, blob-retain it, index it into the knowledge graph, and return
+/// its normalized markdown alongside provenance handles. One call both surfaces the
+/// parsed content and persists the document for later retrieval.
+#[tauri::command]
+pub async fn parse_and_index(
+    state: State<'_, EngineState>,
+    path: String,
+) -> Result<IngestedDocument, String> {
+    state
+        .0
+        .ingest_file_with_content(Path::new(&path))
         .await
         .map_err(|e| e.to_string())
 }

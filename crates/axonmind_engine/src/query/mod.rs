@@ -10,12 +10,14 @@
 /// - Node exists but wrong kind → `AxonMindError::NotAKpi` (for KPI tools)
 /// - `requires_human_review` objects: included in output with flags set; never silently hidden
 /// - `is_tainted` objects: included in output with flags set
+pub mod conflicts;
 pub mod evidence;
 pub mod focus;
 pub mod impact;
 pub mod reasoning;
 pub mod search;
 
+pub use conflicts::{ConflictPair, EdgeWithEvidence, FindConflictsInput, FindConflictsOutput};
 pub use reasoning::{ReasoningSearchInput, ReasoningSearchOutput, RetrievedSection};
 
 use axonmind_core::{Edge, Evidence, EvidenceId, Node, NodeId, NodeKind};

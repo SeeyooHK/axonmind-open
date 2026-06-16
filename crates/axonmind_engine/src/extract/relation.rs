@@ -3,7 +3,7 @@
 //! Runs after rule extraction. Novel entities (not already created by rules) get
 //! is_tainted=true and Confidence::LLM. Existing nodes are tracked for co-occurrence
 //! detection but are not re-upserted (avoids confidence downgrade).
-use super::llm::{EntityExtractionInput, LlmProvider, RelationExtractionInput};
+use super::llm::{EntityExtractionInput, LlmProvider, RelationBatchInput};
 use super::normalize::{
     customer_lifecycle, normalize_edge_kind, normalize_node_kind, sanitize_confidence,
     strip_leading_clause_number,
@@ -173,7 +173,11 @@ pub async fn run_llm_extraction(
         extracted.push((node_id, ev_id));
     }
 
-    // Phase 2 — relation extraction for co-occurring entity pairs per paragraph.
+    // Phase 2 — batch relation extraction: one LLM call per paragraph, all candidate pairs at once.
+    // This replaces the previous O(n²) loop that made one call per pair.
+    // Max 40 pairs per call to stay within output window limits.
+    const BATCH_SIZE: usize = 40;
+
     for block in &doc.blocks {
         let para = match block {
             DocumentBlock::Paragraph { text, .. } => text.as_str(),
@@ -193,27 +197,57 @@ pub async fn run_llm_extraction(
             continue;
         }
 
-        for i in 0..mentioned.len() {
-            for j in (i + 1)..mentioned.len() {
-                let (a_id, _) = mentioned[i];
-                let (b_id, _) = mentioned[j];
+        // Build the entity display-name list and candidate pair indices, skipping rule-covered pairs.
+        let entities: Vec<String> = mentioned
+            .iter()
+            .map(|(id, _)| entity_display_name(id))
+            .collect();
+        let candidate_pairs: Vec<(usize, usize)> = (0..mentioned.len())
+            .flat_map(|i| (i + 1..mentioned.len()).map(move |j| (i, j)))
+            .filter(|(i, j)| {
+                let a = &mentioned[*i].0;
+                let b = &mentioned[*j].0;
+                !rule_edge_pairs.contains(&(a.0.clone(), b.0.clone()))
+                    && !rule_edge_pairs.contains(&(b.0.clone(), a.0.clone()))
+            })
+            .collect();
 
-                // Skip the LLM call when rules already produced an edge for this pair.
-                // Checking both directions because rule edges are directed but the coverage
-                // intent is symmetric: if A→B exists, we don't need the LLM to re-confirm it.
-                if rule_edge_pairs.contains(&(a_id.0.clone(), b_id.0.clone()))
-                    || rule_edge_pairs.contains(&(b_id.0.clone(), a_id.0.clone()))
-                {
+        if candidate_pairs.is_empty() {
+            continue;
+        }
+
+        for chunk in candidate_pairs.chunks(BATCH_SIZE) {
+            let batch = llm
+                .extract_relations_batch(RelationBatchInput {
+                    entities: entities.clone(),
+                    candidate_pairs: chunk.to_vec(),
+                    context_paragraph: para.to_string(),
+                })
+                .await?;
+
+            for rel in batch.relations {
+                // Validate that (from, to) is a pair we actually submitted — either direction.
+                let chunk_set: std::collections::HashSet<(usize, usize)> =
+                    chunk.iter().copied().collect();
+                let canonical = if chunk_set.contains(&(rel.from, rel.to)) {
+                    (rel.from, rel.to)
+                } else if chunk_set.contains(&(rel.to, rel.from)) {
+                    (rel.to, rel.from)
+                } else {
+                    tracing::warn!(
+                        "LLM returned unsolicited pair ({}, {}) — skipping",
+                        rel.from,
+                        rel.to
+                    );
                     continue;
-                }
+                };
 
-                let rel = llm
-                    .extract_relations(RelationExtractionInput {
-                        entity_a: entity_display_name(a_id),
-                        entity_b: entity_display_name(b_id),
-                        context_paragraph: para.to_string(),
-                    })
-                    .await?;
+                let Some(a_id) = mentioned.get(canonical.0).map(|(id, _)| id) else {
+                    continue;
+                };
+                let Some(b_id) = mentioned.get(canonical.1).map(|(id, _)| id) else {
+                    continue;
+                };
 
                 let Some(edge_kind) = normalize_edge_kind(&rel.edge_kind) else {
                     tracing::warn!("LLM returned unmappable edge kind: {}", rel.edge_kind);
@@ -242,8 +276,8 @@ pub async fn run_llm_extraction(
                 mutations.push(GraphMutation::UpsertEdge {
                     edge: Edge {
                         id: EdgeId(Uuid::new_v4().to_string()),
-                        from: a_id.clone(),
-                        to: b_id.clone(),
+                        from: (*a_id).clone(),
+                        to: (*b_id).clone(),
                         kind: edge_kind,
                         evidence: vec![rel_ev_id.clone()],
                         confidence,

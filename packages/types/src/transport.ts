@@ -2,7 +2,7 @@
 // Tauri hosts implement this via invoke(); HTTP/WS hosts implement via fetch/WebSocket.
 // No implementation may import from window.__TAURI__ directly inside @axonmind/react.
 import type {
-  Edge, EdgeId, EngineEvent, Evidence, EvidenceId, IngestSummary,
+  Edge, EdgeId, EngineEvent, Evidence, EvidenceId, IngestedDocument, IngestSummary,
   Node, NodeId, NodeKind, KpiStatus, GraphExportV1,
 } from "./index";
 
@@ -30,7 +30,7 @@ export interface SuggestActionsOutput { actions: Node[]; }
 
 // ── graph_stats ───────────────────────────────────────────────────────────────
 
-export interface NodeKindCount { kind: string; count: number; }
+export interface NodeKindCount { kind: NodeKind; count: number; }
 export interface GraphStatsOutput {
   total_nodes: number;
   document_nodes: number;
@@ -194,6 +194,8 @@ export interface AxonMindTransport {
   // Ingest
   indexPath(path: string, options?: IndexPathOptions): Promise<IngestSummary>;
   indexMarkdown(text: string, options?: IndexMarkdownOptions): Promise<IngestSummary>;
+  /** Parse a file, blob-retain it, index it into the graph, and return its markdown + provenance. */
+  parseAndIndex?(path: string): Promise<IngestedDocument>;
 
   // Generations (Phase 4)
   createGenerationFromPaths(name: string, paths: string[]): Promise<string>;

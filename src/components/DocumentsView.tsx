@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { BrainMapView, type Summary } from "./graph/BrainMapView";
 import { InspectorPanel } from "./InspectorPanel";
 import { ContentSearchModal } from "./ContentSearchModal";
+import { ConflictsModal } from "./ConflictsModal";
 import { FileVisualizationModal } from "./FileVisualizationModal";
 import type { StagedItem } from "./GenerationStaging";
 import { useAxonMind, toGraphElements } from "@axonmind/react";
@@ -57,6 +58,9 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<{ message: string; run: () => Promise<void> } | null>(null);
+  const [showBrainMapMenu, setShowBrainMapMenu] = useState(false);
+  const [showConflicts, setShowConflicts] = useState(false);
+  const brainMapMenuRef = useRef<HTMLDivElement>(null);
   const [storedDiffs, setStoredDiffs] = useState<Record<string, {
     fileName: string;
     completedAt: string;
@@ -328,25 +332,53 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
         >
           {selected.size > 0 ? `Search Contents (${selected.size})` : "Search Contents"}
         </button>
+        {/* Brain Map split button */}
+        <div ref={brainMapMenuRef} style={{ position: "relative", display: "flex" }}>
+          <button
+            onClick={() => { void generateBrainMap("auto"); setShowBrainMapMenu(false); }}
+            disabled={summaryBusy || docs.length === 0}
+            title={selected.size > 0
+              ? `Open the cached brain-map summary for the ${selected.size} selected file(s), or build and cache it if missing/outdated`
+              : "Build or open the persisted workspace brain-map summary — no re-extraction"}
+            style={{ padding: "6px 12px", borderRadius: "8px 0 0 8px", border: "1px solid #1d4ed8", borderRight: "none", background: summaryBusy ? "#1e293b" : "#1d4ed8", color: "#fff", fontSize: 13, fontWeight: 600, cursor: summaryBusy || docs.length === 0 ? "default" : "pointer", whiteSpace: "nowrap" }}
+          >
+            {summaryBusy ? "Generating…" : selected.size > 0 ? `Brain Map (${selected.size})` : "Brain Map"}
+          </button>
+          <button
+            onClick={() => setShowBrainMapMenu(v => !v)}
+            disabled={summaryBusy || docs.length === 0}
+            title="More Brain Map options"
+            style={{ padding: "6px 8px", borderRadius: "0 8px 8px 0", border: "1px solid #1d4ed8", background: summaryBusy ? "#1e293b" : "#1d4ed8", color: "#fff", fontSize: 11, cursor: summaryBusy || docs.length === 0 ? "default" : "pointer" }}
+          >
+            ▾
+          </button>
+          {showBrainMapMenu && (
+            <div
+              style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 100, background: "#1e293b", border: "1px solid #334155", borderRadius: 8, minWidth: 160, overflow: "hidden", boxShadow: "0 4px 16px rgba(0,0,0,0.4)" }}
+              onMouseLeave={() => setShowBrainMapMenu(false)}
+            >
+              <button
+                onClick={() => { void generateBrainMap("auto"); setShowBrainMapMenu(false); }}
+                style={menuItemStyle}
+              >
+                Open Current
+              </button>
+              <button
+                onClick={() => { void generateBrainMap("regenerate"); setShowBrainMapMenu(false); }}
+                style={menuItemStyle}
+              >
+                Regenerate
+              </button>
+            </div>
+          )}
+        </div>
         <button
-          onClick={() => void generateBrainMap("auto")}
-          disabled={summaryBusy || docs.length === 0}
-          title={selected.size > 0
-            ? `Open the cached brain-map summary for the ${selected.size} selected file(s), or build and cache it if missing/outdated`
-            : "Build or open the persisted workspace brain-map summary — no re-extraction"}
-          style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid #1d4ed8", background: summaryBusy ? "#1e293b" : "#1d4ed8", color: "#fff", fontSize: 13, fontWeight: 600, cursor: summaryBusy ? "default" : "pointer", whiteSpace: "nowrap" }}
+          onClick={() => setShowConflicts(true)}
+          disabled={docs.length === 0}
+          title="Surface node pairs where the graph holds contradictory claims"
+          style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid #334155", background: "transparent", color: docs.length === 0 ? "#334155" : "#94a3b8", fontSize: 13, fontWeight: 600, cursor: docs.length === 0 ? "default" : "pointer", whiteSpace: "nowrap" }}
         >
-          {summaryBusy ? "Generating…" : selected.size > 0 ? `Open Brain Map (${selected.size})` : "Open Brain Map"}
-        </button>
-        <button
-          onClick={() => void generateBrainMap("regenerate")}
-          disabled={summaryBusy || docs.length === 0}
-          title={selected.size > 0
-            ? `Force a fresh re-categorization for the ${selected.size} selected file(s), then replace cache`
-            : "Regenerate the persisted workspace summary categories from current graph state"}
-          style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #334155", background: "transparent", color: "#94a3b8", fontSize: 12, fontWeight: 600, cursor: summaryBusy ? "default" : "pointer", whiteSpace: "nowrap" }}
-        >
-          {selected.size > 0 ? `Regenerate Map (${selected.size})` : "Regenerate Map"}
+          Find Conflicts
         </button>
       </div>
 
@@ -518,6 +550,11 @@ export function DocumentsView({ onBack, onChanged, elements }: Props) {
         />
       )}
 
+      {/* Conflicts modal */}
+      {showConflicts && (
+        <ConflictsModal onClose={() => setShowConflicts(false)} />
+      )}
+
       {/* Side-by-side original / extracted view */}
       {visualizingItem && (
         <FileVisualizationModal
@@ -622,6 +659,11 @@ function IndeterminateBar({ label }: { label?: string }) {
 const inputStyle: React.CSSProperties = {
   padding: "7px 10px", borderRadius: 6, background: "#1e293b", border: "1px solid #334155",
   color: "#f1f5f9", fontSize: 13, boxSizing: "border-box", outline: "none",
+};
+
+const menuItemStyle: React.CSSProperties = {
+  display: "block", width: "100%", padding: "9px 14px", background: "transparent",
+  border: "none", color: "#cbd5e1", fontSize: 13, textAlign: "left", cursor: "pointer",
 };
 
 const th: React.CSSProperties = { padding: "6px 8px", textAlign: "center", fontWeight: 600 };

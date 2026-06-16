@@ -15,6 +15,7 @@ const KIND_COLOR: Record<NodeKind, string> = {
   Person: "#84cc16",
   Team: "#14b8a6",
   Customer: "#f97316",
+  Function: "#10b981",
   Product: "#ec4899",
   Market: "#64748b",
   Process: "#0891b2",

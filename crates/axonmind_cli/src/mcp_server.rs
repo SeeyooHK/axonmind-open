@@ -237,7 +237,7 @@ mod tests {
         let frames = run_frames(&input).await;
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[1]["id"], 2);
-        assert_eq!(frames[1]["result"]["tools"].as_array().unwrap().len(), 10);
+        assert_eq!(frames[1]["result"]["tools"].as_array().unwrap().len(), 11);
     }
 
     #[tokio::test]
