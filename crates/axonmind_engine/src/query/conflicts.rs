@@ -100,8 +100,12 @@ pub async fn find_conflicts(
     // Filter to conflicted groups (Rule 1 OR Rule 2 from the plan).
     let mut conflicts = Vec::new();
     for (_key, group) in groups {
-        let has_positive = group.iter().any(|e| polarity(e.kind) == Some(Polarity::Positive));
-        let has_negative = group.iter().any(|e| polarity(e.kind) == Some(Polarity::Negative));
+        let has_positive = group
+            .iter()
+            .any(|e| polarity(e.kind) == Some(Polarity::Positive));
+        let has_negative = group
+            .iter()
+            .any(|e| polarity(e.kind) == Some(Polarity::Negative));
         let has_contradicts = group.iter().any(|e| e.kind == EdgeKind::Contradicts);
 
         if !(has_positive && has_negative) && !has_contradicts {
@@ -116,7 +120,10 @@ pub async fn find_conflicts(
         for edge in group {
             let evidence = store.fetch_evidence_for_edge(&edge.id).await?;
             max_conf = max_conf.max(edge.confidence.0);
-            let ewe = EdgeWithEvidence { edge: edge.clone(), evidence };
+            let ewe = EdgeWithEvidence {
+                edge: edge.clone(),
+                evidence,
+            };
             match polarity(edge.kind) {
                 Some(Polarity::Positive) => positive.push(ewe),
                 Some(Polarity::Negative) => negative.push(ewe),
@@ -159,7 +166,11 @@ pub async fn find_conflicts(
     }
 
     // Sort by max_confidence descending so the most certain contradictions surface first.
-    conflicts.sort_by(|a, b| b.max_confidence.partial_cmp(&a.max_confidence).unwrap_or(std::cmp::Ordering::Equal));
+    conflicts.sort_by(|a, b| {
+        b.max_confidence
+            .partial_cmp(&a.max_confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     conflicts.truncate(limit);
 
     Ok(FindConflictsOutput { conflicts })

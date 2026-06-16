@@ -542,7 +542,9 @@ async fn test_rebuild_page_index_restores_searchability() {
     // for pre-existing docs and the user has no targeted fix short of full regeneration.
     let dir = TempDir::new().unwrap();
     let cfg = engine_config(&dir);
-    let engine = AxonMindEngine::open(cfg.clone()).await.expect("engine open");
+    let engine = AxonMindEngine::open(cfg.clone())
+        .await
+        .expect("engine open");
 
     let content = "# Revenue Growth\n\nRevenue grew 20% driven by enterprise deals.\n\n## Q2 Results\n\nQ2 revenue was $8M.";
     let md_dir = TempDir::new().unwrap();
@@ -570,7 +572,10 @@ async fn test_rebuild_page_index_restores_searchability() {
         })
         .await
         .expect("search before delete");
-    assert!(!before.sections.is_empty(), "sections must exist after ingest");
+    assert!(
+        !before.sections.is_empty(),
+        "sections must exist after ingest"
+    );
 
     // Simulate pre-pageindex state: delete page_tree and page_sections rows.
     // After this, page_tree_sha returns None, which causes index_document to rebuild.
@@ -608,7 +613,10 @@ async fn test_rebuild_page_index_restores_searchability() {
     // rebuild_page_index should restore searchability without touching graph tables.
     let (processed, skipped, errors) = engine.rebuild_page_index().await.expect("rebuild failed");
     assert!(errors.is_empty(), "rebuild errors: {errors:?}");
-    assert_eq!(skipped, 0, "no docs should be skipped (all have sha256 + source_path)");
+    assert_eq!(
+        skipped, 0,
+        "no docs should be skipped (all have sha256 + source_path)"
+    );
     assert!(processed >= 1, "at least one document must be processed");
 
     let after_rebuild = engine
@@ -653,11 +661,17 @@ async fn test_rebuild_page_index_skips_unchanged() {
 
     // First rebuild (sha already matches after normal ingest — staleness check fires immediately).
     let (_, _, errors1) = engine.rebuild_page_index().await.expect("first rebuild");
-    assert!(errors1.is_empty(), "no errors on first rebuild: {errors1:?}");
+    assert!(
+        errors1.is_empty(),
+        "no errors on first rebuild: {errors1:?}"
+    );
 
     // Second rebuild — must also be error-free.
     let (_, _, errors2) = engine.rebuild_page_index().await.expect("second rebuild");
-    assert!(errors2.is_empty(), "no errors on second rebuild: {errors2:?}");
+    assert!(
+        errors2.is_empty(),
+        "no errors on second rebuild: {errors2:?}"
+    );
 }
 
 // ── Engine-level ingest hook test ─────────────────────────────────────────────

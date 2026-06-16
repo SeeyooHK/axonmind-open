@@ -3,7 +3,7 @@
 use crate::lifecycle::EngineState;
 use axonmind_core::NodeId;
 use axonmind_engine::{
-    ingest::{IngestedDocument, IngestOptions, IngestSource, IngestSummary},
+    ingest::{IngestOptions, IngestSource, IngestSummary, IngestedDocument},
     query::{
         ExplainKpiInput, ExplainKpiOutput, FindConflictsInput, FindConflictsOutput, FocusKpiInput,
         FocusKpiOutput, GetEvidenceInput, GetEvidenceOutput, GraphDiff, GraphExportV1,

@@ -94,10 +94,34 @@ async fn wire_edge(
     kind: EdgeKind,
     ev_id: &str,
 ) -> EvidenceId {
-    apply(store, cache, tx, GraphMutation::UpsertNode { node: make_node(from, NodeKind::Kpi) }).await;
-    apply(store, cache, tx, GraphMutation::UpsertNode { node: make_node(to, NodeKind::Kpi) }).await;
+    apply(
+        store,
+        cache,
+        tx,
+        GraphMutation::UpsertNode {
+            node: make_node(from, NodeKind::Kpi),
+        },
+    )
+    .await;
+    apply(
+        store,
+        cache,
+        tx,
+        GraphMutation::UpsertNode {
+            node: make_node(to, NodeKind::Kpi),
+        },
+    )
+    .await;
     let ev = make_evidence(ev_id, from);
-    apply(store, cache, tx, GraphMutation::UpsertEvidence { evidence: ev.clone() }).await;
+    apply(
+        store,
+        cache,
+        tx,
+        GraphMutation::UpsertEvidence {
+            evidence: ev.clone(),
+        },
+    )
+    .await;
     apply(
         store,
         cache,
@@ -120,10 +144,23 @@ async fn explicit_contradicts_edge_surfaces() {
     let dir = TempDir::new().unwrap();
     let (store, cache, tx) = open_store(&dir).await;
 
-    let ev_id = wire_edge(&store, &cache, &tx, "kpi.a", "kpi.b", "e1", EdgeKind::Contradicts, "ev1").await;
+    let ev_id = wire_edge(
+        &store,
+        &cache,
+        &tx,
+        "kpi.a",
+        "kpi.b",
+        "e1",
+        EdgeKind::Contradicts,
+        "ev1",
+    )
+    .await;
 
     let out = find_conflicts(
-        FindConflictsInput { node_id: None, limit: None },
+        FindConflictsInput {
+            node_id: None,
+            limit: None,
+        },
         &store,
         &cache,
     )
@@ -148,11 +185,34 @@ async fn polarity_clash_surfaces_both_sides_with_citations() {
     let dir = TempDir::new().unwrap();
     let (store, cache, tx) = open_store(&dir).await;
 
-    let pos_ev = wire_edge(&store, &cache, &tx, "kpi.a", "kpi.b", "e-pos", EdgeKind::Improves, "ev-pos").await;
-    let neg_ev = wire_edge(&store, &cache, &tx, "kpi.a", "kpi.b", "e-neg", EdgeKind::Degrades, "ev-neg").await;
+    let pos_ev = wire_edge(
+        &store,
+        &cache,
+        &tx,
+        "kpi.a",
+        "kpi.b",
+        "e-pos",
+        EdgeKind::Improves,
+        "ev-pos",
+    )
+    .await;
+    let neg_ev = wire_edge(
+        &store,
+        &cache,
+        &tx,
+        "kpi.a",
+        "kpi.b",
+        "e-neg",
+        EdgeKind::Degrades,
+        "ev-neg",
+    )
+    .await;
 
     let out = find_conflicts(
-        FindConflictsInput { node_id: None, limit: None },
+        FindConflictsInput {
+            node_id: None,
+            limit: None,
+        },
         &store,
         &cache,
     )
@@ -177,20 +237,57 @@ async fn neutral_only_pair_is_silent() {
     let (store, cache, tx) = open_store(&dir).await;
 
     // Neutral edge between A and B.
-    wire_edge(&store, &cache, &tx, "kpi.a", "kpi.b", "e-inf", EdgeKind::Influences, "ev-inf").await;
+    wire_edge(
+        &store,
+        &cache,
+        &tx,
+        "kpi.a",
+        "kpi.b",
+        "e-inf",
+        EdgeKind::Influences,
+        "ev-inf",
+    )
+    .await;
     // Positive driver A→C and negative driver D→C — different pairs, not a conflict.
-    wire_edge(&store, &cache, &tx, "kpi.a", "kpi.c", "e-imp", EdgeKind::Improves, "ev-imp").await;
-    wire_edge(&store, &cache, &tx, "kpi.d", "kpi.c", "e-deg", EdgeKind::Degrades, "ev-deg").await;
+    wire_edge(
+        &store,
+        &cache,
+        &tx,
+        "kpi.a",
+        "kpi.c",
+        "e-imp",
+        EdgeKind::Improves,
+        "ev-imp",
+    )
+    .await;
+    wire_edge(
+        &store,
+        &cache,
+        &tx,
+        "kpi.d",
+        "kpi.c",
+        "e-deg",
+        EdgeKind::Degrades,
+        "ev-deg",
+    )
+    .await;
 
     let out = find_conflicts(
-        FindConflictsInput { node_id: None, limit: None },
+        FindConflictsInput {
+            node_id: None,
+            limit: None,
+        },
         &store,
         &cache,
     )
     .await
     .unwrap();
 
-    assert_eq!(out.conflicts.len(), 0, "no conflicts expected for distinct node pairs / neutral edges");
+    assert_eq!(
+        out.conflicts.len(),
+        0,
+        "no conflicts expected for distinct node pairs / neutral edges"
+    );
 }
 
 /// WHY: the node_id filter narrows results to pairs where that specific node is involved.
@@ -202,11 +299,51 @@ async fn node_id_filter_restricts_to_touching_pairs() {
     let (store, cache, tx) = open_store(&dir).await;
 
     // Conflict on pair (a, b).
-    wire_edge(&store, &cache, &tx, "kpi.a", "kpi.b", "e1", EdgeKind::Improves, "ev1").await;
-    wire_edge(&store, &cache, &tx, "kpi.a", "kpi.b", "e2", EdgeKind::Degrades, "ev2").await;
+    wire_edge(
+        &store,
+        &cache,
+        &tx,
+        "kpi.a",
+        "kpi.b",
+        "e1",
+        EdgeKind::Improves,
+        "ev1",
+    )
+    .await;
+    wire_edge(
+        &store,
+        &cache,
+        &tx,
+        "kpi.a",
+        "kpi.b",
+        "e2",
+        EdgeKind::Degrades,
+        "ev2",
+    )
+    .await;
     // Conflict on pair (c, d) — unrelated to a.
-    wire_edge(&store, &cache, &tx, "kpi.c", "kpi.d", "e3", EdgeKind::Improves, "ev3").await;
-    wire_edge(&store, &cache, &tx, "kpi.c", "kpi.d", "e4", EdgeKind::Degrades, "ev4").await;
+    wire_edge(
+        &store,
+        &cache,
+        &tx,
+        "kpi.c",
+        "kpi.d",
+        "e3",
+        EdgeKind::Improves,
+        "ev3",
+    )
+    .await;
+    wire_edge(
+        &store,
+        &cache,
+        &tx,
+        "kpi.c",
+        "kpi.d",
+        "e4",
+        EdgeKind::Degrades,
+        "ev4",
+    )
+    .await;
 
     // Scope to kpi.a — should return only the (a, b) pair.
     let out = find_conflicts(
@@ -221,7 +358,9 @@ async fn node_id_filter_restricts_to_touching_pairs() {
     .unwrap();
 
     assert_eq!(out.conflicts.len(), 1, "only the pair touching kpi.a");
-    let ids: Vec<_> = [&out.conflicts[0].node_a.id.0, &out.conflicts[0].node_b.id.0].into_iter().collect();
+    let ids: Vec<_> = [&out.conflicts[0].node_a.id.0, &out.conflicts[0].node_b.id.0]
+        .into_iter()
+        .collect();
     assert!(ids.contains(&&"kpi.a".to_owned()));
 }
 

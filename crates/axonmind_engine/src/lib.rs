@@ -22,7 +22,7 @@ use crate::extract::fingerprint::{
 };
 use crate::extract::llm::LlmProvider;
 use crate::ingest::{
-    IngestedDocument, IngestOptions, IngestSource, IngestSummary, NormalizedDocument,
+    IngestOptions, IngestSource, IngestSummary, IngestedDocument, NormalizedDocument,
     dispatch_parse, render_markdown,
 };
 use crate::pageindex::{PageIndexSearchCfg, PageIndexStore};
@@ -288,9 +288,11 @@ impl AxonMindEngine {
     ) -> Result<IngestSummary, AxonMindError> {
         match self.prepare_ingest(path, options).await? {
             PreparedIngest::Skipped(s) => Ok(s),
-            PreparedIngest::Ready { doc, fingerprint, skip_llm } => {
-                self.ingest_normalized(doc, fingerprint, skip_llm).await
-            }
+            PreparedIngest::Ready {
+                doc,
+                fingerprint,
+                skip_llm,
+            } => self.ingest_normalized(doc, fingerprint, skip_llm).await,
         }
     }
 
@@ -315,13 +317,23 @@ impl AxonMindEngine {
                 title: None,
                 markdown: String::new(),
             }),
-            PreparedIngest::Ready { doc, fingerprint, skip_llm } => {
+            PreparedIngest::Ready {
+                doc,
+                fingerprint,
+                skip_llm,
+            } => {
                 let doc_id = doc.id.clone();
                 let title = doc.title.clone();
                 let sha256 = fingerprint.content_sha256.clone();
                 let markdown = render_markdown(&doc);
                 let summary = self.ingest_normalized(doc, fingerprint, skip_llm).await?;
-                Ok(IngestedDocument { summary, doc_id, sha256, title, markdown })
+                Ok(IngestedDocument {
+                    summary,
+                    doc_id,
+                    sha256,
+                    title,
+                    markdown,
+                })
             }
         }
     }
@@ -401,7 +413,11 @@ impl AxonMindEngine {
             false
         };
 
-        Ok(PreparedIngest::Ready { doc, fingerprint: next_fp, skip_llm })
+        Ok(PreparedIngest::Ready {
+            doc,
+            fingerprint: next_fp,
+            skip_llm,
+        })
     }
 
     async fn ingest_normalized(

@@ -794,10 +794,22 @@ async fn test_batch_extraction_one_call_per_paragraph() {
             // Inject 4 entities whose names appear in the paragraph below.
             Ok(EntityExtractionOutput {
                 entities: vec![
-                    ("Kpi".into(), "Revenue Growth".into(), "Revenue Growth".into()),
+                    (
+                        "Kpi".into(),
+                        "Revenue Growth".into(),
+                        "Revenue Growth".into(),
+                    ),
                     ("Risk".into(), "Churn Rate".into(), "Churn Rate".into()),
-                    ("Kpi".into(), "Acquisition Cost".into(), "Acquisition Cost".into()),
-                    ("Metric".into(), "Retention Rate".into(), "Retention Rate".into()),
+                    (
+                        "Kpi".into(),
+                        "Acquisition Cost".into(),
+                        "Acquisition Cost".into(),
+                    ),
+                    (
+                        "Metric".into(),
+                        "Retention Rate".into(),
+                        "Retention Rate".into(),
+                    ),
                 ],
             })
         }
@@ -807,7 +819,9 @@ async fn test_batch_extraction_one_call_per_paragraph() {
             _input: RelationExtractionInput,
         ) -> Result<RelationExtractionOutput, AxonMindError> {
             // Should never be called — the batch path must be taken.
-            panic!("extract_relations (single-pair) must not be called when batch override is present")
+            panic!(
+                "extract_relations (single-pair) must not be called when batch override is present"
+            )
         }
 
         async fn extract_relations_batch(
@@ -889,7 +903,11 @@ async fn test_batch_extraction_skips_rule_covered_pairs() {
                 entities: vec![
                     // These will be existing_ids (already created by rules), so just registered
                     // without creating new nodes — but they still appear in `extracted` for co-occurrence.
-                    ("Kpi".into(), "Revenue Growth".into(), "Revenue Growth".into()),
+                    (
+                        "Kpi".into(),
+                        "Revenue Growth".into(),
+                        "Revenue Growth".into(),
+                    ),
                     ("Kpi".into(), "Churn Rate".into(), "Churn Rate".into()),
                 ],
             })
@@ -913,11 +931,18 @@ async fn test_batch_extraction_skips_rule_covered_pairs() {
             Ok(RelationBatchOutput { relations: vec![] })
         }
 
-        async fn link_concepts(&self, _: SemanticLinkInput) -> Result<SemanticLinkOutput, AxonMindError> {
+        async fn link_concepts(
+            &self,
+            _: SemanticLinkInput,
+        ) -> Result<SemanticLinkOutput, AxonMindError> {
             Ok(SemanticLinkOutput { links: vec![] })
         }
 
-        async fn explain_kpi_rationale(&self, _: &str, _: &[String]) -> Result<String, AxonMindError> {
+        async fn explain_kpi_rationale(
+            &self,
+            _: &str,
+            _: &[String],
+        ) -> Result<String, AxonMindError> {
             Ok(String::new())
         }
     }
@@ -968,7 +993,10 @@ async fn test_batch_extraction_ignores_unsolicited_pairs() {
             Ok(r#"{"entities":[]}"#.to_string())
         }
 
-        async fn extract_entities(&self, _: EntityExtractionInput) -> Result<EntityExtractionOutput, AxonMindError> {
+        async fn extract_entities(
+            &self,
+            _: EntityExtractionInput,
+        ) -> Result<EntityExtractionOutput, AxonMindError> {
             Ok(EntityExtractionOutput {
                 entities: vec![
                     ("Kpi".into(), "Alpha".into(), "Alpha".into()),
@@ -977,24 +1005,41 @@ async fn test_batch_extraction_ignores_unsolicited_pairs() {
             })
         }
 
-        async fn extract_relations(&self, _: RelationExtractionInput) -> Result<RelationExtractionOutput, AxonMindError> {
+        async fn extract_relations(
+            &self,
+            _: RelationExtractionInput,
+        ) -> Result<RelationExtractionOutput, AxonMindError> {
             panic!("single-pair must not be called")
         }
 
-        async fn extract_relations_batch(&self, _input: RelationBatchInput) -> Result<RelationBatchOutput, AxonMindError> {
+        async fn extract_relations_batch(
+            &self,
+            _input: RelationBatchInput,
+        ) -> Result<RelationBatchOutput, AxonMindError> {
             // Return a pair with out-of-bounds indices that were never submitted.
             Ok(RelationBatchOutput {
-                relations: vec![
-                    BatchRelation { from: 99, to: 100, edge_kind: "Influences".into(), confidence: 0.9, quote: "hallucinated".into() },
-                ],
+                relations: vec![BatchRelation {
+                    from: 99,
+                    to: 100,
+                    edge_kind: "Influences".into(),
+                    confidence: 0.9,
+                    quote: "hallucinated".into(),
+                }],
             })
         }
 
-        async fn link_concepts(&self, _: SemanticLinkInput) -> Result<SemanticLinkOutput, AxonMindError> {
+        async fn link_concepts(
+            &self,
+            _: SemanticLinkInput,
+        ) -> Result<SemanticLinkOutput, AxonMindError> {
             Ok(SemanticLinkOutput { links: vec![] })
         }
 
-        async fn explain_kpi_rationale(&self, _: &str, _: &[String]) -> Result<String, AxonMindError> {
+        async fn explain_kpi_rationale(
+            &self,
+            _: &str,
+            _: &[String],
+        ) -> Result<String, AxonMindError> {
             Ok(String::new())
         }
     }

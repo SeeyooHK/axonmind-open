@@ -1,7 +1,7 @@
 use super::llm::{
-    BatchRelation, EntityExtractionInput, EntityExtractionOutput, LlmProvider,
-    RelationBatchInput, RelationBatchOutput, RelationExtractionInput, RelationExtractionOutput,
-    SemanticLink, SemanticLinkInput, SemanticLinkOutput, extract_json_object,
+    BatchRelation, EntityExtractionInput, EntityExtractionOutput, LlmProvider, RelationBatchInput,
+    RelationBatchOutput, RelationExtractionInput, RelationExtractionOutput, SemanticLink,
+    SemanticLinkInput, SemanticLinkOutput, extract_json_object,
 };
 use async_trait::async_trait;
 use axonmind_core::AxonMindError;
