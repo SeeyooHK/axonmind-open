@@ -7,6 +7,15 @@
 - **`parse_and_index` Tauri command** — thin adapter over `ingest_file_with_content`; registered in the `axonmind_tauri` invoke handler and the standalone host's `InlinedPlugin` command list.
 - **React / TypeScript bindings** — `parseAndIndex(path)` added to `AxonMindTransport` (optional, like `onEvent`) and the Tauri transport implementation; `IngestedDocument` TypeScript interface added.
 - **4 new tests** in `crates/axonmind_engine/tests/ingest_with_content.rs` covering markdown rendering (heading/paragraph, list/code, table source-order interleave) and end-to-end ingest returning non-empty markdown, a `doc.`-prefixed id, a 64-char sha256, and a retained blob.
+## PR #4 — Image Ingest, Vision OCR & Parsed Inspector
+
+- **Image ingest support** — `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif`, and `gif` are now accepted by the engine and Tauri demo file picker/drop zone.
+- **LLM-first image transcription with OCR fallback** — image files can be transcribed into structured markdown through the active LLM provider, then normalized through the existing markdown ingest path. Empty transcriptions now fail loudly or fall back to OCR instead of silently indexing blank content.
+- **Provider-path fixes for image OCR** — the Codex session provider path now sends image attachments to `codex exec` and pipes the prompt through stdin, fixing the broken image OCR flow on that adapter.
+- **JSON parse hardening for provider output** — LLM JSON parsing now strips markdown fences and provider preambles before deserialization, fixing extraction failures from providers that return valid JSON wrapped in extra text.
+- **Inspect modal now shows parsed content for images too** — the file inspector now renders parsed markdown/text for processed binary documents and images instead of trying to UTF-8 decode the original binary file.
+- **Cached preview reads for processed files** — inspect first reads stored pageindex sections for `doc.*` nodes, then falls back to a preview parse when needed. This avoids empty panels and repeated reparsing for already-indexed files.
+- **Regenerate clears stale pageindex rows before rebuild** — pageindex sections for a document are removed before re-indexing so refreshed parses are reflected cleanly in Search Contents and inspect views.
 
 ---
 

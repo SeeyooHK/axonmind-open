@@ -76,7 +76,7 @@ Sie können dann:
 - den Wissensgraphen über den integrierten MCP-Server für KI-Agenten freigeben
 - den Graphenzustand als JSON exportieren oder importieren
 - die Engine hinter Ihrer eigenen Produkt-UI einbetten
-- eine lokale Tauri-Demo-App mit Brain Map-, Dokumenten- und Side-by-Side-Inspektor-Ansichten ausführen
+- eine lokale Tauri-Demo-App mit Brain Map-, Dokumenten-, Bildaufnahme- und Side-by-Side-Inspektor-Ansichten ausführen
 
 **Nicht im Umfang enthalten:** Gehostetes SaaS, Abrechnung, Cloud-Synchronisierung, SSO, RBAC, Teamverwaltung oder eine verwaltete Steuerungsebene.
 
@@ -133,7 +133,7 @@ Bauen Sie das macOS `.app`-Bundle:
 bun run tauri:build
 ```
 
-Die Demo funktioniert im reinen Regelmodus ohne API-Schlüssel. Für eine LLM-gestützte Brain Map und eine reichhaltigere Extraktion fügen Sie einen Anbieter-Schlüssel in den App-Einstellungen hinzu oder führen Sie einen kompatiblen lokalen Modellserver aus.
+Die Demo funktioniert im reinen Regelmodus ohne API-Schlüssel. Für eine LLM-gestützte Brain Map, eine reichhaltigere Extraktion oder Bildtranskription fügen Sie einen Anbieter-Schlüssel in den App-Einstellungen hinzu oder führen Sie einen kompatiblen lokalen Modellserver aus.
 
 Unterstützte Cloud-Anbieter sind Anthropic, OpenAI, Google Gemini, Groq, DeepSeek und OpenRouter. Unterstützte lokale Serverpfade sind Ollama, LM Studio, llama.cpp, Jan und vLLM.
 
@@ -177,6 +177,8 @@ Cloud-Anbieter können mit API-Schlüsseln konfiguriert werden. Wenn Sie einen u
 | DeepSeek | `DEEPSEEK_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
 
+Bei der Erstellung mit `--features llm` können Bilddateien auch über den aktiven Anbieter transkribiert und vor der Indizierung in strukturiertes Markdown konvertiert werden.
+
 ### Umgebungseinstellungen
 
 Kopieren Sie die Vorlage und legen Sie die Werte für Ihre lokale Umgebung fest:
@@ -219,13 +221,30 @@ Lokale Anbieter benötigen keinen API-Schlüssel, wenn ihr Server bereits läuft
 
 ### OCR-Bildaufnahme
 
-Aktivieren Sie Bild-OCR über ein lokales Tesseract:
+AxonMind PR4 fügt die Bildaufnahme für `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif` und `gif` hinzu.
+
+Es werden nun zwei Pfade unterstützt:
+
+1. `--features llm` mit einem aktiven Anbieter: Bilddateien werden über den Vision-Pfad des Anbieters in Markdown transkribiert und dann wie andere analysierte Dokumente indiziert.
+2. `--features ocr`: lokaler Tesseract-Fallback für Umgebungen, in denen Sie OCR ohne einen visionsfähigen Anbieter wünschen.
+
+Aktivieren Sie lokales Tesseract-OCR mit:
 
 ```bash
 cargo build -p axonmind_engine --features ocr
 ```
 
-Unterstützte Bildendungen sind `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif` und `gif`. Wenn die Bildaufnahme ohne das `ocr`-Feature versucht wird, gibt AxonMind einen klaren Fehler zurück, anstatt stillschweigend ein leeres Dokument zu erstellen.
+Bauen Sie mit beiden verfügbaren Pfaden, wenn Sie zuerst die Anbieter-Transkription und lokales OCR als Fallback wünschen:
+
+```bash
+cargo build -p axonmind_engine --features "llm ocr"
+```
+
+Wenn eine Bildaufnahme ohne einen aktiven LLM-Anbieter und ohne das `ocr`-Feature versucht wird, gibt AxonMind einen klaren Fehler zurück, anstatt stillschweigend ein leeres Dokument zu erstellen.
+
+Nicht jeder Anbieter-Adapter unterstützt die Bildtranskription. Wenn ein konfigurierter Anbieter meldet, dass Bild-OCR auf diesem Pfad nicht unterstützt wird, verwenden Sie einen visionsfähigen Anbieter oder aktivieren Sie den lokalen `ocr`-Fallback.
+
+Der Tauri-Inspektor zeigt geparstes Markdown/Text für verarbeitete Bilder genau wie für andere Binärformate an. Für bereits indizierte Dateien bevorzugt er zwischengespeicherte pageindex-Abschnitte und fällt auf einen Vorschau-Parser zurück, falls noch keine zwischengespeicherten Abschnitte vorhanden sind.
 
 ## Personalisierte Optimierung
 
@@ -289,8 +308,8 @@ src-tauri/          Minimaler lokaler Demo-Host
 | Funktion | Detail |
 |---|---|
 | Graph-Speicher | SQLite-basierter Speicher mit WAL-Modus und `petgraph`-Cache |
-| Aufnahme | Markdown, Text, PDF, DOCX, Tabellenkalkulationen, HTML, optionale Bild-OCR |
-| Extraktion | Deterministische Regeln standardmäßig; optionale LLM-Extraktion |
+| Aufnahme | Markdown, Text, PDF, DOCX, Tabellenkalkulationen, HTML und Bilddateien mit optionaler OCR/Transkription |
+| Extraktion | Deterministische Regeln standardmäßig; optionale LLM-Extraktion und Bildtranskription |
 | Bereichsanalyse | Analyse eines Dokuments, ausgewählter Dokumente oder der gesamten indizierten Bibliothek |
 | Abfragen | KPI-Fokus, KPI-Erklärung, Evidenzsuche, Auswirkungsradius, Entscheidungsverfolgung, Aktionsvorschläge, Graphsuche, Argumentationssuche |
 | Graph-Vergleich | Typisierter Vorher/Nachher-Vergleich zweier Graph-Snapshots – hinzugefügte, geänderte und entfernte Knoten und Kanten mit geänderten Feldlisten |
@@ -299,7 +318,7 @@ src-tauri/          Minimaler lokaler Demo-Host
 | Worker | Infrastruktur für KPI-Erkennung und KPI-Neuberechnung |
 | SDK | Generierte TypeScript-Typen, React-Hooks, Tauri-Transport |
 | Integration | Standard-MCP-Server (Model Context Protocol) für KI-Agenten |
-| Demo | Lokale Tauri-App mit Brain Map, Dokumentenliste, Graph-Vergleichs-Modal, Side-by-Side-Inspektor und Einstellungen |
+| Demo | Lokale Tauri-App mit Brain Map, Dokumentenliste, Graph-Vergleichs-Modal, Bildaufnahme, Side-by-Side-Inspektor und Einstellungen |
 
 ## Wichtige Invarianten
 
@@ -317,6 +336,7 @@ src-tauri/          Minimaler lokaler Demo-Host
 ## Status der CLI-Sitzungsauthentifizierung
 
 - Getestet: Der anmelde-/sitzungsbasierte LLM-Anbieterpfad der Codex-CLI funktioniert in der Tauri-App.
+- PR4: Der Codex-Anbieterpfad unterstützt nun Bildanhänge für die Bildtranskription während der Aufnahme.
 > Das für Codex ausgewählte Standardmodell ist `gpt-5.4-mini` und die Standard-Intelligenzstufe ist `low`. OpenAI und Codex können die verfügbaren Modelle jederzeit ändern, daher lesen Sie bitte die Codex-CLI-Dokumentation für die neuesten Informationen. Modellüberschreibungen verwenden `AXONMIND_CODEX_MODEL` (Pass-Through), und Intelligenzüberschreibungen verwenden `AXONMIND_CODEX_INTELLIGENCE` (`minimal|low|medium|high|xhigh`), wie in `env_example` gezeigt.
 
 ## Seitenindizierungsfunktionen
@@ -329,7 +349,7 @@ Die Veralterungsprüfung in `index_document` bestätigt dies: Sie sucht nach `pa
 
 ### Was in der UI zu tun ist
 
-In der Ansicht Processed Files (Verarbeitete Dateien): Wählen Sie alle Dokumente aus → Regenerate selected (Ausgewählte regenerieren). Dies liest aus dem bereits gespeicherten Blob (kein erneuter Upload erforderlich), analysiert die Datei neu, baut den Abschnittsbaum neu auf und speichert ihn. Wenn kein KI-Anbieter verbunden ist, geht das schnell – nur Regelextraktion, keine LLM-Aufrufe.
+In der Ansicht Processed Files (Verarbeitete Dateien): Wählen Sie alle Dokumente aus → Regenerate selected (Ausgewählte regenerieren). Dies liest aus dem bereits gespeicherten Blob (kein erneuter Upload erforderlich), analysiert die Datei neu, baut den Abschnittsbaum neu auf und speichert ihn. Wenn kein KI-Anbieter verbunden ist, sind textbasierte Dokumente weiterhin schnell und bleiben regelbasiert; Bilddateien erfordern entweder einen aktiven LLM-Anbieter oder ein Build mit `--features ocr`.
 
 Alternativ pro Dokument: Die Schaltfläche Regenerate (Regenerieren) in der Spalte Actions (Aktionen) macht dasselbe für jeweils eine Datei.
 
@@ -341,7 +361,7 @@ Ohne `--skip-unchanged` nimmt dies alle Dateien neu auf und füllt den Seitenind
 
 ### Was nicht berührt wird
 
-Der Abschnittsbaum wird rein aus der analysierten Dokumentenstruktur aufgebaut – keine LLM-Extraktion beteiligt, es sei denn, `pageindex_enrich = true` (Standardwert ist false). Die erneute Aufnahme vorhandener Dateien ohne KI-Anbieter ist also günstig: Parsen aus Blob → Überschriftenbaum bauen → Schreiben in SQLite FTS. Die Graphknoten und -kanten werden ebenfalls neu upsertiert, aber das ist leichtgewichtig (sie existieren bereits, also sind es meist No-Ops).
+Für textbasierte Dokumente wird der Abschnittsbaum rein aus der analysierten Dokumentenstruktur aufgebaut – keine LLM-Extraktion beteiligt, es sei denn, `pageindex_enrich = true` (Standardwert ist false). Die erneute Aufnahme vorhandener Textdateien ohne KI-Anbieter ist also günstig: Parsen aus Blob → Überschriftenbaum bauen → Schreiben in SQLite FTS. Bilddateien sind die Ausnahme: Sie erfordern eine Anbietertranskription oder OCR, bevor diese geparste Struktur existiert. Die Graphknoten und -kanten werden ebenfalls neu upsertiert, aber das ist leichtgewichtig (sie existieren bereits, also sind es meist No-Ops).
 
 ### Regeneration und Generierung mit KI können lange dauern
 
