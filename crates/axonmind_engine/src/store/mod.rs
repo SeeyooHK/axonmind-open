@@ -148,6 +148,43 @@ pub struct DocumentSummary {
     pub concept_count: usize,
     /// Evidence records sourced from this document.
     pub evidence_count: usize,
+    /// Logical document this version belongs to (`ldoc.<uuid>`). Stable across versions.
+    pub logical_doc_id: String,
+    /// 1-based version number of this (HEAD) row within its logical document.
+    pub version_no: i64,
+    /// Total versions in this logical document (1 when never re-ingested).
+    pub version_count: i64,
+}
+
+/// One row in the `document_versions` lineage log (read model). Newest→oldest when listed.
+/// See `docs/document_versioning.md` §2.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DocumentVersion {
+    pub logical_doc_id: String,
+    pub version_no: i64,
+    pub node_id: String,
+    pub sha256: String,
+    pub structural_sha256: Option<String>,
+    pub indexed_at: i64,
+    pub source_path: Option<String>,
+    pub previous_node_id: Option<String>,
+    pub superseded: bool,
+}
+
+/// A new row to append to `document_versions`, written atomically with its graph mutations
+/// by `apply_version_batch`. The document_cache HEAD pointer is derived from these fields
+/// (path = `source_path`, node = `node_id`), so no separate cache args are needed.
+#[derive(Debug, Clone)]
+pub(crate) struct NewDocumentVersion {
+    pub logical_doc_id: String,
+    pub version_no: i64,
+    pub node_id: NodeId,
+    pub sha256: String,
+    pub structural_sha256: Option<String>,
+    pub indexed_at: i64,
+    pub source_path: Option<String>,
+    pub previous_node_id: Option<NodeId>,
+    pub superseded: bool,
 }
 
 // ── GraphStore ────────────────────────────────────────────────────────────────
@@ -278,6 +315,101 @@ impl GraphStore {
         }
         Ok(())
     }
+
+    /// Like `apply_batch`, but also — in the SAME transaction — appends `document_versions` rows
+    /// and upserts the `document_cache` HEAD pointer. This is the atomicity guarantee from
+    /// `docs/document_versioning.md`: the graph never holds a version's nodes without its version
+    /// row, nor vice versa.
+    ///
+    /// `version` is the new HEAD row (drives the cache pointer). `retained` is the prior version's
+    /// row, re-inserted (flagged superseded) on the supersede path: deleting+retaining the old
+    /// node cascades its original `document_versions` row away (FK ON DELETE CASCADE), so it must
+    /// be rewritten here rather than updated in place. The cache HEAD is derived from `version`
+    /// (path = `source_path`, node = `node_id`); cache upsert is skipped when `source_path` is None
+    /// (documents ingested from raw text have no backing path).
+    pub(crate) async fn apply_version_batch(
+        &self,
+        mutations: Vec<GraphMutation>,
+        version: NewDocumentVersion,
+        retained: Option<NewDocumentVersion>,
+        cache: &tokio::sync::RwLock<GraphCache>,
+        event_tx: &tokio::sync::broadcast::Sender<crate::events::EngineEvent>,
+    ) -> Result<(), AxonMindError> {
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+
+        let outcomes: Vec<(GraphOp, Option<crate::events::EngineEvent>)> = conn
+            .interact(
+                move |conn| -> Result<
+                    Vec<(GraphOp, Option<crate::events::EngineEvent>)>,
+                    AxonMindError,
+                > {
+                    let tx = conn
+                        .transaction()
+                        .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                    let mut outs = Vec::with_capacity(mutations.len());
+                    for m in &mutations {
+                        outs.push(apply_in_tx(&tx, m)?); // first Err → tx dropped → auto-rollback
+                    }
+
+                    // Re-insert the retained (now superseded) prior row first, then the new HEAD.
+                    // Both reference nodes (re)created by the mutations above, so FKs hold.
+                    if let Some(r) = &retained {
+                        insert_version_row(&tx, r)?;
+                    }
+                    insert_version_row(&tx, &version)?;
+
+                    if let Some(path) = &version.source_path {
+                        tx.execute(
+                            "INSERT INTO document_cache (path, sha256, structural_sha256, indexed_at, node_id)
+                             VALUES (?1,?2,?3,?4,?5)
+                             ON CONFLICT(path) DO UPDATE SET sha256=excluded.sha256,
+                               structural_sha256=excluded.structural_sha256,
+                               indexed_at=excluded.indexed_at, node_id=excluded.node_id",
+                            rusqlite::params![
+                                path,
+                                version.sha256,
+                                version.structural_sha256.clone().unwrap_or_default(),
+                                version.indexed_at,
+                                version.node_id.0,
+                            ],
+                        )
+                        .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                    }
+
+                    tx.commit()
+                        .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                    Ok(outs)
+                },
+            )
+            .await
+            .map_err(|e| AxonMindError::Database(format!("interact: {e}")))??;
+
+        // After commit: patch the cache and collect events, then emit.
+        let mut events = Vec::new();
+        {
+            let mut guard = cache.write().await;
+            for (op, ev) in outcomes {
+                if let Err(e) = apply_graph_op(&mut guard, op) {
+                    guard.mark_dirty();
+                    tracing::warn!(
+                        "cache patch failed after version batch commit, marked dirty: {e}"
+                    );
+                }
+                if let Some(e) = ev {
+                    events.push(e);
+                }
+            }
+        }
+        for e in events {
+            let _ = event_tx.send(e);
+        }
+        Ok(())
+    }
 }
 
 // ── GraphOp (cache patch descriptor) ─────────────────────────────────────────
@@ -310,6 +442,33 @@ pub(crate) fn to_db_str<T: Serialize>(v: &T) -> Result<String, AxonMindError> {
 pub(crate) fn from_db_str<T: for<'de> Deserialize<'de>>(s: &str) -> Result<T, AxonMindError> {
     serde_json::from_value(serde_json::Value::String(s.to_owned()))
         .map_err(|e| AxonMindError::Serialization(e.to_string()))
+}
+
+/// Insert one `document_versions` row inside an open transaction. Shared by the new-HEAD and
+/// retained-superseded inserts in `apply_version_batch`.
+fn insert_version_row(
+    tx: &rusqlite::Transaction,
+    row: &NewDocumentVersion,
+) -> Result<(), AxonMindError> {
+    tx.execute(
+        "INSERT INTO document_versions
+            (logical_doc_id, version_no, node_id, sha256, structural_sha256,
+             indexed_at, source_path, previous_node_id, superseded)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        rusqlite::params![
+            row.logical_doc_id,
+            row.version_no,
+            row.node_id.0,
+            row.sha256,
+            row.structural_sha256,
+            row.indexed_at,
+            row.source_path,
+            row.previous_node_id.as_ref().map(|n| n.0.clone()),
+            row.superseded as i64,
+        ],
+    )
+    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+    Ok(())
 }
 
 // ── apply_in_tx — runs all per-variant logic inside a rusqlite Transaction ───
@@ -1096,36 +1255,28 @@ impl GraphStore {
             .map_err(|e| AxonMindError::Database(e.to_string()))?
     }
 
-    /// Insert or update document_cache entry after successful ingestion.
-    pub(crate) async fn upsert_document_cache(
+    /// The Document node `document_cache` currently points at for `path` (the live HEAD), if the
+    /// path is known. Feeds the ingest identity resolver (§1 matrix, path-first).
+    pub(crate) async fn document_cache_node_for_path(
         &self,
         path_str: &str,
-        content_sha256: &str,
-        structural_sha256: &str,
-        node_id: &NodeId,
-    ) -> Result<(), AxonMindError> {
+    ) -> Result<Option<NodeId>, AxonMindError> {
         let p = path_str.to_owned();
-        let h = content_sha256.to_owned();
-        let sh = structural_sha256.to_owned();
-        let nid = node_id.0.clone();
         let conn = self
             .db
             .0
             .get()
             .await
             .map_err(|e| AxonMindError::Database(e.to_string()))?;
-        conn.interact(move |conn| -> Result<(), AxonMindError> {
-            let now = chrono::Utc::now().timestamp();
-            conn.execute(
-                "INSERT INTO document_cache (path, sha256, structural_sha256, indexed_at, node_id)
-                 VALUES (?1,?2,?3,?4,?5)
-                 ON CONFLICT(path) DO UPDATE SET sha256=excluded.sha256,
-                   structural_sha256=excluded.structural_sha256,
-                   indexed_at=excluded.indexed_at, node_id=excluded.node_id",
-                rusqlite::params![p, h, sh, now, nid],
+        conn.interact(move |conn| -> Result<Option<NodeId>, AxonMindError> {
+            conn.query_row(
+                "SELECT node_id FROM document_cache WHERE path = ?1",
+                [&p],
+                |row| row.get::<_, String>(0),
             )
-            .map_err(|e| AxonMindError::Database(e.to_string()))?;
-            Ok(())
+            .optional()
+            .map(|opt| opt.map(NodeId))
+            .map_err(|e| AxonMindError::Database(e.to_string()))
         })
         .await
         .map_err(|e| AxonMindError::Database(e.to_string()))?
@@ -1244,8 +1395,9 @@ impl GraphStore {
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
-    /// How many documents still reference a blob `sha256` (via `document_cache`). Used to decide
-    /// whether a blob is safe to delete on document removal (don't delete a shared blob).
+    /// How many documents still reference a blob `sha256`, counting BOTH the live
+    /// `document_cache` and the retained `document_versions` log (§6). Used to decide whether a
+    /// blob is safe to delete on document removal (don't delete a shared or still-versioned blob).
     pub(crate) async fn count_documents_with_sha(
         &self,
         sha256: &str,
@@ -1258,9 +1410,15 @@ impl GraphStore {
             .await
             .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
         conn.interact(move |conn| -> Result<usize, AxonMindError> {
+            // Count BOTH the live cache and the retained version log (§6): a blob is only
+            // GC-eligible when no version — current or historical — still references its hash.
             let n: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM document_cache WHERE sha256 = ?1",
+                    "SELECT COUNT(*) FROM (
+                         SELECT sha256 FROM document_cache    WHERE sha256 = ?1
+                         UNION ALL
+                         SELECT sha256 FROM document_versions WHERE sha256 = ?1
+                     )",
                     [&sha],
                     |row| row.get(0),
                 )
@@ -1271,7 +1429,11 @@ impl GraphStore {
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
-    /// One row per processed document, with extraction counts, for the file-list UI.
+    /// One row per *logical* document — HEAD only — with extraction counts and version metadata,
+    /// for the file-list UI (§ list_documents). Driven by `document_versions` (the authoritative
+    /// log): the HEAD is the single `superseded = 0` row per logical doc, so superseded versions
+    /// are excluded automatically (live-graph filter, §3). `version_count` is the total across the
+    /// chain. Every Document node has a HEAD row after backfill, so none are dropped.
     pub(crate) async fn list_document_summaries(
         &self,
     ) -> Result<Vec<DocumentSummary>, AxonMindError> {
@@ -1283,14 +1445,15 @@ impl GraphStore {
             .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
         conn.interact(move |conn| -> Result<Vec<DocumentSummary>, AxonMindError> {
             let mut stmt = conn.prepare(
-                "SELECT n.id, n.name, dc.path, dc.sha256, \
-                        COALESCE(dc.indexed_at, n.created_at) AS indexed_at, \
+                "SELECT n.id, n.name, dv.source_path, dv.sha256, dv.indexed_at, \
                         (SELECT COUNT(*) FROM edges e WHERE e.from_id = n.id AND e.kind = 'MentionedIn') AS concept_count, \
-                        (SELECT COUNT(*) FROM evidence ev WHERE ev.source_node_id = n.id) AS evidence_count \
-                 FROM nodes n \
-                 LEFT JOIN document_cache dc ON dc.node_id = n.id \
-                 WHERE n.kind = 'Document' \
-                 ORDER BY indexed_at DESC",
+                        (SELECT COUNT(*) FROM evidence ev WHERE ev.source_node_id = n.id) AS evidence_count, \
+                        dv.logical_doc_id, dv.version_no, \
+                        (SELECT COUNT(*) FROM document_versions dv2 WHERE dv2.logical_doc_id = dv.logical_doc_id) AS version_count \
+                 FROM document_versions dv \
+                 JOIN nodes n ON n.id = dv.node_id \
+                 WHERE dv.superseded = 0 AND n.kind = 'Document' \
+                 ORDER BY dv.indexed_at DESC",
             ).map_err(|e| AxonMindError::Database(e.to_string()))?;
             let x = stmt.query_map([], |row| {
                 Ok(DocumentSummary {
@@ -1301,12 +1464,221 @@ impl GraphStore {
                     indexed_at: row.get(4)?,
                     concept_count: row.get::<_, i64>(5)? as usize,
                     evidence_count: row.get::<_, i64>(6)? as usize,
+                    logical_doc_id: row.get(7)?,
+                    version_no: row.get(8)?,
+                    version_count: row.get(9)?,
                 })
             })
             .map_err(|e| AxonMindError::Database(e.to_string()))?
             .collect::<rusqlite::Result<_>>()
             .map_err(|e| AxonMindError::Database(e.to_string()))?;
             Ok(x)
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    /// All versions of a logical document, newest→oldest (§ list_document_versions).
+    pub(crate) async fn list_document_versions(
+        &self,
+        logical_doc_id: &str,
+    ) -> Result<Vec<DocumentVersion>, AxonMindError> {
+        let ldoc = logical_doc_id.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Vec<DocumentVersion>, AxonMindError> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT logical_doc_id, version_no, node_id, sha256, structural_sha256, \
+                            indexed_at, source_path, previous_node_id, superseded \
+                     FROM document_versions WHERE logical_doc_id = ?1 \
+                     ORDER BY version_no DESC",
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let x = stmt
+                .query_map([&ldoc], |row| {
+                    Ok(DocumentVersion {
+                        logical_doc_id: row.get(0)?,
+                        version_no: row.get(1)?,
+                        node_id: row.get(2)?,
+                        sha256: row.get(3)?,
+                        structural_sha256: row.get(4)?,
+                        indexed_at: row.get(5)?,
+                        source_path: row.get(6)?,
+                        previous_node_id: row.get(7)?,
+                        superseded: row.get::<_, i64>(8)? != 0,
+                    })
+                })
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<_>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(x)
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    /// The full `document_versions` row for `node_id`, if any. Used by the supersede path to
+    /// re-insert the prior HEAD's row (flagged superseded) after its node is deleted+retained —
+    /// deletion cascades the original row away (FK ON DELETE CASCADE), so it must be rewritten.
+    pub(crate) async fn fetch_version(
+        &self,
+        node_id: &NodeId,
+    ) -> Result<Option<DocumentVersion>, AxonMindError> {
+        let id = node_id.0.clone();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(
+            move |conn| -> Result<Option<DocumentVersion>, AxonMindError> {
+                conn.query_row(
+                    "SELECT logical_doc_id, version_no, node_id, sha256, structural_sha256, \
+                        indexed_at, source_path, previous_node_id, superseded \
+                 FROM document_versions WHERE node_id = ?1",
+                    [&id],
+                    |row| {
+                        Ok(DocumentVersion {
+                            logical_doc_id: row.get(0)?,
+                            version_no: row.get(1)?,
+                            node_id: row.get(2)?,
+                            sha256: row.get(3)?,
+                            structural_sha256: row.get(4)?,
+                            indexed_at: row.get(5)?,
+                            source_path: row.get(6)?,
+                            previous_node_id: row.get(7)?,
+                            superseded: row.get::<_, i64>(8)? != 0,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(|e| AxonMindError::Database(e.to_string()))
+            },
+        )
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    /// The `(logical_doc_id, version_no)` of the version row for `node_id`, if any. Used by the
+    /// ingest identity resolver to inherit a logical id and compute the next version number from
+    /// the current HEAD node (the node `document_cache` points at).
+    pub(crate) async fn fetch_version_for_node(
+        &self,
+        node_id: &NodeId,
+    ) -> Result<Option<(String, i64)>, AxonMindError> {
+        let id = node_id.0.clone();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(
+            move |conn| -> Result<Option<(String, i64)>, AxonMindError> {
+                conn.query_row(
+                    "SELECT logical_doc_id, version_no FROM document_versions WHERE node_id = ?1",
+                    [&id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|e| AxonMindError::Database(e.to_string()))
+            },
+        )
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    /// Backfill `document_versions` for any pre-existing Document node that has no version row:
+    /// each becomes a fresh logical doc at v1 (§ Migration/existing data). Returns
+    /// `(backfilled, total_documents)`. Past lineage is unrecoverable and never fabricated; the
+    /// caller logs the count (Rule 12).
+    pub(crate) async fn backfill_document_versions(&self) -> Result<(usize, usize), AxonMindError> {
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<(usize, usize), AxonMindError> {
+            let tx = conn
+                .transaction()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            // Document nodes lacking a version row, with their cache path/fingerprint if present.
+            let rows: Vec<(String, Option<String>, Option<String>, Option<String>, Option<i64>, i64)> = {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT n.id, dc.path, dc.sha256, dc.structural_sha256, dc.indexed_at, n.created_at \
+                         FROM nodes n \
+                         LEFT JOIN document_cache dc ON dc.node_id = n.id \
+                         WHERE n.kind = 'Document' \
+                           AND NOT EXISTS (SELECT 1 FROM document_versions dv WHERE dv.node_id = n.id)",
+                    )
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                })
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<_>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+            };
+
+            let total: i64 = tx
+                .query_row("SELECT COUNT(*) FROM nodes WHERE kind = 'Document'", [], |r| r.get(0))
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+
+            let backfilled = rows.len();
+            for (node_id, path, sha, structural, indexed_at, created_at) in rows {
+                // Orphans (not in cache) have no recorded sha; fall back to the node's stored attr
+                // (parsed in Rust — attrs is JSON TEXT — to avoid a JSON1 SQLite dependency).
+                let sha = match sha {
+                    Some(s) => s,
+                    None => tx
+                        .query_row(
+                            "SELECT attrs FROM nodes WHERE id = ?1",
+                            [&node_id],
+                            |r| r.get::<_, String>(0),
+                        )
+                        .optional()
+                        .map_err(|e| AxonMindError::Database(e.to_string()))?
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                        .and_then(|v| {
+                            v.get("sha256").and_then(|x| x.as_str().map(str::to_owned))
+                        })
+                        .unwrap_or_default(),
+                };
+                let logical = format!("ldoc.{}", uuid::Uuid::new_v4());
+                tx.execute(
+                    "INSERT INTO document_versions
+                        (logical_doc_id, version_no, node_id, sha256, structural_sha256,
+                         indexed_at, source_path, previous_node_id, superseded)
+                     VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, NULL, 0)",
+                    rusqlite::params![
+                        logical,
+                        node_id,
+                        sha,
+                        structural,
+                        indexed_at.unwrap_or(created_at),
+                        path,
+                    ],
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            }
+            tx.commit()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok((backfilled, total as usize))
         })
         .await
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
@@ -1452,11 +1824,15 @@ impl GraphStore {
             .await
             .map_err(|e| AxonMindError::Database(e.to_string()))?;
         conn.interact(|conn| -> Result<_, AxonMindError> {
-            // Nodes — ORDER BY id for stable, diff-friendly export output.
+            // Nodes — ORDER BY id for stable, diff-friendly export output. Superseded version
+            // nodes are excluded so the export reflects only the live (HEAD) graph (§3); their
+            // bytes/lineage are retained in blobs + document_versions for audit, not here.
             let nodes: Vec<Node> = {
                 let mut stmt = conn.prepare(
                     "SELECT id,kind,name,attrs,confidence,is_tainted,requires_human_review,
-                            created_at,updated_at FROM nodes ORDER BY id"
+                            created_at,updated_at FROM nodes
+                     WHERE id NOT IN (SELECT node_id FROM document_versions WHERE superseded = 1)
+                     ORDER BY id"
                 ).map_err(|e| AxonMindError::Database(e.to_string()))?;
                 let x = stmt.query_map([], node_from_row)
                     .map_err(|e| AxonMindError::Database(e.to_string()))?

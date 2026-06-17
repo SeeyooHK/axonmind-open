@@ -1061,3 +1061,236 @@ async fn test_batch_extraction_ignores_unsolicited_pairs() {
         summary.errors
     );
 }
+
+// ── Document versioning (Phase 0, docs/document_versioning.md) ──────────────────
+
+/// Ingest `content` at a STABLE `path` (re-ingestable). Unlike `ingest_markdown`, which uses a
+/// throwaway path per call; versioning is path-keyed, so the path must persist across re-ingests.
+async fn ingest_at(
+    engine: &AxonMindEngine,
+    path: &std::path::Path,
+    content: &str,
+) -> axonmind_engine::ingest::IngestSummary {
+    std::fs::write(path, content).unwrap();
+    engine
+        .ingest_sync(
+            IngestSource::File(path.to_path_buf()),
+            IngestOptions {
+                recursive: false,
+                skip_unchanged: false,
+                max_file_size_bytes: 10 * 1024 * 1024,
+            },
+        )
+        .await
+        .expect("ingest failed")
+}
+
+/// Re-ingesting CHANGED content at the SAME path creates a new linked version, retains the old
+/// node (superseded) + both blobs, and leaves ONLY the new version's concepts live (HEAD-only).
+/// WHY: this is the §3 correctness centerpiece — stale versions must not double-count in the graph
+/// yet must remain diffable for the audit trail.
+#[tokio::test]
+async fn reingest_changed_content_same_path_creates_linked_version() {
+    let dir = TempDir::new().unwrap();
+    let blob_dir = test_engine_config(&dir).blob_dir;
+    let files = TempDir::new().unwrap();
+    let engine = open_engine(&dir).await;
+    let path = files.path().join("policy.md");
+
+    ingest_at(&engine, &path, "# Revenue Growth\n\nv1 body about revenue.").await;
+    let docs = engine.list_documents().await.unwrap();
+    assert_eq!(docs.len(), 1, "one logical doc after first ingest");
+    assert_eq!(docs[0].version_count, 1);
+    let v1_node = docs[0].node_id.clone();
+    let logical = docs[0].logical_doc_id.clone();
+
+    // Re-ingest DIFFERENT content at the SAME path → new version (supersede).
+    ingest_at(
+        &engine,
+        &path,
+        "# Customer Acquisition Cost\n\nv2 body about CAC and churn.",
+    )
+    .await;
+
+    let docs = engine.list_documents().await.unwrap();
+    assert_eq!(
+        docs.len(),
+        1,
+        "still ONE logical-doc row (HEAD-only listing)"
+    );
+    assert_eq!(docs[0].version_count, 2, "two versions now exist");
+    assert_eq!(docs[0].logical_doc_id, logical, "logical id inherited");
+    let head_node = docs[0].node_id.clone();
+    assert_ne!(head_node, v1_node, "HEAD moved to the new content node");
+
+    // Lineage: newest-first, v1 superseded with a parent link from v2.
+    let versions = engine.list_document_versions(&logical).await.unwrap();
+    assert_eq!(versions.len(), 2);
+    assert_eq!(versions[0].version_no, 2);
+    assert!(!versions[0].superseded, "HEAD is not superseded");
+    assert_eq!(
+        versions[0].previous_node_id.as_deref(),
+        Some(v1_node.as_str()),
+        "v2 links back to v1"
+    );
+    assert_eq!(versions[1].version_no, 1);
+    assert!(versions[1].superseded, "old version flagged superseded");
+    assert_eq!(versions[1].node_id, v1_node);
+
+    // HEAD-only graph: exactly one live Document node (the superseded one is excluded), and the
+    // concepts reflect ONLY v2 — v1's KPI is gone, not summed in.
+    let export = engine.export_json().await.unwrap();
+    let doc_ids: Vec<_> = export
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Document)
+        .map(|n| n.id.0.clone())
+        .collect();
+    assert_eq!(doc_ids, vec![head_node.clone()], "only HEAD doc is live");
+    let node_ids: HashSet<&str> = export.nodes.iter().map(|n| n.id.0.as_str()).collect();
+    assert!(
+        node_ids.contains("kpi.customer_acquisition_cost"),
+        "v2 concept is live"
+    );
+    assert!(
+        !node_ids.contains("kpi.revenue_growth"),
+        "v1 concept must be gone from the live graph (HEAD-only), got {node_ids:?}"
+    );
+
+    // Both versions' blobs survive on disk for audit/diff, and each renders its OWN content.
+    for v in &versions {
+        assert!(
+            blob_dir.join(&v.sha256).exists(),
+            "blob for v{} must be retained",
+            v.version_no
+        );
+    }
+    let head_md = engine
+        .get_document_content(&NodeId(head_node))
+        .await
+        .unwrap();
+    let old_md = engine.get_document_content(&NodeId(v1_node)).await.unwrap();
+    assert!(head_md.contains("CAC"), "HEAD renders v2 bytes");
+    assert!(
+        old_md.contains("revenue"),
+        "old version still renders v1 bytes"
+    );
+}
+
+/// The SAME content ingested at a DIFFERENT path is recorded as an alias on the existing node —
+/// no new version, no re-extraction. WHY: identical bytes are provably the same document (§1).
+#[tokio::test]
+async fn same_content_new_path_records_alias_not_a_version() {
+    let dir = TempDir::new().unwrap();
+    let files = TempDir::new().unwrap();
+    let engine = open_engine(&dir).await;
+    let body = "# Retention Rate\n\nSame bytes under two names.";
+
+    let path_a = files.path().join("a.md");
+    ingest_at(&engine, &path_a, body).await;
+    let logical = engine.list_documents().await.unwrap()[0]
+        .logical_doc_id
+        .clone();
+
+    let path_b = files.path().join("b.md");
+    ingest_at(&engine, &path_b, body).await;
+
+    let docs = engine.list_documents().await.unwrap();
+    assert_eq!(docs.len(), 1, "alias must not create a second logical doc");
+    assert_eq!(docs[0].version_count, 1, "alias must not bump the version");
+    assert_eq!(
+        engine.list_document_versions(&logical).await.unwrap().len(),
+        1
+    );
+
+    // The alternate path is recorded on the node's `aliases` attr.
+    let export = engine.export_json().await.unwrap();
+    let doc_node = export
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Document)
+        .unwrap();
+    let aliases = doc_node.attrs.get("aliases").and_then(|v| v.as_array());
+    assert!(
+        aliases.is_some_and(|a| a.iter().any(|e| e
+            .get("path")
+            .and_then(|p| p.as_str())
+            .is_some_and(|p| p.ends_with("b.md")))),
+        "alias path b.md must be recorded, got {:?}",
+        doc_node.attrs.get("aliases")
+    );
+}
+
+/// Re-ingesting IDENTICAL content at the SAME path is an exact no-op (dedup): no version, no graph
+/// change. WHY: content-addressed identity must collapse, not stack.
+#[tokio::test]
+async fn reingest_identical_content_same_path_is_dedup_noop() {
+    let dir = TempDir::new().unwrap();
+    let files = TempDir::new().unwrap();
+    let engine = open_engine(&dir).await;
+    let path = files.path().join("doc.md");
+    let body = "# Revenue Growth\n\nUnchanged.";
+
+    ingest_at(&engine, &path, body).await;
+    let before = engine.export_json().await.unwrap().nodes.len();
+
+    ingest_at(&engine, &path, body).await;
+    let after = engine.export_json().await.unwrap().nodes.len();
+
+    assert_eq!(before, after, "dedup must not add nodes");
+    let docs = engine.list_documents().await.unwrap();
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].version_count, 1, "dedup must not create a version");
+}
+
+/// Removing a versioned document drops EVERY version (HEAD + superseded) and GCs all their blobs.
+/// WHY: §6 — a logical remove must not leave stale version nodes or orphaned blobs behind.
+#[tokio::test]
+async fn remove_versioned_document_drops_all_versions_and_blobs() {
+    let dir = TempDir::new().unwrap();
+    let blob_dir = test_engine_config(&dir).blob_dir;
+    let files = TempDir::new().unwrap();
+    let engine = open_engine(&dir).await;
+    let path = files.path().join("doc.md");
+
+    ingest_at(&engine, &path, "# Revenue Growth\n\nv1.").await;
+    ingest_at(&engine, &path, "# Customer Acquisition Cost\n\nv2.").await;
+
+    let docs = engine.list_documents().await.unwrap();
+    let logical = docs[0].logical_doc_id.clone();
+    let versions = engine.list_document_versions(&logical).await.unwrap();
+    assert_eq!(versions.len(), 2);
+    for v in &versions {
+        assert!(blob_dir.join(&v.sha256).exists());
+    }
+
+    engine
+        .remove_document(NodeId(docs[0].node_id.clone()), true)
+        .await
+        .unwrap();
+
+    assert!(
+        engine.list_documents().await.unwrap().is_empty(),
+        "logical remove leaves no documents"
+    );
+    assert!(
+        engine
+            .list_document_versions(&logical)
+            .await
+            .unwrap()
+            .is_empty(),
+        "all version rows gone"
+    );
+    let export = engine.export_json().await.unwrap();
+    assert!(
+        export.nodes.is_empty() && export.edges.is_empty(),
+        "graph empty after removing the only logical doc"
+    );
+    for v in &versions {
+        assert!(
+            !blob_dir.join(&v.sha256).exists(),
+            "blob for v{} must be GC'd",
+            v.version_no
+        );
+    }
+}

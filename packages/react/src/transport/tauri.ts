@@ -19,7 +19,7 @@ import type {
   GraphSearchInput, GraphSearchOutput,
   ReasoningSearchInput, ReasoningSearchOutput,
   ScopedSummaryModeInput, SuggestedSummary, SummaryResolution, LensResolution,
-  SummaryConfigSnapshot, SummaryConfigEdit, DocumentSummary,
+  SummaryConfigSnapshot, SummaryConfigEdit, DocumentSummary, DocumentVersion,
   IndexMarkdownOptions, IndexPathOptions,
   GraphExportV1, GraphStatsOutput, GraphDiff,
 } from "@axonmind/types";
@@ -162,6 +162,24 @@ export class TauriTransport implements AxonMindTransport {
     return this.invokeWithFallback<DocumentSummary[]>(
       "list_documents",
       "axonmind_list_documents",
+    );
+  }
+
+  listDocumentVersions(logical_doc_id: string): Promise<DocumentVersion[]> {
+    const args = { logicalDocId: logical_doc_id };
+    return this.invokeWithFallback<DocumentVersion[]>(
+      "list_document_versions",
+      "axonmind_list_document_versions",
+      args,
+    );
+  }
+
+  getDocumentContent(node_id: string): Promise<string> {
+    const args = { nodeId: node_id };
+    return this.invokeWithFallback<string>(
+      "get_document_content",
+      "axonmind_get_document_content",
+      args,
     );
   }
 

@@ -1,5 +1,5 @@
 import { describe, it, expectTypeOf } from 'vitest'
-import type { Node, Edge, EngineEvent, FocusKpiOutput } from './index'
+import type { Node, Edge, EngineEvent, FocusKpiOutput, DocumentSummary, DocumentVersion } from './index'
 import type { AxonMindTransport } from './transport'
 
 // These are compile-time checks: they fail if a required field is removed or
@@ -36,5 +36,33 @@ describe('@axonmind/types shape checks', () => {
   it('AxonMindTransport focusKpi returns FocusKpiOutput', () => {
     expectTypeOf<ReturnType<AxonMindTransport['focusKpi']>>()
       .toEqualTypeOf<Promise<FocusKpiOutput>>()
+  })
+
+  // Phase 0 (document versioning): the Library's version timeline depends on these fields
+  // mirroring Rust exactly. If the Rust DocumentSummary loses a versioning field, the
+  // `satisfies` check below fails to compile — catching drift before runtime.
+  it('DocumentSummary carries logical-doc + version metadata', () => {
+    const d = {
+      node_id: 'doc.abc', name: 'Policy.pdf', source_path: null, sha256: null,
+      indexed_at: 0, concept_count: 0, evidence_count: 0,
+      logical_doc_id: 'ldoc.x', version_no: 1, version_count: 1,
+    } satisfies DocumentSummary
+    expectTypeOf(d.version_count).toEqualTypeOf<number>()
+  })
+
+  it('DocumentVersion has the lineage fields the diff UI reads', () => {
+    const v = {
+      logical_doc_id: 'ldoc.x', version_no: 2, node_id: 'doc.def', sha256: 'deadbeef',
+      structural_sha256: null, indexed_at: 0, source_path: null,
+      previous_node_id: 'doc.abc', superseded: false,
+    } satisfies DocumentVersion
+    expectTypeOf(v.superseded).toEqualTypeOf<boolean>()
+  })
+
+  it('AxonMindTransport exposes version timeline + content retrieval', () => {
+    expectTypeOf<ReturnType<AxonMindTransport['listDocumentVersions']>>()
+      .toEqualTypeOf<Promise<DocumentVersion[]>>()
+    expectTypeOf<ReturnType<AxonMindTransport['getDocumentContent']>>()
+      .toEqualTypeOf<Promise<string>>()
   })
 })

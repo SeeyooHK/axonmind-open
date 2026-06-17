@@ -86,6 +86,31 @@ fn make_document_node(doc: &NormalizedDocument) -> Node {
     }
 }
 
+/// Summary for an identity-resolution no-op (exact dedup or alias): nothing was added.
+fn skipped_summary() -> IngestSummary {
+    IngestSummary {
+        files_skipped: 1,
+        ..Default::default()
+    }
+}
+
+/// Count created nodes/edges/evidence in a mutation batch for the ingest summary.
+fn summarize_mutations(mutations: &[GraphMutation]) -> IngestSummary {
+    let mut summary = IngestSummary {
+        files_processed: 1,
+        ..Default::default()
+    };
+    for m in mutations {
+        match m {
+            GraphMutation::UpsertNode { .. } => summary.nodes_created += 1,
+            GraphMutation::UpsertEdge { .. } => summary.edges_created += 1,
+            GraphMutation::UpsertEvidence { .. } => summary.evidence_created += 1,
+            _ => {}
+        }
+    }
+    summary
+}
+
 #[cfg(feature = "llm")]
 fn is_image_path(path: &std::path::Path) -> bool {
     path.extension()
@@ -104,6 +129,16 @@ impl AxonMindEngine {
         tokio::fs::create_dir_all(&config.blob_dir).await?;
 
         let store = Arc::new(GraphStore::open(&config.database_path).await?);
+
+        // Phase 0 backfill: give any pre-versioning Document node a v1 lineage row (Rule 12: log).
+        match store.backfill_document_versions().await {
+            Ok((backfilled, total)) if backfilled > 0 => tracing::info!(
+                "document_versions backfill: {backfilled} of {total} documents seeded at v1 \
+                 (past lineage unrecoverable, not fabricated)"
+            ),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("document_versions backfill failed: {e}"),
+        }
 
         let (event_tx, _) = broadcast::channel(config.event_buffer);
 
@@ -420,6 +455,10 @@ impl AxonMindEngine {
         })
     }
 
+    /// Apply a parsed document to the graph, resolving its identity against existing state per the
+    /// §1 checksum×path matrix (docs/document_versioning.md): exact-dedup / alias / new-version /
+    /// new-file. Path-first — the node id is content-addressed (`doc.<sha8>`), so "content node
+    /// already exists" plus "is this path the current HEAD?" fully determine the case.
     async fn ingest_normalized(
         &self,
         doc: NormalizedDocument,
@@ -428,61 +467,244 @@ impl AxonMindEngine {
     ) -> Result<IngestSummary, AxonMindError> {
         let doc_node = make_document_node(&doc);
         let doc_node_id = doc_node.id.clone();
+        let now = chrono::Utc::now().timestamp();
+        let path_str = doc
+            .source_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
+        let content_node_exists = self.store.fetch_node(&doc_node_id).await?.is_some();
+        let cached_head = match &path_str {
+            Some(p) => self.store.document_cache_node_for_path(p).await?,
+            None => None,
+        };
+
+        match cached_head {
+            // same path, same checksum → exact dedup (idempotent, no graph change).
+            Some(ref head) if *head == doc_node_id => Ok(skipped_summary()),
+            // same path, changed checksum → NEW VERSION (atomic supersede, §3).
+            Some(prev_head) => {
+                self.ingest_new_version(doc, doc_node, fingerprint, prev_head, now)
+                    .await
+            }
+            None => {
+                if content_node_exists {
+                    // changed path, same checksum → ALIAS: record the alternate name, no re-extract.
+                    // (A pathless re-ingest of identical content also lands here as a no-op.)
+                    if let Some(p) = &path_str {
+                        self.record_alias(&doc_node_id, p, now).await?;
+                    }
+                    Ok(skipped_summary())
+                } else {
+                    // unknown path, changed checksum → NEW FILE at version 1.
+                    self.ingest_new_file(doc, doc_node, fingerprint, skip_llm, now)
+                        .await
+                }
+            }
+        }
+    }
+
+    /// New logical document at version 1 (§1 "new file"). Mints a fresh `logical_doc_id`; no
+    /// supersede, no parent.
+    async fn ingest_new_file(
+        &self,
+        doc: NormalizedDocument,
+        doc_node: Node,
+        fingerprint: DocFingerprint,
+        skip_llm: bool,
+        now: i64,
+    ) -> Result<IngestSummary, AxonMindError> {
+        let doc_node_id = doc_node.id.clone();
         let mutations = self
             .build_ingest_mutations(&doc, &doc_node, skip_llm, &Default::default())
             .await?;
-
-        // Apply mutations and track summary
-        let mut summary = IngestSummary {
-            files_processed: 1,
-            ..Default::default()
+        let mut summary = summarize_mutations(&mutations);
+        let version = crate::store::NewDocumentVersion {
+            logical_doc_id: format!("ldoc.{}", uuid::Uuid::new_v4()),
+            version_no: 1,
+            node_id: doc_node_id.clone(),
+            sha256: fingerprint.content_sha256.clone(),
+            structural_sha256: Some(fingerprint.structural_sha256.clone()),
+            indexed_at: now,
+            source_path: doc
+                .source_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
+            previous_node_id: None,
+            superseded: false,
         };
-
-        for mutation in mutations {
-            match &mutation {
-                GraphMutation::UpsertNode { .. } => summary.nodes_created += 1,
-                GraphMutation::UpsertEdge { .. } => summary.edges_created += 1,
-                GraphMutation::UpsertEvidence { .. } => summary.evidence_created += 1,
-                _ => {}
-            }
-            if let Err(e) = self
-                .store
-                .apply_mutation(mutation, &self.graph_cache, &self.event_tx)
-                .await
-            {
-                summary.errors.push(e.to_string());
-            }
-        }
-
-        self.run_ingest_tail(&doc, &fingerprint, &doc_node_id, &mut summary)
-            .await;
-
+        self.store
+            .apply_version_batch(mutations, version, None, &self.graph_cache, &self.event_tx)
+            .await?;
+        self.run_pageindex(&doc, &doc_node_id, &mut summary).await;
         Ok(summary)
     }
 
-    /// Shared tail for all ingest paths: upsert_document_cache + pageindex hook.
-    /// Graph mutations must already be applied before calling this.
-    /// Errors from pageindex are non-fatal: they are pushed to `summary.errors`.
-    async fn run_ingest_tail(
+    /// New version of an existing logical document (§1 "new version"; supersede §3). Removes the
+    /// prior HEAD's derived data, RETAINS its (now bare) Document node + blob for audit/diff, and
+    /// re-extracts the new bytes — all atomically. Template: `regenerate_document`, except it
+    /// creates a NEW node (the new content sha) instead of reusing the old node id.
+    ///
+    /// NOTE (§4 deviation, flagged): re-extraction always runs the full pass including the LLM
+    /// (`skip_llm = false`). The spec's "skip re-extraction when only bytes changed but structure
+    /// is identical" optimization is NOT applied: the new HEAD is a new node, so skipping the LLM
+    /// would silently drop the prior version's LLM-derived concepts from the live graph — the exact
+    /// double-/under-count §3 exists to prevent. Honoring §4 cheaply would require reparenting
+    /// evidence/edges via raw SQL, which violates the single-writer GraphMutation contract.
+    async fn ingest_new_version(
+        &self,
+        doc: NormalizedDocument,
+        doc_node: Node,
+        fingerprint: DocFingerprint,
+        prev_head: NodeId,
+        now: i64,
+    ) -> Result<IngestSummary, AxonMindError> {
+        let doc_node_id = doc_node.id.clone();
+        let old_node =
+            self.store
+                .fetch_node(&prev_head)
+                .await?
+                .ok_or_else(|| AxonMindError::Ingest {
+                    message: format!("HEAD node missing for new version: {}", prev_head.0),
+                })?;
+
+        // Removal of the prior HEAD's derived data (orphan concepts + the doc node itself). We
+        // re-add the bare doc node below so it is RETAINED, not orphaned (§3 step 2).
+        let removal = self.build_removal_mutations(&prev_head).await?;
+        let to_delete: std::collections::HashSet<String> = removal
+            .iter()
+            .filter_map(|m| match m {
+                GraphMutation::DeleteNode { node_id } => Some(node_id.0.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // Exclude the about-to-be-deleted concepts from the new version's "existing concepts" view,
+        // or the bridge/linker would create edges to them → NodeNotFound after the deletes apply.
+        let new_mutations = self
+            .build_ingest_mutations(&doc, &doc_node, false, &to_delete)
+            .await?;
+
+        // Retain the old doc node as a bare, superseded node (no edges/evidence) for audit + diff.
+        // Re-upserted AFTER its DeleteNode in `removal` (apply_version_batch applies in order).
+        let mut bare_old = old_node;
+        if let Some(obj) = bare_old.attrs.as_object_mut() {
+            obj.insert("superseded".into(), serde_json::Value::Bool(true));
+        }
+
+        let mut batch = removal;
+        batch.push(GraphMutation::UpsertNode { node: bare_old });
+        batch.extend(new_mutations);
+        let mut summary = summarize_mutations(&batch);
+
+        // The prior HEAD's full row — re-inserted (flagged superseded) because deleting+retaining
+        // its node cascades the original row away. On a backfill gap (no row), mint fresh lineage
+        // and skip the retained re-insert (there is nothing to preserve).
+        let prior = self.store.fetch_version(&prev_head).await?;
+        let (logical_doc_id, prev_version_no) = match &prior {
+            Some(v) => (v.logical_doc_id.clone(), v.version_no),
+            None => {
+                tracing::warn!(
+                    "no version row for HEAD {}; minting fresh lineage (backfill gap)",
+                    prev_head.0
+                );
+                (format!("ldoc.{}", uuid::Uuid::new_v4()), 1)
+            }
+        };
+        let retained = prior.map(|v| crate::store::NewDocumentVersion {
+            logical_doc_id: v.logical_doc_id,
+            version_no: v.version_no,
+            node_id: prev_head.clone(),
+            sha256: v.sha256,
+            structural_sha256: v.structural_sha256,
+            indexed_at: v.indexed_at,
+            source_path: v.source_path,
+            previous_node_id: v.previous_node_id.map(NodeId),
+            superseded: true,
+        });
+
+        let version = crate::store::NewDocumentVersion {
+            logical_doc_id,
+            version_no: prev_version_no + 1,
+            node_id: doc_node_id.clone(),
+            sha256: fingerprint.content_sha256.clone(),
+            structural_sha256: Some(fingerprint.structural_sha256.clone()),
+            indexed_at: now,
+            source_path: doc
+                .source_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
+            previous_node_id: Some(prev_head.clone()),
+            superseded: false,
+        };
+        self.store
+            .apply_version_batch(batch, version, retained, &self.graph_cache, &self.event_tx)
+            .await?;
+
+        // The old node is no longer HEAD: drop its pageindex entries, index the new HEAD's.
+        if let Err(e) = PageIndexStore::new(self.store.db.0.clone())
+            .delete_document(&prev_head.0)
+            .await
+        {
+            summary.errors.push(format!("pageindex delete: {e}"));
+        }
+        self.run_pageindex(&doc, &doc_node_id, &mut summary).await;
+        Ok(summary)
+    }
+
+    /// Record an alternate name/path for a content node that already exists under another path
+    /// (§1 "alias"). Appends `{name, path, first_seen}` to the node's `aliases` attr (dedup by
+    /// path). No version bump, no re-extraction — the content is provably identical.
+    async fn record_alias(
+        &self,
+        node_id: &NodeId,
+        path: &str,
+        now: i64,
+    ) -> Result<(), AxonMindError> {
+        let mut node =
+            self.store
+                .fetch_node(node_id)
+                .await?
+                .ok_or_else(|| AxonMindError::Ingest {
+                    message: format!("alias target node missing: {}", node_id.0),
+                })?;
+        let name = std::path::Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(path)
+            .to_owned();
+        if let Some(obj) = node.attrs.as_object_mut() {
+            let arr = obj
+                .entry("aliases")
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            if let Some(list) = arr.as_array_mut() {
+                let already = list
+                    .iter()
+                    .any(|e| e.get("path").and_then(|v| v.as_str()) == Some(path));
+                if !already {
+                    list.push(serde_json::json!({
+                        "name": name, "path": path, "first_seen": now,
+                    }));
+                }
+            }
+        }
+        self.store
+            .apply_mutation(
+                GraphMutation::UpsertNode { node },
+                &self.graph_cache,
+                &self.event_tx,
+            )
+            .await
+    }
+
+    /// Pageindex hook only (no cache upsert). Used by the version-aware ingest paths, where the
+    /// `document_cache` HEAD pointer is written atomically inside `apply_version_batch` instead.
+    async fn run_pageindex(
         &self,
         doc: &NormalizedDocument,
-        fingerprint: &extract::fingerprint::DocFingerprint,
         doc_node_id: &NodeId,
         summary: &mut IngestSummary,
     ) {
-        if let Some(path) = &doc.source_path {
-            let _ = self
-                .store
-                .upsert_document_cache(
-                    &path.to_string_lossy(),
-                    &fingerprint.content_sha256,
-                    &fingerprint.structural_sha256,
-                    doc_node_id,
-                )
-                .await;
-        }
-
         let page_store = PageIndexStore::new(self.store.db.0.clone());
         let llm = self.llm_provider.read().await.clone();
         if let Err(e) = pageindex::index_document(
@@ -500,9 +722,18 @@ impl AxonMindEngine {
 
     // ── Document management ─────────────────────────────────────────────────────
 
-    /// List every processed document with extraction counts, for the file-list UI.
+    /// List every processed document with extraction counts, for the file-list UI. One row per
+    /// logical document (HEAD only; superseded versions excluded), each with its `version_count`.
     pub async fn list_documents(&self) -> Result<Vec<DocumentSummary>, AxonMindError> {
         self.store.list_document_summaries().await
+    }
+
+    /// All versions of a logical document, newest→oldest. Powers the Library version timeline.
+    pub async fn list_document_versions(
+        &self,
+        logical_doc_id: &str,
+    ) -> Result<Vec<crate::store::DocumentVersion>, AxonMindError> {
+        self.store.list_document_versions(logical_doc_id).await
     }
 
     /// Re-renders a document's Markdown content from its retained blob, for on-demand
@@ -704,33 +935,56 @@ impl AxonMindEngine {
         Ok(mutations)
     }
 
-    /// Remove a document and everything derived solely from it, atomically. Deleting a node
-    /// cascades (via SQLite FK) its edges, evidence, and `document_cache` row; orphaned concepts
-    /// are deleted in the same transaction. When `delete_blob` is set, the blob is removed too —
-    /// but only if no other document still references that content hash.
+    /// Remove a document and everything derived solely from it, atomically. Removes the WHOLE
+    /// logical document — every version node, including retained/superseded ones (§6) — so no
+    /// stale version nodes or blobs are left behind. Falls back to removing just `node_id` for a
+    /// legacy node with no lineage row. Deleting a node cascades (via SQLite FK) its edges,
+    /// evidence, `document_cache`, and `document_versions` rows; orphaned concepts are deleted in
+    /// the same transaction. When `delete_blob` is set, each version's blob is removed too — but
+    /// only if no remaining document or version still references that content hash.
     pub async fn remove_document(
         &self,
         node_id: NodeId,
         delete_blob: bool,
     ) -> Result<(), AxonMindError> {
-        // Capture the blob hash before removal (for optional cleanup).
-        let sha = self.store.fetch_node(&node_id).await?.and_then(|n| {
-            n.attrs
-                .get("sha256")
-                .and_then(|v| v.as_str().map(str::to_owned))
-        });
+        // Every version of the logical document this node belongs to (HEAD + superseded), or just
+        // this node if it predates versioning.
+        let targets: Vec<NodeId> = match self.store.fetch_version_for_node(&node_id).await? {
+            Some((logical_doc_id, _)) => self
+                .store
+                .list_document_versions(&logical_doc_id)
+                .await?
+                .into_iter()
+                .map(|v| NodeId(v.node_id))
+                .collect(),
+            None => vec![node_id.clone()],
+        };
 
-        let removal = self.build_removal_mutations(&node_id).await?;
+        // Capture blob hashes + build the combined removal across all version nodes.
+        let mut shas: Vec<String> = Vec::new();
+        let mut batch: Vec<GraphMutation> = Vec::new();
+        for target in &targets {
+            if let Some(n) = self.store.fetch_node(target).await? {
+                if let Some(s) = n.attrs.get("sha256").and_then(|v| v.as_str()) {
+                    shas.push(s.to_owned());
+                }
+            }
+            batch.extend(self.build_removal_mutations(target).await?);
+        }
+
         self.store
-            .apply_batch(removal, &self.graph_cache, &self.event_tx)
+            .apply_batch(batch, &self.graph_cache, &self.event_tx)
             .await?;
 
-        PageIndexStore::new(self.store.db.0.clone())
-            .delete_document(&node_id.0)
-            .await?;
+        let page_store = PageIndexStore::new(self.store.db.0.clone());
+        for target in &targets {
+            page_store.delete_document(&target.0).await?;
+        }
 
         if delete_blob {
-            if let Some(sha) = sha {
+            shas.sort();
+            shas.dedup();
+            for sha in shas {
                 if self.store.count_documents_with_sha(&sha).await? == 0 {
                     let _ = tokio::fs::remove_file(self.config.blob_dir.join(&sha)).await;
                 }
@@ -846,11 +1100,40 @@ impl AxonMindEngine {
             }
         }
 
+        // Preserve this document's version-log identity: the removal deletes its node, which
+        // cascades its document_versions row away, so re-insert the SAME row atomically with the
+        // re-extraction (the node id is unchanged — same content sha). Legacy nodes with no row
+        // (pre-versioning) are seeded a fresh v1.
+        let version = match self.store.fetch_version(&node_id).await? {
+            Some(v) => crate::store::NewDocumentVersion {
+                logical_doc_id: v.logical_doc_id,
+                version_no: v.version_no,
+                node_id: doc_node_id.clone(),
+                sha256: fingerprint.content_sha256.clone(),
+                structural_sha256: Some(fingerprint.structural_sha256.clone()),
+                indexed_at: v.indexed_at,
+                source_path: v.source_path,
+                previous_node_id: v.previous_node_id.map(NodeId),
+                superseded: v.superseded,
+            },
+            None => crate::store::NewDocumentVersion {
+                logical_doc_id: format!("ldoc.{}", uuid::Uuid::new_v4()),
+                version_no: 1,
+                node_id: doc_node_id.clone(),
+                sha256: fingerprint.content_sha256.clone(),
+                structural_sha256: Some(fingerprint.structural_sha256.clone()),
+                indexed_at: chrono::Utc::now().timestamp(),
+                source_path: Some(source_path.clone()),
+                previous_node_id: None,
+                superseded: false,
+            },
+        };
+
         // Apply the old data's removal and the new data together: all-or-nothing.
         let mut batch = removal;
         batch.extend(new_mutations);
         self.store
-            .apply_batch(batch, &self.graph_cache, &self.event_tx)
+            .apply_version_batch(batch, version, None, &self.graph_cache, &self.event_tx)
             .await?;
 
         if let Err(e) = PageIndexStore::new(self.store.db.0.clone())
@@ -859,8 +1142,7 @@ impl AxonMindEngine {
         {
             summary.errors.push(format!("pageindex delete: {e}"));
         }
-        self.run_ingest_tail(&doc, &fingerprint, &doc_node_id, &mut summary)
-            .await;
+        self.run_pageindex(&doc, &doc_node_id, &mut summary).await;
 
         Ok(summary)
     }

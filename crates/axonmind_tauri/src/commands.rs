@@ -12,7 +12,7 @@ use axonmind_engine::{
         SuggestActionsOutput, TraceDecisionInput, TraceDecisionOutput,
     },
     store::{
-        DocumentSummary,
+        DocumentSummary, DocumentVersion,
         generations::{GenerationId, GenerationSummary},
     },
 };
@@ -203,6 +203,30 @@ pub async fn parse_and_index(
 #[tauri::command]
 pub async fn list_documents(state: State<'_, EngineState>) -> Result<Vec<DocumentSummary>, String> {
     state.0.list_documents().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_document_versions(
+    state: State<'_, EngineState>,
+    logical_doc_id: String,
+) -> Result<Vec<DocumentVersion>, String> {
+    state
+        .0
+        .list_document_versions(&logical_doc_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_document_content(
+    state: State<'_, EngineState>,
+    node_id: String,
+) -> Result<String, String> {
+    state
+        .0
+        .get_document_content(&NodeId(node_id))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

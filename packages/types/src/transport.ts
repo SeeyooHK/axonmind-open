@@ -131,6 +131,25 @@ export interface DocumentSummary {
   indexed_at: number;
   concept_count: number;
   evidence_count: number;
+  /** Logical document this (HEAD) row belongs to (`ldoc.<uuid>`); stable across versions. */
+  logical_doc_id: string;
+  /** 1-based version number of this HEAD row. */
+  version_no: number;
+  /** Total versions in this logical document (1 when never re-ingested). */
+  version_count: number;
+}
+
+/** One entry in a logical document's version lineage (newest→oldest when listed). */
+export interface DocumentVersion {
+  logical_doc_id: string;
+  version_no: number;
+  node_id: string;
+  sha256: string;
+  structural_sha256: string | null;
+  indexed_at: number;
+  source_path: string | null;
+  previous_node_id: string | null;
+  superseded: boolean;
 }
 
 export interface SummaryConfigSnapshot {
@@ -188,6 +207,10 @@ export interface AxonMindTransport {
   updateBrainMapDefaultConfig(edit: SummaryConfigEdit): Promise<SummaryConfigSnapshot>;
   restoreBrainMapDefaultConfig(): Promise<SummaryConfigSnapshot>;
   listDocuments(): Promise<DocumentSummary[]>;
+  /** All versions of a logical document, newest→oldest. */
+  listDocumentVersions(logical_doc_id: string): Promise<DocumentVersion[]>;
+  /** Re-render a version's parsed Markdown from its retained blob (for preview + diff). */
+  getDocumentContent(node_id: string): Promise<string>;
   removeDocument(node_id: string): Promise<void>;
   regenerateDocument(node_id: string): Promise<IngestSummary>;
 

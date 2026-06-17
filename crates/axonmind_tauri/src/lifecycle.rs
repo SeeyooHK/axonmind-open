@@ -75,6 +75,8 @@ fn init_inner<R: Runtime>(
             crate::commands::index_markdown,
             crate::commands::parse_and_index,
             crate::commands::list_documents,
+            crate::commands::list_document_versions,
+            crate::commands::get_document_content,
             crate::commands::remove_document,
             crate::commands::regenerate_document,
             crate::commands::export_json,
