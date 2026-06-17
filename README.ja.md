@@ -221,7 +221,7 @@ cp env_example .env.local
 
 ### OCR 画像取り込み
 
-AxonMind PR4 では、`jpg`、`jpeg`、`png`、`bmp`、`webp`、`tiff`、`tif`、および `gif` の画像取り込みが追加されました。
+AxonMind は、`jpg`、`jpeg`、`png`、`bmp`、`webp`、`tiff`、`tif`、および `gif` の画像取り込みをサポートしています。
 
 現在、以下の2つのパスがサポートされています。
 
@@ -336,7 +336,7 @@ src-tauri/          最小限のローカルデモホスト
 ## CLI セッション認証ステータス
 
 - テスト済み：Codex CLI のログイン/セッションベースの LLM プロバイダーパスは、Tauri アプリで動作します。
-- PR4：Codex プロバイダーパスが、インジェスト中の画像文字起こしのための画像添付ファイルをサポートするようになりました。
+- Codex プロバイダーパスが、インジェスト中の画像文字起こしのための画像添付ファイルをサポートします。
 > Codex に選択されているデフォルトのモデルは `gpt-5.4-mini` であり、デフォルトのインテリジェンスレベルは `low` です。OpenAI と Codex はいつでも利用可能なモデルを変更する可能性があるため、最新情報については Codex CLI のドキュメントを確認してください。モデルのオーバーライドは `AXONMIND_CODEX_MODEL` を使用し、インテリジェンスのオーバーライドは `env_example` に示すように `AXONMIND_CODEX_INTELLIGENCE` (`minimal|low|medium|high|xhigh`) を使用します。
 
 ## ページインデックス機能

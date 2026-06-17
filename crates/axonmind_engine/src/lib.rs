@@ -505,6 +505,42 @@ impl AxonMindEngine {
         self.store.list_document_summaries().await
     }
 
+    /// Re-renders a document's Markdown content from its retained blob, for on-demand
+    /// retrieval by `doc_id` (graph-reference model, soverex docs/attachment.md). Read-only —
+    /// re-parses the blob rather than mutating the graph, so it's safe to call mid-session.
+    pub async fn get_document_content(&self, node_id: &NodeId) -> Result<String, AxonMindError> {
+        let node = self
+            .store
+            .fetch_node(node_id)
+            .await?
+            .ok_or_else(|| AxonMindError::Ingest {
+                message: format!("document not found: {}", node_id.0),
+            })?;
+        if node.kind != NodeKind::Document {
+            return Err(AxonMindError::Ingest {
+                message: format!("{} is not a document", node_id.0),
+            });
+        }
+        let sha256 = node
+            .attrs
+            .get("sha256")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AxonMindError::Ingest {
+                message: format!("document {} has no sha256 attr", node_id.0),
+            })?;
+        let source_path = node
+            .attrs
+            .get("source_path")
+            .and_then(|v| v.as_str())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(&node.name));
+
+        let blob_path = self.config.blob_dir.join(sha256);
+        let bytes = tokio::fs::read(&blob_path).await?;
+        let doc = dispatch_parse(&source_path, &bytes)?;
+        Ok(render_markdown(&doc))
+    }
+
     /// Build (but do not apply) all extraction mutations for a document: the Document node, rule
     /// extraction, LLM entity+relation extraction, cross-document semantic links, and the
     /// deterministic bridge. Kept separate from application so callers can apply atomically.

@@ -221,7 +221,7 @@ I provider locali non richiedono una chiave API quando il loro server è già in
 
 ### Ingestione di immagini OCR
 
-AxonMind PR4 aggiunge l'ingestione di immagini per `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif` e `gif`.
+AxonMind supporta l'ingestione di immagini per `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif` e `gif`.
 
 Ora sono supportati due percorsi:
 
@@ -336,7 +336,7 @@ src-tauri/          Host demo locale minimale
 ## Stato dell'Autenticazione della Sessione CLI
 
 - Testato: il percorso del provider LLM basato su sessione/login Codex CLI funziona nell'app Tauri.
-- PR4: il percorso del provider Codex ora supporta allegati di immagini per la trascrizione di immagini durante l'ingestione.
+- Il percorso del provider Codex supporta allegati di immagini per la trascrizione di immagini durante l'ingestione.
 > Il modello predefinito selezionato per Codex è `gpt-5.4-mini` e il livello di intelligenza predefinito è `low`. OpenAI e Codex potrebbero modificare i modelli disponibili in qualsiasi momento, quindi si prega di verificare la documentazione della CLI di Codex per le informazioni più recenti. Le sovrascritture del modello utilizzano `AXONMIND_CODEX_MODEL` (pass-through) e quelle dell'intelligenza utilizzano `AXONMIND_CODEX_INTELLIGENCE` (`minimal|low|medium|high|xhigh`) come mostrato in `env_example`.
 
 ## Funzionalità di Indicizzazione delle Pagine

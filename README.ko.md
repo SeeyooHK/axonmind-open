@@ -221,7 +221,7 @@ cp env_example .env.local
 
 ### OCR 이미지 파싱
 
-AxonMind PR4는 `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif`, `gif`에 대한 이미지 수집 기능을 추가합니다.
+AxonMind는 `jpg`, `jpeg`, `png`, `bmp`, `webp`, `tiff`, `tif`, `gif`에 대한 이미지 수집 기능을 지원합니다.
 
 이제 다음 두 가지 경로를 지원합니다.
 
@@ -336,7 +336,7 @@ src-tauri/          로컬 데모 프로그램의 메인 호스트 코드
 ## CLI 세션 인증 상태
 
 - 테스트 완료: Tauri 앱 내에서 Codex CLI 로그인/세션 기반의 LLM 프로바이더 경로가 정상적으로 동작함을 확인했습니다.
-- PR4: 이제 Codex 프로바이더 경로가 수집 단계의 이미지 텍스트 변환을 위한 이미지 첨부를 지원합니다.
+- Codex 프로바이더 경로가 수집 단계의 이미지 텍스트 변환을 위한 이미지 첨부를 지원합니다.
 > Codex의 기본 탑재 모델은 `gpt-5.4-mini`이며, 기본 지능 지수 등급은 `low`입니다. OpenAI 및 Codex 측의 사정에 따라 사용 가능한 모델 목록은 수시로 변경될 수 있으므로, 항상 Codex CLI 공식 문서를 통해 최신 옵션을 조회하십시오. 모델을 강제로 재정의하려면 `AXONMIND_CODEX_MODEL` 변수를 사용하고 지능 수준을 강제하려면 `env_example` 파일 내용과 같이 `AXONMIND_CODEX_INTELLIGENCE` (`minimal|low|medium|high|xhigh`) 변수를 사용하십시오.
 
 ## 페이지 인덱싱 기능

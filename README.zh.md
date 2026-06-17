@@ -221,7 +221,7 @@ cp env_example .env.local
 
 ### OCR 图像摄取
 
-AxonMind PR4 增加了对 `jpg`、`jpeg`、`png`、`bmp`、`webp`、`tiff`、`tif` 和 `gif` 的图像摄取支持。
+AxonMind 支持对 `jpg`、`jpeg`、`png`、`bmp`、`webp`、`tiff`、`tif` 和 `gif` 的图像摄取。
 
 目前支持以下两种路径：
 
@@ -336,7 +336,7 @@ src-tauri/          极简本地演示宿主
 ## CLI 会话身份验证状态
 
 - 已测试：Codex CLI 登录/基于会话的 LLM 提供商路径在 Tauri 应用中运行正常。
-- PR4：Codex 提供商路径现在支持图像附件，用于摄取期间的图像转录。
+- Codex 提供商路径支持图像附件，用于摄取期间的图像转录。
 > Codex 的默认选择模型为 `gpt-5.4-mini`，默认智能级别为 `low`。OpenAI 和 Codex 随时可能更改可用模型，请查看 Codex CLI 文档以获取最新信息。模型覆盖使用 `AXONMIND_CODEX_MODEL`（透传），智能级别覆盖使用 `AXONMIND_CODEX_INTELLIGENCE`（`minimal|low|medium|high|xhigh`），如 `env_example` 所示。
 
 ## 页面索引特性
