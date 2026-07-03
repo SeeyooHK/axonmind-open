@@ -39,6 +39,11 @@ pub enum EngineEvent {
         status: CandidateStatus,
     },
 
+    IngestBatchStarted {
+        job_id: JobId,
+        root_path: PathBuf,
+        total_files: usize,
+    },
     IngestStarted {
         job_id: JobId,
         path: PathBuf,
@@ -55,6 +60,37 @@ pub enum EngineEvent {
     IngestFailed {
         job_id: JobId,
         error: String,
+    },
+    IngestFileStarted {
+        job_id: JobId,
+        path: PathBuf,
+        index: usize,
+        total: usize,
+    },
+    IngestFilePhase {
+        job_id: JobId,
+        path: PathBuf,
+        phase: crate::store::IngestPhase,
+    },
+    IngestFileCompleted {
+        job_id: JobId,
+        path: PathBuf,
+        status: String,
+    },
+    IngestFileFailed {
+        job_id: JobId,
+        path: PathBuf,
+        error: String,
+    },
+    IngestStalled {
+        job_id: JobId,
+        path: PathBuf,
+        elapsed_secs: usize,
+    },
+    IngestCancelled {
+        job_id: JobId,
+        processed: usize,
+        total: usize,
     },
 
     /// Graph cache was rebuilt from SQLite (e.g. after dirty-flag recovery).

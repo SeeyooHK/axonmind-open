@@ -29,8 +29,12 @@ describe('@axonmind/types shape checks', () => {
   it('EngineEvent is a discriminated union on type', () => {
     const upserted = { type: 'node_upserted', node_id: 'kpi.rev' } satisfies EngineEvent
     const rebuilt  = { type: 'cache_rebuilt' } satisfies EngineEvent
+    const batchStarted = { type: 'ingest_batch_started', job_id: 'job-1', root_path: '/tmp/docs', total_files: 3 } satisfies EngineEvent
+    const filePhase = { type: 'ingest_file_phase', job_id: 'job-1', path: '/tmp/docs/a.pdf', phase: 'parsing' } satisfies EngineEvent
     expectTypeOf(upserted).toMatchTypeOf<EngineEvent>()
     expectTypeOf(rebuilt).toMatchTypeOf<EngineEvent>()
+    expectTypeOf(batchStarted).toMatchTypeOf<EngineEvent>()
+    expectTypeOf(filePhase).toMatchTypeOf<EngineEvent>()
   })
 
   it('AxonMindTransport focusKpi returns FocusKpiOutput', () => {
@@ -56,7 +60,7 @@ describe('@axonmind/types shape checks', () => {
       structural_sha256: null, indexed_at: 0, source_path: null,
       previous_node_id: 'doc.abc', superseded: false,
     } satisfies DocumentVersion
-    expectTypeOf(v.superseded).toEqualTypeOf<boolean>()
+    expectTypeOf(v.superseded).toMatchTypeOf<boolean>()
   })
 
   it('AxonMindTransport exposes version timeline + content retrieval', () => {

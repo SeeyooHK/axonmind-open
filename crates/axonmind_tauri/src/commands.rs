@@ -3,7 +3,7 @@
 use crate::lifecycle::EngineState;
 use axonmind_core::NodeId;
 use axonmind_engine::{
-    ingest::{IngestOptions, IngestSource, IngestSummary, IngestedDocument},
+    ingest::{IngestOptions, IngestSource, IngestSummary, IngestedDocument, JobId},
     query::{
         ExplainKpiInput, ExplainKpiOutput, FindConflictsInput, FindConflictsOutput, FocusKpiInput,
         FocusKpiOutput, GetEvidenceInput, GetEvidenceOutput, GraphDiff, GraphExportV1,
@@ -12,12 +12,13 @@ use axonmind_engine::{
         SuggestActionsOutput, TraceDecisionInput, TraceDecisionOutput,
     },
     store::{
-        DocumentSummary, DocumentVersion,
+        DocumentSummary, DocumentVersion, IngestStatusRow, TrashRow,
         generations::{GenerationId, GenerationSummary},
     },
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::State;
 
@@ -157,6 +158,50 @@ pub async fn index_path(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn start_ingest(
+    state: State<'_, EngineState>,
+    paths: Vec<String>,
+    recursive: bool,
+    skip_unchanged: bool,
+) -> Result<String, String> {
+    let opts = IngestOptions {
+        recursive,
+        skip_unchanged,
+        max_file_size_bytes: 50 * 1024 * 1024,
+    };
+    Arc::clone(&state.0)
+        .start_ingest(paths, opts)
+        .await
+        .map(|id| id.0)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_ingest(
+    state: State<'_, EngineState>,
+    job_id: String,
+) -> Result<(), String> {
+    state
+        .0
+        .cancel_ingest(&JobId(job_id))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_ingest_file(
+    state: State<'_, EngineState>,
+    job_id: String,
+    source_path: String,
+) -> Result<(), String> {
+    state
+        .0
+        .cancel_ingest_file(&JobId(job_id), &source_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Index pre-processed Markdown text (soverex / Next.js path).
 #[tauri::command]
 pub async fn index_markdown(
@@ -206,6 +251,18 @@ pub async fn list_documents(state: State<'_, EngineState>) -> Result<Vec<Documen
 }
 
 #[tauri::command]
+pub async fn list_ingest_status(
+    state: State<'_, EngineState>,
+) -> Result<Vec<IngestStatusRow>, String> {
+    state.0.list_ingest_status().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_trash(state: State<'_, EngineState>) -> Result<Vec<TrashRow>, String> {
+    state.0.list_trash().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn list_document_versions(
     state: State<'_, EngineState>,
     logical_doc_id: String,
@@ -248,6 +305,46 @@ pub async fn regenerate_document(
         .regenerate_document(NodeId(node_id))
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn trash_document(
+    state: State<'_, EngineState>,
+    source_path: String,
+) -> Result<(), String> {
+    state
+        .0
+        .trash_document(&source_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn restore_document(
+    state: State<'_, EngineState>,
+    source_path: String,
+) -> Result<(), String> {
+    Arc::clone(&state.0)
+        .restore_document(&source_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_document_permanently(
+    state: State<'_, EngineState>,
+    source_path: String,
+) -> Result<(), String> {
+    state
+        .0
+        .delete_document_permanently(&source_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn empty_trash(state: State<'_, EngineState>) -> Result<(), String> {
+    state.0.empty_trash().await.map_err(|e| e.to_string())
 }
 
 // ── Generation commands ───────────────────────────────────────────────────────

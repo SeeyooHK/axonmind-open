@@ -171,6 +171,57 @@ pub struct DocumentVersion {
     pub superseded: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IngestStatusKind {
+    Processing,
+    Stalled,
+    Failed,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IngestPhase {
+    Reading,
+    Copying,
+    Parsing,
+    Extracting,
+    Indexing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrashedItemKind {
+    CompletedDocument,
+    IngestRow,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct IngestStatusRow {
+    pub source_path: String,
+    pub name: String,
+    pub content_sha256: Option<String>,
+    pub job_id: String,
+    pub status: IngestStatusKind,
+    pub phase: IngestPhase,
+    pub error: Option<String>,
+    pub started_at: i64,
+    pub updated_at: i64,
+    pub trashed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TrashRow {
+    pub source_path: String,
+    pub name: String,
+    pub trashed_at: i64,
+    pub kind: TrashedItemKind,
+    pub head_sha256: Option<String>,
+    pub status: Option<IngestStatusKind>,
+    pub error: Option<String>,
+}
+
 /// A new row to append to `document_versions`, written atomically with its graph mutations
 /// by `apply_version_batch`. The document_cache HEAD pointer is derived from these fields
 /// (path = `source_path`, node = `node_id`), so no separate cache args are needed.
@@ -1424,6 +1475,534 @@ impl GraphStore {
                 )
                 .map_err(|e| AxonMindError::Database(e.to_string()))?;
             Ok(n as usize)
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn count_trash_with_sha(&self, sha256: &str) -> Result<usize, AxonMindError> {
+        let sha = sha256.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<usize, AxonMindError> {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM document_trash_blob WHERE sha256 = ?1",
+                    [&sha],
+                    |row| row.get(0),
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(n as usize)
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn reconcile_ingest_status_on_startup(&self) -> Result<(), AxonMindError> {
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<(), AxonMindError> {
+            conn.execute(
+                "UPDATE document_ingest_status
+                 SET status = 'interrupted', updated_at = strftime('%s','now')
+                 WHERE status IN ('processing', 'stalled')",
+                [],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn upsert_ingest_status(
+        &self,
+        row: &IngestStatusRow,
+    ) -> Result<(), AxonMindError> {
+        let row = row.clone();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<(), AxonMindError> {
+            let status = to_db_str(&row.status)?;
+            let phase = to_db_str(&row.phase)?;
+            conn.execute(
+                "INSERT INTO document_ingest_status
+                    (source_path, name, content_sha256, job_id, status, phase, error, started_at, updated_at, trashed_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+                 ON CONFLICT(source_path) DO UPDATE SET
+                    name=excluded.name,
+                    content_sha256=excluded.content_sha256,
+                    job_id=excluded.job_id,
+                    status=excluded.status,
+                    phase=excluded.phase,
+                    error=excluded.error,
+                    started_at=excluded.started_at,
+                    updated_at=excluded.updated_at,
+                    trashed_at=excluded.trashed_at",
+                rusqlite::params![
+                    row.source_path,
+                    row.name,
+                    row.content_sha256,
+                    row.job_id,
+                    status,
+                    phase,
+                    row.error,
+                    row.started_at,
+                    row.updated_at,
+                    row.trashed_at,
+                ],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn delete_ingest_status(&self, source_path: &str) -> Result<(), AxonMindError> {
+        let path = source_path.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<(), AxonMindError> {
+            conn.execute(
+                "DELETE FROM document_ingest_status WHERE source_path = ?1",
+                [&path],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn list_ingest_statuses(&self) -> Result<Vec<IngestStatusRow>, AxonMindError> {
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Vec<IngestStatusRow>, AxonMindError> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT source_path, name, content_sha256, job_id, status, phase, error,
+                            started_at, updated_at, trashed_at
+                     FROM document_ingest_status
+                     WHERE trashed_at IS NULL
+                     ORDER BY updated_at DESC, source_path ASC",
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    let status: String = row.get(4)?;
+                    let phase: String = row.get(5)?;
+                    Ok(IngestStatusRow {
+                        source_path: row.get(0)?,
+                        name: row.get(1)?,
+                        content_sha256: row.get(2)?,
+                        job_id: row.get(3)?,
+                        status: from_db_str(&status).map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                4,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?,
+                        phase: from_db_str(&phase).map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                5,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?,
+                        error: row.get(6)?,
+                        started_at: row.get(7)?,
+                        updated_at: row.get(8)?,
+                        trashed_at: row.get(9)?,
+                    })
+                })
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(rows)
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn fetch_ingest_status(
+        &self,
+        source_path: &str,
+    ) -> Result<Option<IngestStatusRow>, AxonMindError> {
+        let path = source_path.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Option<IngestStatusRow>, AxonMindError> {
+            conn.query_row(
+                "SELECT source_path, name, content_sha256, job_id, status, phase, error,
+                        started_at, updated_at, trashed_at
+                 FROM document_ingest_status WHERE source_path = ?1",
+                [&path],
+                |row| {
+                    let status: String = row.get(4)?;
+                    let phase: String = row.get(5)?;
+                    Ok(IngestStatusRow {
+                        source_path: row.get(0)?,
+                        name: row.get(1)?,
+                        content_sha256: row.get(2)?,
+                        job_id: row.get(3)?,
+                        status: from_db_str(&status).map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                4,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?,
+                        phase: from_db_str(&phase).map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                5,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?,
+                        error: row.get(6)?,
+                        started_at: row.get(7)?,
+                        updated_at: row.get(8)?,
+                        trashed_at: row.get(9)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| AxonMindError::Database(e.to_string()))
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn trash_ingest_status(
+        &self,
+        source_path: &str,
+        trashed_at: i64,
+    ) -> Result<(), AxonMindError> {
+        let path = source_path.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<(), AxonMindError> {
+            conn.execute(
+                "UPDATE document_ingest_status SET trashed_at = ?2, updated_at = ?2 WHERE source_path = ?1",
+                rusqlite::params![path, trashed_at],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn restore_ingest_status(&self, source_path: &str) -> Result<(), AxonMindError> {
+        let path = source_path.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<(), AxonMindError> {
+            conn.execute(
+                "UPDATE document_ingest_status
+                 SET trashed_at = NULL, updated_at = strftime('%s','now')
+                 WHERE source_path = ?1",
+                [&path],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn delete_trashed_ingest_status(
+        &self,
+        source_path: &str,
+    ) -> Result<(), AxonMindError> {
+        let path = source_path.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<(), AxonMindError> {
+            conn.execute(
+                "DELETE FROM document_ingest_status WHERE source_path = ?1 AND trashed_at IS NOT NULL",
+                [&path],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn upsert_document_trash(
+        &self,
+        source_path: &str,
+        name: &str,
+        head_sha256: &str,
+        trashed_at: i64,
+        shas: &[String],
+    ) -> Result<(), AxonMindError> {
+        let path = source_path.to_owned();
+        let name = name.to_owned();
+        let head = head_sha256.to_owned();
+        let shas = shas.to_vec();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<(), AxonMindError> {
+            let tx = conn
+                .transaction()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            tx.execute(
+                "INSERT INTO document_trash (source_path, name, head_sha256, trashed_at)
+                 VALUES (?1,?2,?3,?4)
+                 ON CONFLICT(source_path) DO UPDATE SET
+                    name=excluded.name,
+                    head_sha256=excluded.head_sha256,
+                    trashed_at=excluded.trashed_at",
+                rusqlite::params![path, name, head, trashed_at],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            tx.execute(
+                "DELETE FROM document_trash_blob WHERE source_path = ?1",
+                rusqlite::params![path],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            for sha in shas {
+                tx.execute(
+                    "INSERT INTO document_trash_blob (source_path, sha256) VALUES (?1,?2)",
+                    rusqlite::params![path, sha],
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            }
+            tx.commit()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn fetch_document_trash(
+        &self,
+        source_path: &str,
+    ) -> Result<Option<(TrashRow, Vec<String>)>, AxonMindError> {
+        let path = source_path.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Option<(TrashRow, Vec<String>)>, AxonMindError> {
+            let row = conn
+                .query_row(
+                    "SELECT source_path, name, trashed_at, head_sha256
+                     FROM document_trash WHERE source_path = ?1",
+                    [&path],
+                    |row| {
+                        Ok(TrashRow {
+                            source_path: row.get(0)?,
+                            name: row.get(1)?,
+                            trashed_at: row.get(2)?,
+                            kind: TrashedItemKind::CompletedDocument,
+                            head_sha256: Some(row.get(3)?),
+                            status: None,
+                            error: None,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let Some(row) = row else {
+                return Ok(None);
+            };
+            let mut stmt = conn
+                .prepare(
+                    "SELECT sha256 FROM document_trash_blob WHERE source_path = ?1 ORDER BY sha256 ASC",
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let shas = stmt
+                .query_map([&path], |row| row.get(0))
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<Vec<String>>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(Some((row, shas)))
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn delete_document_trash(&self, source_path: &str) -> Result<(), AxonMindError> {
+        let path = source_path.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<(), AxonMindError> {
+            conn.execute("DELETE FROM document_trash WHERE source_path = ?1", [&path])
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn list_trash_rows(&self) -> Result<Vec<TrashRow>, AxonMindError> {
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Vec<TrashRow>, AxonMindError> {
+            let mut rows = Vec::new();
+
+            let mut completed = conn
+                .prepare(
+                    "SELECT source_path, name, trashed_at, head_sha256
+                     FROM document_trash
+                     ORDER BY trashed_at DESC, source_path ASC",
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let completed_rows = completed
+                .query_map([], |row| {
+                    Ok(TrashRow {
+                        source_path: row.get(0)?,
+                        name: row.get(1)?,
+                        trashed_at: row.get(2)?,
+                        kind: TrashedItemKind::CompletedDocument,
+                        head_sha256: Some(row.get(3)?),
+                        status: None,
+                        error: None,
+                    })
+                })
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            rows.extend(completed_rows);
+
+            let mut ingest = conn
+                .prepare(
+                    "SELECT source_path, name, trashed_at, status, error
+                     FROM document_ingest_status
+                     WHERE trashed_at IS NOT NULL
+                     ORDER BY trashed_at DESC, source_path ASC",
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let ingest_rows = ingest
+                .query_map([], |row| {
+                    let status: String = row.get(3)?;
+                    Ok(TrashRow {
+                        source_path: row.get(0)?,
+                        name: row.get(1)?,
+                        trashed_at: row.get(2)?,
+                        kind: TrashedItemKind::IngestRow,
+                        head_sha256: None,
+                        status: Some(from_db_str(&status).map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                3,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?),
+                        error: row.get(4)?,
+                    })
+                })
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            rows.extend(ingest_rows);
+
+            rows.sort_by(|a, b| {
+                b.trashed_at
+                    .cmp(&a.trashed_at)
+                    .then_with(|| a.source_path.cmp(&b.source_path))
+            });
+            Ok(rows)
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn fetch_live_document_by_source_path(
+        &self,
+        source_path: &str,
+    ) -> Result<Option<DocumentSummary>, AxonMindError> {
+        let path = source_path.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Option<DocumentSummary>, AxonMindError> {
+            conn.query_row(
+                "SELECT n.id, n.name, dv.source_path, dv.sha256, dv.indexed_at, \
+                        (SELECT COUNT(*) FROM edges e WHERE e.from_id = n.id AND e.kind = 'MentionedIn') AS concept_count, \
+                        (SELECT COUNT(*) FROM evidence ev WHERE ev.source_node_id = n.id) AS evidence_count, \
+                        dv.logical_doc_id, dv.version_no, \
+                        (SELECT COUNT(*) FROM document_versions dv2 WHERE dv2.logical_doc_id = dv.logical_doc_id) AS version_count \
+                 FROM document_versions dv
+                 JOIN nodes n ON n.id = dv.node_id
+                 WHERE dv.superseded = 0 AND n.kind = 'Document' AND dv.source_path = ?1",
+                [&path],
+                |row| {
+                    Ok(DocumentSummary {
+                        node_id: row.get(0)?,
+                        name: row.get(1)?,
+                        source_path: row.get(2)?,
+                        sha256: row.get(3)?,
+                        indexed_at: row.get(4)?,
+                        concept_count: row.get::<_, i64>(5)? as usize,
+                        evidence_count: row.get::<_, i64>(6)? as usize,
+                        logical_doc_id: row.get(7)?,
+                        version_no: row.get(8)?,
+                        version_count: row.get(9)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| AxonMindError::Database(e.to_string()))
         })
         .await
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?

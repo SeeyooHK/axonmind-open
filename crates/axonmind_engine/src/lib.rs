@@ -12,8 +12,10 @@ pub mod workers;
 
 use axonmind_core::{AxonMindError, EdgeKind, KpiAttrs, KpiUnit, Node, NodeId, NodeKind};
 use chrono::Datelike;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{Mutex, RwLock, Semaphore, broadcast};
 
 use crate::config::EngineConfig;
 use crate::events::EngineEvent;
@@ -34,13 +36,28 @@ use crate::query::{
     TraceDecisionInput, TraceDecisionOutput,
 };
 use crate::store::{
-    DocumentSummary, GraphCache, GraphMutation, GraphStore,
+    DocumentSummary, GraphCache, GraphMutation, GraphStore, IngestPhase, IngestStatusKind,
+    IngestStatusRow, TrashRow,
     generations::{GenerationId, GenerationSummary},
 };
 
 /// Max number of existing concept-node names passed to the LLM entity extractor as the
 /// cross-document "avoid duplicating" hint. Bounds prompt size as the graph grows.
 const EXISTING_NAME_HINT_LIMIT: usize = 200;
+
+struct IngestJobControl {
+    cancel_requested: Arc<AtomicBool>,
+    cancelled_paths: Arc<Mutex<HashSet<String>>>,
+}
+
+impl IngestJobControl {
+    fn new() -> Self {
+        Self {
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+            cancelled_paths: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+}
 
 /// Central engine handle. Clone-safe via `Arc` internals.
 /// Obtain via `AxonMindEngine::open(config)`.
@@ -50,6 +67,8 @@ pub struct AxonMindEngine {
     pub(crate) event_tx: broadcast::Sender<EngineEvent>,
     pub(crate) config: EngineConfig,
     pub(crate) llm_provider: Arc<RwLock<Option<Arc<dyn LlmProvider>>>>,
+    ingest_jobs: Arc<Mutex<HashMap<String, IngestJobControl>>>,
+    ingest_permit: Arc<Semaphore>,
 }
 
 /// Intermediate result of `prepare_ingest`: either the file was skipped (size limit /
@@ -61,6 +80,11 @@ enum PreparedIngest {
         fingerprint: DocFingerprint,
         skip_llm: bool,
     },
+}
+
+struct QueuedFile {
+    path: std::path::PathBuf,
+    size_bytes: u64,
 }
 
 /// Build the Document node for a normalized document (id derived from content sha).
@@ -129,6 +153,7 @@ impl AxonMindEngine {
         tokio::fs::create_dir_all(&config.blob_dir).await?;
 
         let store = Arc::new(GraphStore::open(&config.database_path).await?);
+        store.reconcile_ingest_status_on_startup().await?;
 
         // Phase 0 backfill: give any pre-versioning Document node a v1 lineage row (Rule 12: log).
         match store.backfill_document_versions().await {
@@ -152,6 +177,8 @@ impl AxonMindEngine {
             event_tx,
             config,
             llm_provider: Arc::new(RwLock::new(None)),
+            ingest_jobs: Arc::new(Mutex::new(HashMap::new())),
+            ingest_permit: Arc::new(Semaphore::new(1)),
         };
         engine.start_workers();
         Ok(engine)
@@ -217,6 +244,384 @@ impl AxonMindEngine {
         workers::start_workers(self);
     }
 
+    async fn start_ingest_status(
+        &self,
+        path: &std::path::Path,
+        job_id: &ingest::JobId,
+    ) -> Result<(), AxonMindError> {
+        let now = chrono::Utc::now().timestamp();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| path.to_string_lossy().to_string());
+        self.store
+            .upsert_ingest_status(&IngestStatusRow {
+                source_path: path.to_string_lossy().to_string(),
+                name,
+                content_sha256: None,
+                job_id: job_id.0.clone(),
+                status: IngestStatusKind::Processing,
+                phase: IngestPhase::Reading,
+                error: None,
+                started_at: now,
+                updated_at: now,
+                trashed_at: None,
+            })
+            .await
+    }
+
+    async fn update_ingest_status_content(
+        &self,
+        path: &std::path::Path,
+        sha256: &str,
+        phase: IngestPhase,
+    ) -> Result<(), AxonMindError> {
+        if let Some(mut row) = self
+            .store
+            .fetch_ingest_status(&path.to_string_lossy())
+            .await?
+        {
+            row.content_sha256 = Some(sha256.to_owned());
+            row.phase = phase;
+            row.updated_at = chrono::Utc::now().timestamp();
+            row.error = None;
+            row.status = IngestStatusKind::Processing;
+            self.store.upsert_ingest_status(&row).await?;
+            let _ = self.event_tx.send(EngineEvent::IngestFilePhase {
+                job_id: ingest::JobId(row.job_id),
+                path: path.to_path_buf(),
+                phase,
+            });
+        }
+        Ok(())
+    }
+
+    async fn update_ingest_status_phase(
+        &self,
+        path: &std::path::Path,
+        phase: IngestPhase,
+    ) -> Result<(), AxonMindError> {
+        if let Some(mut row) = self
+            .store
+            .fetch_ingest_status(&path.to_string_lossy())
+            .await?
+        {
+            row.phase = phase;
+            row.updated_at = chrono::Utc::now().timestamp();
+            self.store.upsert_ingest_status(&row).await?;
+            let _ = self.event_tx.send(EngineEvent::IngestFilePhase {
+                job_id: ingest::JobId(row.job_id),
+                path: path.to_path_buf(),
+                phase,
+            });
+        }
+        Ok(())
+    }
+
+    async fn set_ingest_status_kind(
+        &self,
+        path: &std::path::Path,
+        status: IngestStatusKind,
+        error: Option<String>,
+    ) -> Result<(), AxonMindError> {
+        if let Some(mut row) = self
+            .store
+            .fetch_ingest_status(&path.to_string_lossy())
+            .await?
+        {
+            row.status = status;
+            row.error = error;
+            row.updated_at = chrono::Utc::now().timestamp();
+            self.store.upsert_ingest_status(&row).await?;
+        }
+        Ok(())
+    }
+
+    async fn fail_ingest_status(
+        &self,
+        path: &std::path::Path,
+        sha256: Option<&str>,
+        error: &str,
+    ) -> Result<(), AxonMindError> {
+        if let Some(mut row) = self
+            .store
+            .fetch_ingest_status(&path.to_string_lossy())
+            .await?
+        {
+            if let Some(sha) = sha256 {
+                row.content_sha256 = Some(sha.to_owned());
+            }
+            row.status = IngestStatusKind::Failed;
+            row.error = Some(error.to_owned());
+            row.updated_at = chrono::Utc::now().timestamp();
+            self.store.upsert_ingest_status(&row).await?;
+        }
+        Ok(())
+    }
+
+    async fn collect_ingest_files(
+        &self,
+        paths: &[String],
+        recursive: bool,
+    ) -> Result<Vec<QueuedFile>, AxonMindError> {
+        let mut files = Vec::new();
+        let mut stack: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+        while let Some(path) = stack.pop() {
+            let meta = tokio::fs::metadata(&path)
+                .await
+                .map_err(|e| AxonMindError::Ingest {
+                    message: format!("{}: {e}", path.display()),
+                })?;
+            if meta.is_file() {
+                files.push(QueuedFile {
+                    path,
+                    size_bytes: meta.len(),
+                });
+                continue;
+            }
+            if !meta.is_dir() {
+                continue;
+            }
+            let mut entries = tokio::fs::read_dir(&path)
+                .await
+                .map_err(|e| AxonMindError::Ingest {
+                    message: format!("{}: {e}", path.display()),
+                })?;
+            while let Some(entry) = entries
+                .next_entry()
+                .await
+                .map_err(|e| AxonMindError::Ingest {
+                    message: format!("{}: {e}", path.display()),
+                })?
+            {
+                let child = entry.path();
+                let name = child.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name.starts_with('.') {
+                    continue;
+                }
+                let child_meta = entry.metadata().await.map_err(|e| AxonMindError::Ingest {
+                    message: format!("{}: {e}", child.display()),
+                })?;
+                if child_meta.is_file() {
+                    files.push(QueuedFile {
+                        path: child,
+                        size_bytes: child_meta.len(),
+                    });
+                } else if child_meta.is_dir() && recursive {
+                    stack.push(child);
+                }
+            }
+        }
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(files)
+    }
+
+    fn expected_ingest_duration(size_bytes: u64) -> std::time::Duration {
+        let size_mb = (size_bytes as f64) / (1024.0 * 1024.0);
+        let expected = 20.0 + (size_mb * 25.0);
+        std::time::Duration::from_secs_f64(expected.max(5.0))
+    }
+
+    pub async fn start_ingest(
+        self: &Arc<Self>,
+        paths: Vec<String>,
+        options: IngestOptions,
+    ) -> Result<ingest::JobId, AxonMindError> {
+        let files = self.collect_ingest_files(&paths, options.recursive).await?;
+        let job_id = ingest::JobId(uuid::Uuid::new_v4().to_string());
+        let control = IngestJobControl::new();
+        self.ingest_jobs
+            .lock()
+            .await
+            .insert(job_id.0.clone(), control);
+
+        let root_path = std::path::PathBuf::from(paths.first().cloned().unwrap_or_default());
+        let total = files.len();
+        let engine = Arc::clone(self);
+        let job_id_for_task = job_id.clone();
+        tokio::spawn(async move {
+            let _permit = engine.ingest_permit.acquire().await.expect("ingest permit");
+            let _ = engine.event_tx.send(EngineEvent::IngestBatchStarted {
+                job_id: job_id_for_task.clone(),
+                root_path,
+                total_files: total,
+            });
+
+            let mut summary = IngestSummary::default();
+            let mut processed = 0usize;
+
+            for (index, file) in files.into_iter().enumerate() {
+                let path_str = file.path.to_string_lossy().to_string();
+                let maybe_control = engine.ingest_jobs.lock().await;
+                let Some(control) = maybe_control.get(&job_id_for_task.0).map(|c| (
+                    Arc::clone(&c.cancel_requested),
+                    Arc::clone(&c.cancelled_paths),
+                )) else {
+                    break;
+                };
+                drop(maybe_control);
+                let (cancel_requested, cancelled_paths) = control;
+                if cancel_requested.load(Ordering::Relaxed) {
+                    let _ = engine.event_tx.send(EngineEvent::IngestCancelled {
+                        job_id: job_id_for_task.clone(),
+                        processed,
+                        total,
+                    });
+                    break;
+                }
+                if cancelled_paths.lock().await.contains(&path_str) {
+                    continue;
+                }
+
+                let _ = engine.event_tx.send(EngineEvent::IngestFileStarted {
+                    job_id: job_id_for_task.clone(),
+                    path: file.path.clone(),
+                    index: index + 1,
+                    total,
+                });
+
+                let done = Arc::new(AtomicBool::new(false));
+                let done_for_stall = Arc::clone(&done);
+                let engine_for_stall = Arc::clone(&engine);
+                let path_for_stall = file.path.clone();
+                let job_for_stall = job_id_for_task.clone();
+                let expected = Self::expected_ingest_duration(file.size_bytes);
+                tokio::spawn(async move {
+                    tokio::time::sleep(expected).await;
+                    if !done_for_stall.load(Ordering::Relaxed) {
+                        let _ = engine_for_stall
+                            .set_ingest_status_kind(
+                                &path_for_stall,
+                                IngestStatusKind::Stalled,
+                                None,
+                            )
+                            .await;
+                        let _ = engine_for_stall.event_tx.send(EngineEvent::IngestStalled {
+                            job_id: job_for_stall,
+                            path: path_for_stall,
+                            elapsed_secs: expected.as_secs() as usize,
+                        });
+                    }
+                });
+
+                let hard_timeout = std::cmp::min(expected.saturating_mul(3), std::time::Duration::from_secs(900));
+                match tokio::time::timeout(
+                    hard_timeout,
+                    engine.ingest_file(&file.path, &options, &job_id_for_task),
+                )
+                .await
+                {
+                    Ok(Ok(file_summary)) => {
+                        done.store(true, Ordering::Relaxed);
+                        processed += 1;
+                        summary.files_processed += file_summary.files_processed;
+                        summary.nodes_created += file_summary.nodes_created;
+                        summary.edges_created += file_summary.edges_created;
+                        summary.evidence_created += file_summary.evidence_created;
+                        summary.files_skipped += file_summary.files_skipped;
+                        summary.errors.extend(file_summary.errors);
+                        let status = if file_summary.files_skipped > 0 {
+                            "skipped".to_string()
+                        } else {
+                            "indexed".to_string()
+                        };
+                        let _ = engine.event_tx.send(EngineEvent::IngestFileCompleted {
+                            job_id: job_id_for_task.clone(),
+                            path: file.path.clone(),
+                            status,
+                        });
+                    }
+                    Ok(Err(err)) => {
+                        done.store(true, Ordering::Relaxed);
+                        processed += 1;
+                        summary.errors.push(format!("{}: {}", file.path.display(), err));
+                        let _ = engine
+                            .fail_ingest_status(&file.path, None, &err.to_string())
+                            .await;
+                        let _ = engine.event_tx.send(EngineEvent::IngestFileFailed {
+                            job_id: job_id_for_task.clone(),
+                            path: file.path.clone(),
+                            error: err.to_string(),
+                        });
+                    }
+                    Err(_) => {
+                        done.store(true, Ordering::Relaxed);
+                        processed += 1;
+                        let message = format!("timed out after {}s", hard_timeout.as_secs());
+                        let _ = engine.fail_ingest_status(&file.path, None, &message).await;
+                        summary.errors.push(format!("{}: {}", file.path.display(), message));
+                        let _ = engine.event_tx.send(EngineEvent::IngestFileFailed {
+                            job_id: job_id_for_task.clone(),
+                            path: file.path.clone(),
+                            error: message,
+                        });
+                    }
+                }
+
+                let _ = engine.event_tx.send(EngineEvent::IngestProgress {
+                    job_id: job_id_for_task.clone(),
+                    processed,
+                    total: Some(total),
+                });
+            }
+
+            if !engine
+                .ingest_jobs
+                .lock()
+                .await
+                .get(&job_id_for_task.0)
+                .map(|job| job.cancel_requested.load(Ordering::Relaxed))
+                .unwrap_or(false)
+            {
+                let _ = engine.event_tx.send(EngineEvent::IngestCompleted {
+                    job_id: job_id_for_task.clone(),
+                    summary,
+                });
+            }
+            engine.ingest_jobs.lock().await.remove(&job_id_for_task.0);
+        });
+
+        Ok(job_id)
+    }
+
+    pub async fn cancel_ingest(&self, job_id: &ingest::JobId) -> Result<(), AxonMindError> {
+        if let Some(job) = self.ingest_jobs.lock().await.get(&job_id.0) {
+            job.cancel_requested.store(true, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    pub async fn cancel_ingest_file(
+        &self,
+        job_id: &ingest::JobId,
+        source_path: &str,
+    ) -> Result<(), AxonMindError> {
+        if let Some(job) = self.ingest_jobs.lock().await.get(&job_id.0) {
+            job.cancelled_paths
+                .lock()
+                .await
+                .insert(source_path.to_owned());
+            if let Some(row) = self.store.fetch_ingest_status(source_path).await? {
+                self.fail_ingest_status(
+                    std::path::Path::new(&row.source_path),
+                    row.content_sha256.as_deref(),
+                    "cancelled by user",
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn list_ingest_status(&self) -> Result<Vec<IngestStatusRow>, AxonMindError> {
+        self.store.list_ingest_statuses().await
+    }
+
+    pub async fn list_trash(&self) -> Result<Vec<TrashRow>, AxonMindError> {
+        self.store.list_trash_rows().await
+    }
+
     // ── Ingest ───────────────────────────────────────────────────────────────
 
     /// Synchronous ingest (waits for completion). Suitable for CLI use.
@@ -225,8 +630,9 @@ impl AxonMindEngine {
         source: IngestSource,
         options: IngestOptions,
     ) -> Result<IngestSummary, AxonMindError> {
+        let job_id = ingest::JobId(uuid::Uuid::new_v4().to_string());
         match source {
-            IngestSource::File(path) => self.ingest_file(&path, &options).await,
+            IngestSource::File(path) => self.ingest_file(&path, &options, &job_id).await,
             IngestSource::Directory(dir) => {
                 let mut summary = IngestSummary {
                     files_processed: 0,
@@ -260,7 +666,7 @@ impl AxonMindEngine {
                         if path.is_dir() && options.recursive {
                             stack.push(path);
                         } else if path.is_file() {
-                            match self.ingest_file(&path, &options).await {
+                            match self.ingest_file(&path, &options, &job_id).await {
                                 Ok(s) => {
                                     summary.files_processed += s.files_processed;
                                     summary.nodes_created += s.nodes_created;
@@ -320,14 +726,38 @@ impl AxonMindEngine {
         &self,
         path: &std::path::Path,
         options: &IngestOptions,
+        job_id: &ingest::JobId,
     ) -> Result<IngestSummary, AxonMindError> {
-        match self.prepare_ingest(path, options).await? {
-            PreparedIngest::Skipped(s) => Ok(s),
-            PreparedIngest::Ready {
+        match self.prepare_ingest(path, options, job_id).await {
+            Ok(PreparedIngest::Skipped(s)) => {
+                self.store
+                    .delete_ingest_status(&path.to_string_lossy())
+                    .await?;
+                Ok(s)
+            }
+            Ok(PreparedIngest::Ready {
                 doc,
                 fingerprint,
                 skip_llm,
-            } => self.ingest_normalized(doc, fingerprint, skip_llm).await,
+            }) => {
+                let result = self.ingest_normalized(doc, fingerprint, skip_llm).await;
+                match result {
+                    Ok(summary) => {
+                        self.store
+                            .delete_ingest_status(&path.to_string_lossy())
+                            .await?;
+                        Ok(summary)
+                    }
+                    Err(err) => {
+                        self.fail_ingest_status(path, None, &err.to_string()).await?;
+                        Err(err)
+                    }
+                }
+            }
+            Err(err) => {
+                self.fail_ingest_status(path, None, &err.to_string()).await?;
+                Err(err)
+            }
         }
     }
 
@@ -344,7 +774,8 @@ impl AxonMindEngine {
             skip_unchanged: false,
             max_file_size_bytes: 50 * 1024 * 1024,
         };
-        match self.prepare_ingest(path, &opts).await? {
+        let job_id = ingest::JobId(uuid::Uuid::new_v4().to_string());
+        match self.prepare_ingest(path, &opts, &job_id).await? {
             PreparedIngest::Skipped(summary) => Ok(IngestedDocument {
                 summary,
                 doc_id: String::new(),
@@ -362,6 +793,9 @@ impl AxonMindEngine {
                 let sha256 = fingerprint.content_sha256.clone();
                 let markdown = render_markdown(&doc);
                 let summary = self.ingest_normalized(doc, fingerprint, skip_llm).await?;
+                self.store
+                    .delete_ingest_status(&path.to_string_lossy())
+                    .await?;
                 Ok(IngestedDocument {
                     summary,
                     doc_id,
@@ -377,10 +811,22 @@ impl AxonMindEngine {
         &self,
         path: &std::path::Path,
         options: &IngestOptions,
+        job_id: &ingest::JobId,
     ) -> Result<PreparedIngest, AxonMindError> {
-        let bytes = tokio::fs::read(path).await?;
+        self.start_ingest_status(path, job_id).await?;
+
+        let bytes = match tokio::fs::read(path).await {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                self.fail_ingest_status(path, None, &err.to_string()).await?;
+                return Err(AxonMindError::Ingest {
+                    message: err.to_string(),
+                });
+            }
+        };
 
         if bytes.len() as u64 > options.max_file_size_bytes && options.max_file_size_bytes > 0 {
+            self.fail_ingest_status(path, None, "file too large").await?;
             return Ok(PreparedIngest::Skipped(IngestSummary {
                 files_skipped: 1,
                 errors: vec![format!("{}: file too large", path.display())],
@@ -393,12 +839,16 @@ impl AxonMindEngine {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
+        self.update_ingest_status_content(path, &content_sha256, IngestPhase::Copying)
+            .await?;
 
         // Copy to blobs/<sha256>
         let blob_path = self.config.blob_dir.join(&content_sha256);
         if !blob_path.exists() {
             tokio::fs::write(&blob_path, &bytes).await?;
         }
+        self.update_ingest_status_phase(path, IngestPhase::Parsing)
+            .await?;
 
         // Parse to compute structural fingerprint.
         // Images go through the async LLM-vision path first (falls back to Tesseract on failure).
@@ -515,8 +965,12 @@ impl AxonMindEngine {
         now: i64,
     ) -> Result<IngestSummary, AxonMindError> {
         let doc_node_id = doc_node.id.clone();
+        if let Some(path) = doc.source_path.as_ref() {
+            self.update_ingest_status_phase(path, IngestPhase::Extracting)
+                .await?;
+        }
         let mutations = self
-            .build_ingest_mutations(&doc, &doc_node, skip_llm, &Default::default())
+            .build_ingest_mutations(&doc, &doc_node, skip_llm, false, &Default::default())
             .await?;
         let mut summary = summarize_mutations(&mutations);
         let version = crate::store::NewDocumentVersion {
@@ -533,6 +987,10 @@ impl AxonMindEngine {
             previous_node_id: None,
             superseded: false,
         };
+        if let Some(path) = doc.source_path.as_ref() {
+            self.update_ingest_status_phase(path, IngestPhase::Indexing)
+                .await?;
+        }
         self.store
             .apply_version_batch(mutations, version, None, &self.graph_cache, &self.event_tx)
             .await?;
@@ -560,6 +1018,10 @@ impl AxonMindEngine {
         now: i64,
     ) -> Result<IngestSummary, AxonMindError> {
         let doc_node_id = doc_node.id.clone();
+        if let Some(path) = doc.source_path.as_ref() {
+            self.update_ingest_status_phase(path, IngestPhase::Extracting)
+                .await?;
+        }
         let old_node =
             self.store
                 .fetch_node(&prev_head)
@@ -582,7 +1044,7 @@ impl AxonMindEngine {
         // Exclude the about-to-be-deleted concepts from the new version's "existing concepts" view,
         // or the bridge/linker would create edges to them → NodeNotFound after the deletes apply.
         let new_mutations = self
-            .build_ingest_mutations(&doc, &doc_node, false, &to_delete)
+            .build_ingest_mutations(&doc, &doc_node, false, false, &to_delete)
             .await?;
 
         // Retain the old doc node as a bare, superseded node (no edges/evidence) for audit + diff.
@@ -637,6 +1099,10 @@ impl AxonMindEngine {
             previous_node_id: Some(prev_head.clone()),
             superseded: false,
         };
+        if let Some(path) = doc.source_path.as_ref() {
+            self.update_ingest_status_phase(path, IngestPhase::Indexing)
+                .await?;
+        }
         self.store
             .apply_version_batch(batch, version, retained, &self.graph_cache, &self.event_tx)
             .await?;
@@ -736,6 +1202,94 @@ impl AxonMindEngine {
         self.store.list_document_versions(logical_doc_id).await
     }
 
+    pub async fn trash_document(&self, source_path: &str) -> Result<(), AxonMindError> {
+        let now = chrono::Utc::now().timestamp();
+        if let Some(row) = self.store.fetch_ingest_status(source_path).await? {
+            self.store.trash_ingest_status(source_path, now).await?;
+            if let Some(job) = self.ingest_jobs.lock().await.get(&row.job_id) {
+                job.cancelled_paths
+                    .lock()
+                    .await
+                    .insert(source_path.to_owned());
+            }
+            return Ok(());
+        }
+
+        let doc = self
+            .store
+            .fetch_live_document_by_source_path(source_path)
+            .await?
+            .ok_or_else(|| AxonMindError::Ingest {
+                message: format!("document not found for source_path: {source_path}"),
+            })?;
+        let versions = self.store.list_document_versions(&doc.logical_doc_id).await?;
+        let head_sha = versions
+            .first()
+            .map(|v| v.sha256.clone())
+            .ok_or_else(|| AxonMindError::Ingest {
+                message: format!("no versions found for {}", doc.logical_doc_id),
+            })?;
+        let mut shas: Vec<String> = versions.into_iter().map(|v| v.sha256).collect();
+        shas.sort();
+        shas.dedup();
+
+        self.store
+            .upsert_document_trash(source_path, &doc.name, &head_sha, now, &shas)
+            .await?;
+        self.remove_document(NodeId(doc.node_id), false).await?;
+        Ok(())
+    }
+
+    pub async fn restore_document(self: &Arc<Self>, source_path: &str) -> Result<(), AxonMindError> {
+        if self.store.fetch_ingest_status(source_path).await?.is_some() {
+            self.store.restore_ingest_status(source_path).await?;
+            return Ok(());
+        }
+        let Some((row, _shas)) = self.store.fetch_document_trash(source_path).await? else {
+            return Err(AxonMindError::Ingest {
+                message: format!("trash row not found for source_path: {source_path}"),
+            });
+        };
+        let head_sha = row.head_sha256.clone().ok_or_else(|| AxonMindError::Ingest {
+            message: format!("trash row missing head sha for source_path: {source_path}"),
+        })?;
+        let summary = self
+            .ingest_blob_restore(source_path, &row.name, &head_sha)
+            .await?;
+        let _ = summary;
+        self.store.delete_document_trash(source_path).await?;
+        Ok(())
+    }
+
+    pub async fn delete_document_permanently(
+        &self,
+        source_path: &str,
+    ) -> Result<(), AxonMindError> {
+        if self.store.fetch_ingest_status(source_path).await?.is_some() {
+            return self.store.delete_trashed_ingest_status(source_path).await;
+        }
+        let Some((_row, shas)) = self.store.fetch_document_trash(source_path).await? else {
+            return Err(AxonMindError::Ingest {
+                message: format!("trash row not found for source_path: {source_path}"),
+            });
+        };
+        for sha in &shas {
+            if self.store.count_documents_with_sha(sha).await? == 0
+                && self.store.count_trash_with_sha(sha).await? <= 1
+            {
+                let _ = tokio::fs::remove_file(self.config.blob_dir.join(sha)).await;
+            }
+        }
+        self.store.delete_document_trash(source_path).await
+    }
+
+    pub async fn empty_trash(&self) -> Result<(), AxonMindError> {
+        for row in self.store.list_trash_rows().await? {
+            self.delete_document_permanently(&row.source_path).await?;
+        }
+        Ok(())
+    }
+
     /// Re-renders a document's Markdown content from its retained blob, for on-demand
     /// retrieval by `doc_id` (graph-reference model, soverex docs/attachment.md). Read-only —
     /// re-parses the blob rather than mutating the graph, so it's safe to call mid-session.
@@ -772,6 +1326,58 @@ impl AxonMindEngine {
         Ok(render_markdown(&doc))
     }
 
+    async fn ingest_blob_restore(
+        &self,
+        source_path: &str,
+        name: &str,
+        sha256: &str,
+    ) -> Result<IngestSummary, AxonMindError> {
+        let path = std::path::PathBuf::from(source_path);
+        let bytes = tokio::fs::read(self.config.blob_dir.join(sha256))
+            .await
+            .map_err(|e| AxonMindError::Ingest {
+                message: format!("blob read failed for restore {}: {e}", source_path),
+            })?;
+        let doc = {
+            #[cfg(feature = "llm")]
+            {
+                if is_image_path(&path) {
+                    let llm_guard = self.llm_provider.read().await;
+                    if let Some(llm) = llm_guard.as_deref() {
+                        ingest::image::parse_with_llm(&path, &bytes, sha256.to_owned(), llm).await?
+                    } else {
+                        dispatch_parse(&path, &bytes).map_err(|_| AxonMindError::Ingest {
+                            message: "image ingest requires an active LLM provider (configure \
+                                      one in Settings) or rebuild with `--features ocr` for \
+                                      Tesseract OCR"
+                                .into(),
+                        })?
+                    }
+                } else {
+                    dispatch_parse(&path, &bytes)?
+                }
+            }
+            #[cfg(not(feature = "llm"))]
+            dispatch_parse(&path, &bytes)?
+        };
+        let structural_sha256 = structural_signature(&doc);
+        let restored_doc = NormalizedDocument {
+            title: doc.title.clone().or_else(|| Some(name.to_owned())),
+            ..doc
+        };
+        let summary = self
+            .ingest_normalized(
+                restored_doc,
+                DocFingerprint {
+                    content_sha256: sha256.to_owned(),
+                    structural_sha256,
+                },
+                false,
+            )
+            .await?;
+        Ok(summary)
+    }
+
     /// Build (but do not apply) all extraction mutations for a document: the Document node, rule
     /// extraction, LLM entity+relation extraction, cross-document semantic links, and the
     /// deterministic bridge. Kept separate from application so callers can apply atomically.
@@ -785,6 +1391,9 @@ impl AxonMindEngine {
         doc: &NormalizedDocument,
         doc_node: &Node,
         skip_llm: bool,
+        // When true, run the LLM extraction pass even if `config.enable_llm_extraction` is off.
+        // Used by on-demand document enrichment (the global flag keeps uploads structural-only).
+        force_llm: bool,
         exclude_from_existing: &std::collections::HashSet<String>,
     ) -> Result<Vec<GraphMutation>, AxonMindError> {
         use axonmind_core::NodeKind;
@@ -823,7 +1432,7 @@ impl AxonMindEngine {
             .collect();
 
         // Resolve the LLM provider once so we don't hold the lock across awaits.
-        let llm_opt = if self.config.enable_llm_extraction && !skip_llm {
+        let llm_opt = if (self.config.enable_llm_extraction || force_llm) && !skip_llm {
             self.llm_provider.read().await.clone()
         } else {
             None
@@ -1000,9 +1609,29 @@ impl AxonMindEngine {
     /// Only once the new mutations are ready are the old data's removal and the new data applied
     /// together in a single transaction. Recomputation reads the retained blob, never the original
     /// path, so it works even if the source file moved or was deleted.
+    /// Re-extract a document from its retained blob, replacing its derived data. Honors the global
+    /// `enable_llm_extraction` flag.
     pub async fn regenerate_document(
         &self,
         node_id: NodeId,
+    ) -> Result<IngestSummary, AxonMindError> {
+        self.regenerate_inner(node_id, false).await
+    }
+
+    /// On-demand enrichment: same as `regenerate_document` but forces the LLM extraction pass even
+    /// when `enable_llm_extraction` is off — so hosts can keep uploads structural-only and enrich
+    /// a document explicitly. Requires an active LLM provider (`update_llm_provider`).
+    pub async fn enrich_document(
+        &self,
+        node_id: NodeId,
+    ) -> Result<IngestSummary, AxonMindError> {
+        self.regenerate_inner(node_id, true).await
+    }
+
+    async fn regenerate_inner(
+        &self,
+        node_id: NodeId,
+        force_llm: bool,
     ) -> Result<IngestSummary, AxonMindError> {
         let node = self
             .store
@@ -1084,7 +1713,7 @@ impl AxonMindEngine {
             .collect();
 
         let new_mutations = self
-            .build_ingest_mutations(&doc, &doc_node, false, &to_delete)
+            .build_ingest_mutations(&doc, &doc_node, false, force_llm, &to_delete)
             .await?;
 
         let mut summary = IngestSummary {

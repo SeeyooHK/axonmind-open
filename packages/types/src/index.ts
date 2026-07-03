@@ -82,6 +82,33 @@ export interface IngestedDocument {
   markdown: string;
 }
 
+export type IngestStatusKind = "processing" | "stalled" | "failed" | "interrupted";
+export type IngestPhase = "reading" | "copying" | "parsing" | "extracting" | "indexing";
+export type TrashedItemKind = "completed_document" | "ingest_row";
+
+export interface IngestStatusRow {
+  source_path: string;
+  name: string;
+  content_sha256: string | null;
+  job_id: string;
+  status: IngestStatusKind;
+  phase: IngestPhase;
+  error: string | null;
+  started_at: number;
+  updated_at: number;
+  trashed_at: number | null;
+}
+
+export interface TrashRow {
+  source_path: string;
+  name: string;
+  trashed_at: number;
+  kind: TrashedItemKind;
+  head_sha256: string | null;
+  status: IngestStatusKind | null;
+  error: string | null;
+}
+
 export type EngineEvent =
   | { type: "node_upserted"; node_id: NodeId }
   | { type: "node_deleted"; node_id: NodeId }
@@ -90,10 +117,17 @@ export type EngineEvent =
   | { type: "evidence_added"; evidence_id: EvidenceId }
   | { type: "kpi_candidate_proposed"; candidate_id: string }
   | { type: "kpi_candidate_resolved"; candidate_id: string; status: string }
+  | { type: "ingest_batch_started"; job_id: string; root_path: string; total_files: number }
   | { type: "ingest_started"; job_id: string; path: string }
   | { type: "ingest_progress"; job_id: string; processed: number; total: number | null }
   | { type: "ingest_completed"; job_id: string; summary: IngestSummary }
   | { type: "ingest_failed"; job_id: string; error: string }
+  | { type: "ingest_file_started"; job_id: string; path: string; index: number; total: number }
+  | { type: "ingest_file_phase"; job_id: string; path: string; phase: IngestPhase }
+  | { type: "ingest_file_completed"; job_id: string; path: string; status: string }
+  | { type: "ingest_file_failed"; job_id: string; path: string; error: string }
+  | { type: "ingest_stalled"; job_id: string; path: string; elapsed_secs: number }
+  | { type: "ingest_cancelled"; job_id: string; processed: number; total: number }
   | { type: "cache_rebuilt" };
 
 export type CandidateStatus = "Pending" | "Approved" | "Rejected" | "Merged";

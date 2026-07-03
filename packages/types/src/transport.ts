@@ -207,14 +207,23 @@ export interface AxonMindTransport {
   updateBrainMapDefaultConfig(edit: SummaryConfigEdit): Promise<SummaryConfigSnapshot>;
   restoreBrainMapDefaultConfig(): Promise<SummaryConfigSnapshot>;
   listDocuments(): Promise<DocumentSummary[]>;
+  listIngestStatus(): Promise<import("./index").IngestStatusRow[]>;
+  listTrash(): Promise<import("./index").TrashRow[]>;
   /** All versions of a logical document, newest→oldest. */
   listDocumentVersions(logical_doc_id: string): Promise<DocumentVersion[]>;
   /** Re-render a version's parsed Markdown from its retained blob (for preview + diff). */
   getDocumentContent(node_id: string): Promise<string>;
   removeDocument(node_id: string): Promise<void>;
   regenerateDocument(node_id: string): Promise<IngestSummary>;
+  trashDocument(source_path: string): Promise<void>;
+  restoreDocument(source_path: string): Promise<void>;
+  deleteDocumentPermanently(source_path: string): Promise<void>;
+  emptyTrash(): Promise<void>;
 
   // Ingest
+  startIngest(paths: string[], options?: IndexPathOptions): Promise<string>;
+  cancelIngest(job_id: string): Promise<void>;
+  cancelIngestFile(job_id: string, source_path: string): Promise<void>;
   indexPath(path: string, options?: IndexPathOptions): Promise<IngestSummary>;
   indexMarkdown(text: string, options?: IndexMarkdownOptions): Promise<IngestSummary>;
   /** Parse a file, blob-retain it, index it into the graph, and return its markdown + provenance. */

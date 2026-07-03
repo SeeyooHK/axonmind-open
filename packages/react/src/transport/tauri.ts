@@ -165,6 +165,20 @@ export class TauriTransport implements AxonMindTransport {
     );
   }
 
+  listIngestStatus(): Promise<import("@axonmind/types").IngestStatusRow[]> {
+    return this.invokeWithFallback<import("@axonmind/types").IngestStatusRow[]>(
+      "list_ingest_status",
+      "axonmind_list_ingest_status",
+    );
+  }
+
+  listTrash(): Promise<import("@axonmind/types").TrashRow[]> {
+    return this.invokeWithFallback<import("@axonmind/types").TrashRow[]>(
+      "list_trash",
+      "axonmind_list_trash",
+    );
+  }
+
   listDocumentVersions(logical_doc_id: string): Promise<DocumentVersion[]> {
     const args = { logicalDocId: logical_doc_id };
     return this.invokeWithFallback<DocumentVersion[]>(
@@ -198,6 +212,68 @@ export class TauriTransport implements AxonMindTransport {
       "regenerate_document",
       "axonmind_regenerate_document",
       args,
+    );
+  }
+
+  trashDocument(source_path: string): Promise<void> {
+    const args = { sourcePath: source_path };
+    return this.invokeWithFallback<void>(
+      "trash_document",
+      "axonmind_trash_document",
+      args,
+    );
+  }
+
+  restoreDocument(source_path: string): Promise<void> {
+    const args = { sourcePath: source_path };
+    return this.invokeWithFallback<void>(
+      "restore_document",
+      "axonmind_restore_document",
+      args,
+    );
+  }
+
+  deleteDocumentPermanently(source_path: string): Promise<void> {
+    const args = { sourcePath: source_path };
+    return this.invokeWithFallback<void>(
+      "delete_document_permanently",
+      "axonmind_delete_document_permanently",
+      args,
+    );
+  }
+
+  emptyTrash(): Promise<void> {
+    return this.invokeWithFallback<void>(
+      "empty_trash",
+      "axonmind_empty_trash",
+    );
+  }
+
+  startIngest(paths: string[], options?: IndexPathOptions): Promise<string> {
+    return this.invokeWithFallback<string>(
+      "start_ingest",
+      "axonmind_start_ingest",
+      {
+        paths,
+        recursive: options?.recursive ?? true,
+        skipUnchanged: options?.skipUnchanged ?? false,
+      },
+    );
+  }
+
+  cancelIngest(job_id: string): Promise<void> {
+    return this.invokeWithFallback<void>(
+      "cancel_ingest",
+      "axonmind_cancel_ingest",
+      { jobId: job_id },
+    );
+  }
+
+  cancelIngestFile(job_id: string, source_path: string): Promise<void> {
+    return this.invokeWithFallback<void>(
+      "cancel_ingest_file",
+      "axonmind_cancel_ingest_file",
+      { jobId: job_id, sourcePath: source_path },
     );
   }
 
