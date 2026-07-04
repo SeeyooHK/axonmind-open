@@ -322,11 +322,18 @@ impl AxonMindEngine {
         Ok(())
     }
 
+    fn timeout_phase_for(err: &AxonMindError) -> Option<IngestPhase> {
+        matches!(err, AxonMindError::ParseTimeout { .. }).then_some(IngestPhase::ParseTimeout)
+    }
+
+    /// `timeout_phase`: `Some(IngestPhase::ParseTimeout)` distinguishes a parse timeout from a
+    /// generic ingest failure in the UI; `None` leaves the row's last real phase untouched.
     async fn fail_ingest_status(
         &self,
         path: &std::path::Path,
         sha256: Option<&str>,
         error: &str,
+        timeout_phase: Option<IngestPhase>,
     ) -> Result<(), AxonMindError> {
         if let Some(mut row) = self
             .store
@@ -335,6 +342,9 @@ impl AxonMindEngine {
         {
             if let Some(sha) = sha256 {
                 row.content_sha256 = Some(sha.to_owned());
+            }
+            if let Some(phase) = timeout_phase {
+                row.phase = phase;
             }
             row.status = IngestStatusKind::Failed;
             row.error = Some(error.to_owned());
@@ -432,12 +442,9 @@ impl AxonMindEngine {
             Ok(Err(join_err)) => Err(AxonMindError::Ingest {
                 message: format!("parse worker failed for {}: {join_err}", path.display()),
             }),
-            Err(_) => Err(AxonMindError::Ingest {
-                message: format!(
-                    "parse timed out after {}s for {}",
-                    timeout.as_secs(),
-                    path.display()
-                ),
+            Err(_) => Err(AxonMindError::ParseTimeout {
+                secs: timeout.as_secs(),
+                path: path.display().to_string(),
             }),
         }
     }
@@ -587,7 +594,12 @@ impl AxonMindEngine {
                         processed += 1;
                         summary.errors.push(format!("{}: {}", file.path.display(), err));
                         let _ = engine
-                            .fail_ingest_status(&file.path, None, &err.to_string())
+                            .fail_ingest_status(
+                                &file.path,
+                                None,
+                                &err.to_string(),
+                                AxonMindEngine::timeout_phase_for(&err),
+                            )
                             .await;
                         let _ = engine.event_tx.send(EngineEvent::IngestFileFailed {
                             job_id: job_id_for_task.clone(),
@@ -599,7 +611,9 @@ impl AxonMindEngine {
                         done.store(true, Ordering::Relaxed);
                         processed += 1;
                         let message = format!("timed out after {}s", hard_timeout.as_secs());
-                        let _ = engine.fail_ingest_status(&file.path, None, &message).await;
+                        let _ = engine
+                            .fail_ingest_status(&file.path, None, &message, None)
+                            .await;
                         summary.errors.push(format!("{}: {}", file.path.display(), message));
                         let _ = engine.event_tx.send(EngineEvent::IngestFileFailed {
                             job_id: job_id_for_task.clone(),
@@ -657,6 +671,7 @@ impl AxonMindEngine {
                     std::path::Path::new(&row.source_path),
                     row.content_sha256.as_deref(),
                     "cancelled by user",
+                    None,
                 )
                 .await?;
             }
@@ -799,13 +814,25 @@ impl AxonMindEngine {
                         Ok(summary)
                     }
                     Err(err) => {
-                        self.fail_ingest_status(path, None, &err.to_string()).await?;
+                        self.fail_ingest_status(
+                            path,
+                            None,
+                            &err.to_string(),
+                            Self::timeout_phase_for(&err),
+                        )
+                        .await?;
                         Err(err)
                     }
                 }
             }
             Err(err) => {
-                self.fail_ingest_status(path, None, &err.to_string()).await?;
+                self.fail_ingest_status(
+                    path,
+                    None,
+                    &err.to_string(),
+                    Self::timeout_phase_for(&err),
+                )
+                .await?;
                 Err(err)
             }
         }
@@ -847,6 +874,9 @@ impl AxonMindEngine {
                 let title = doc.title.clone();
                 let sha256 = fingerprint.content_sha256.clone();
                 let markdown = render_markdown(&doc);
+                self.store
+                    .upsert_document_markdown(&sha256, &markdown)
+                    .await?;
                 let summary = self.ingest_normalized(doc, fingerprint, skip_llm).await?;
                 self.store
                     .delete_ingest_status(&path.to_string_lossy())
@@ -873,7 +903,8 @@ impl AxonMindEngine {
         let bytes = match tokio::fs::read(path).await {
             Ok(bytes) => bytes,
             Err(err) => {
-                self.fail_ingest_status(path, None, &err.to_string()).await?;
+                self.fail_ingest_status(path, None, &err.to_string(), None)
+                    .await?;
                 return Err(AxonMindError::Ingest {
                     message: err.to_string(),
                 });
@@ -881,7 +912,8 @@ impl AxonMindEngine {
         };
 
         if bytes.len() as u64 > options.max_file_size_bytes && options.max_file_size_bytes > 0 {
-            self.fail_ingest_status(path, None, "file too large").await?;
+            self.fail_ingest_status(path, None, "file too large", None)
+                .await?;
             return Ok(PreparedIngest::Skipped(IngestSummary {
                 files_skipped: 1,
                 errors: vec![format!("{}: file too large", path.display())],
@@ -1028,7 +1060,13 @@ impl AxonMindEngine {
         self.store
             .apply_version_batch(mutations, version, None, &self.graph_cache, &self.event_tx)
             .await?;
-        self.run_pageindex(&doc, &doc_node_id, &mut summary).await;
+        self.run_pageindex(
+            &doc,
+            &doc_node_id,
+            &fingerprint.content_sha256,
+            &mut summary,
+        )
+        .await;
         Ok(summary)
     }
 
@@ -1148,7 +1186,13 @@ impl AxonMindEngine {
         {
             summary.errors.push(format!("pageindex delete: {e}"));
         }
-        self.run_pageindex(&doc, &doc_node_id, &mut summary).await;
+        self.run_pageindex(
+            &doc,
+            &doc_node_id,
+            &fingerprint.content_sha256,
+            &mut summary,
+        )
+        .await;
         Ok(summary)
     }
 
@@ -1197,14 +1241,23 @@ impl AxonMindEngine {
             .await
     }
 
-    /// Pageindex hook only (no cache upsert). Used by the version-aware ingest paths, where the
-    /// `document_cache` HEAD pointer is written atomically inside `apply_version_batch` instead.
+    /// Pageindex hook (no `document_cache` HEAD-pointer upsert — that's written atomically inside
+    /// `apply_version_batch` instead). Used by the version-aware ingest paths, which also pass the
+    /// content sha256 here so the rendered markdown gets cached for `get_document_content`.
     async fn run_pageindex(
         &self,
         doc: &NormalizedDocument,
         doc_node_id: &NodeId,
+        sha256: &str,
         summary: &mut IngestSummary,
     ) {
+        if let Err(e) = self
+            .store
+            .upsert_document_markdown(sha256, &render_markdown(doc))
+            .await
+        {
+            summary.errors.push(format!("document_markdown cache: {e}"));
+        }
         let page_store = PageIndexStore::new(self.store.db.0.clone());
         let llm = self.llm_provider.read().await.clone();
         if let Err(e) = pageindex::index_document(
@@ -1324,29 +1377,38 @@ impl AxonMindEngine {
         Ok(())
     }
 
-    /// Re-renders a document's Markdown content from its retained blob, for on-demand
-    /// retrieval by `doc_id` (graph-reference model, soverex docs/attachment.md). Read-only —
-    /// re-parses the blob rather than mutating the graph, so it's safe to call mid-session.
+    /// Serves a document's rendered Markdown for on-demand retrieval by `doc_id` (graph-reference
+    /// model, soverex docs/attachment.md). Cache-first: `document_markdown` (migration 009) is
+    /// keyed by content sha256 and populated at ingest, so this is normally a direct lookup. Only a
+    /// pre-migration-009 document falls through to the parse-and-backfill path below, which is the
+    /// sole remaining source of a timeout on this read-only call. Every failure here is a `Preview`
+    /// error — never `Ingest` — since the document already ingested successfully; only rendering it
+    /// again failed.
     pub async fn get_document_content(&self, node_id: &NodeId) -> Result<String, AxonMindError> {
         let node = self
             .store
             .fetch_node(node_id)
             .await?
-            .ok_or_else(|| AxonMindError::Ingest {
-                message: format!("document not found: {}", node_id.0),
+            .ok_or_else(|| AxonMindError::Preview {
+                message: "Document not found.".to_string(),
             })?;
         if node.kind != NodeKind::Document {
-            return Err(AxonMindError::Ingest {
-                message: format!("{} is not a document", node_id.0),
+            return Err(AxonMindError::Preview {
+                message: "Document not found.".to_string(),
             });
         }
         let sha256 = node
             .attrs
             .get("sha256")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| AxonMindError::Ingest {
-                message: format!("document {} has no sha256 attr", node_id.0),
+            .ok_or_else(|| AxonMindError::Preview {
+                message: "Document not found.".to_string(),
             })?;
+
+        if let Some(markdown) = self.store.get_document_markdown(sha256).await? {
+            return Ok(markdown);
+        }
+
         let source_path = node
             .attrs
             .get("source_path")
@@ -1355,9 +1417,27 @@ impl AxonMindEngine {
             .unwrap_or_else(|| std::path::PathBuf::from(&node.name));
 
         let blob_path = self.config.blob_dir.join(sha256);
-        let bytes = tokio::fs::read(&blob_path).await?;
-        let doc = self.parse_source_document(&source_path, &bytes).await?;
-        Ok(render_markdown(&doc))
+        let bytes = tokio::fs::read(&blob_path)
+            .await
+            .map_err(|_| AxonMindError::Preview {
+                message: "Stored copy is missing or unreadable.".to_string(),
+            })?;
+        let doc = self
+            .parse_source_document(&source_path, &bytes)
+            .await
+            .map_err(|e| match e {
+                AxonMindError::ParseTimeout { secs, .. } => AxonMindError::Preview {
+                    message: format!("Rendering timed out after {secs}s (large document)."),
+                },
+                _ => AxonMindError::Preview {
+                    message: "Could not render this document.".to_string(),
+                },
+            })?;
+        let markdown = render_markdown(&doc);
+        self.store
+            .upsert_document_markdown(sha256, &markdown)
+            .await?;
+        Ok(markdown)
     }
 
     async fn ingest_blob_restore(
@@ -1763,7 +1843,13 @@ impl AxonMindEngine {
         {
             summary.errors.push(format!("pageindex delete: {e}"));
         }
-        self.run_pageindex(&doc, &doc_node_id, &mut summary).await;
+        self.run_pageindex(
+            &doc,
+            &doc_node_id,
+            &fingerprint.content_sha256,
+            &mut summary,
+        )
+        .await;
 
         Ok(summary)
     }
@@ -2585,6 +2671,14 @@ impl AxonMindEngine {
                     continue;
                 }
             };
+
+            if let Err(e) = self
+                .store
+                .upsert_document_markdown(&sha, &render_markdown(&normalized))
+                .await
+            {
+                errors.push(format!("{}: document_markdown cache: {e}", doc.node_id));
+            }
 
             match pageindex::index_document(
                 &normalized,

@@ -188,6 +188,7 @@ pub enum IngestPhase {
     Parsing,
     Extracting,
     Indexing,
+    ParseTimeout,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1304,6 +1305,58 @@ impl GraphStore {
             )
             .await
             .map_err(|e| AxonMindError::Database(e.to_string()))?
+    }
+
+    /// Content-addressable cache of `render_markdown(&NormalizedDocument)` output, keyed by the
+    /// source blob's sha256. Lets `get_document_content` serve a preview without re-parsing.
+    pub(crate) async fn upsert_document_markdown(
+        &self,
+        sha256: &str,
+        markdown: &str,
+    ) -> Result<(), AxonMindError> {
+        let sha = sha256.to_owned();
+        let md = markdown.to_owned();
+        let now = Utc::now().timestamp();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<(), AxonMindError> {
+            conn.execute(
+                "INSERT OR IGNORE INTO document_markdown (sha256, markdown, built_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![sha, md, now],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn get_document_markdown(
+        &self,
+        sha256: &str,
+    ) -> Result<Option<String>, AxonMindError> {
+        let sha = sha256.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Option<String>, AxonMindError> {
+            conn.query_row(
+                "SELECT markdown FROM document_markdown WHERE sha256 = ?1",
+                [&sha],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| AxonMindError::Database(e.to_string()))
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
     /// The Document node `document_cache` currently points at for `path` (the live HEAD), if the

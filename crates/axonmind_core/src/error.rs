@@ -42,4 +42,10 @@ pub enum AxonMindError {
 
     #[error("graph cache is dirty; rebuild before serving queries")]
     CacheDirty,
+
+    #[error("parsing timed out after {secs}s: {path}")]
+    ParseTimeout { secs: u64, path: String },
+
+    #[error("preview unavailable: {message}")]
+    Preview { message: String },
 }

@@ -83,7 +83,7 @@ export interface IngestedDocument {
 }
 
 export type IngestStatusKind = "processing" | "stalled" | "failed" | "interrupted";
-export type IngestPhase = "reading" | "copying" | "parsing" | "extracting" | "indexing";
+export type IngestPhase = "reading" | "copying" | "parsing" | "extracting" | "indexing" | "parse_timeout";
 export type TrashedItemKind = "completed_document" | "ingest_row";
 
 export interface IngestStatusRow {
