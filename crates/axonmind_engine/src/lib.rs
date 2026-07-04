@@ -210,23 +210,7 @@ impl AxonMindEngine {
         path: &std::path::Path,
     ) -> Result<NormalizedDocument, AxonMindError> {
         let bytes = tokio::fs::read(path).await?;
-
-        #[cfg(feature = "llm")]
-        {
-            if is_image_path(path) {
-                use sha2::Digest as _;
-                let content_sha256: String = sha2::Sha256::digest(&bytes)
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect();
-                let llm_guard = self.llm_provider.read().await;
-                if let Some(llm) = llm_guard.as_deref() {
-                    return ingest::image::parse_with_llm(path, &bytes, content_sha256, llm).await;
-                }
-            }
-        }
-
-        dispatch_parse(path, &bytes)
+        self.parse_source_document(path, &bytes).await
     }
 
     /// Read the already-built pageindex preview for a processed document.
@@ -421,6 +405,72 @@ impl AxonMindEngine {
         let size_mb = (size_bytes as f64) / (1024.0 * 1024.0);
         let expected = 20.0 + (size_mb * 25.0);
         std::time::Duration::from_secs_f64(expected.max(5.0))
+    }
+
+    fn hard_parse_timeout(size_bytes: u64) -> std::time::Duration {
+        std::cmp::min(
+            Self::expected_ingest_duration(size_bytes).saturating_mul(3),
+            std::time::Duration::from_secs(900),
+        )
+    }
+
+    async fn parse_blocking_document(
+        path: &std::path::Path,
+        bytes: &[u8],
+    ) -> Result<NormalizedDocument, AxonMindError> {
+        let timeout = Self::hard_parse_timeout(bytes.len() as u64);
+        let parse_path = path.to_path_buf();
+        let parse_bytes = bytes.to_vec();
+        match tokio::time::timeout(
+            timeout,
+            tokio::task::spawn_blocking(move || dispatch_parse(&parse_path, &parse_bytes)),
+        )
+        .await
+        {
+            Ok(Ok(Ok(doc))) => Ok(doc),
+            Ok(Ok(Err(err))) => Err(err),
+            Ok(Err(join_err)) => Err(AxonMindError::Ingest {
+                message: format!("parse worker failed for {}: {join_err}", path.display()),
+            }),
+            Err(_) => Err(AxonMindError::Ingest {
+                message: format!(
+                    "parse timed out after {}s for {}",
+                    timeout.as_secs(),
+                    path.display()
+                ),
+            }),
+        }
+    }
+
+    async fn parse_source_document(
+        &self,
+        path: &std::path::Path,
+        bytes: &[u8],
+    ) -> Result<NormalizedDocument, AxonMindError> {
+        #[cfg(feature = "llm")]
+        {
+            if is_image_path(path) {
+                let llm_guard = self.llm_provider.read().await;
+                if let Some(llm) = llm_guard.as_deref() {
+                    use sha2::Digest as _;
+                    let sha256 = sha2::Sha256::digest(bytes)
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>();
+                    return ingest::image::parse_with_llm(path, bytes, sha256, llm).await;
+                }
+                return Self::parse_blocking_document(path, bytes).await.map_err(|_| {
+                    AxonMindError::Ingest {
+                        message: "image ingest requires an active LLM provider (configure \
+                                  one in Settings) or rebuild with `--features ocr` for \
+                                  Tesseract OCR"
+                            .into(),
+                    }
+                });
+            }
+        }
+
+        Self::parse_blocking_document(path, bytes).await
     }
 
     pub async fn start_ingest(
@@ -776,13 +826,18 @@ impl AxonMindEngine {
         };
         let job_id = ingest::JobId(uuid::Uuid::new_v4().to_string());
         match self.prepare_ingest(path, &opts, &job_id).await? {
-            PreparedIngest::Skipped(summary) => Ok(IngestedDocument {
-                summary,
-                doc_id: String::new(),
-                sha256: String::new(),
-                title: None,
-                markdown: String::new(),
-            }),
+            PreparedIngest::Skipped(summary) => {
+                self.store
+                    .delete_ingest_status(&path.to_string_lossy())
+                    .await?;
+                Ok(IngestedDocument {
+                    summary,
+                    doc_id: String::new(),
+                    sha256: String::new(),
+                    title: None,
+                    markdown: String::new(),
+                })
+            }
             PreparedIngest::Ready {
                 doc,
                 fingerprint,
@@ -851,30 +906,9 @@ impl AxonMindEngine {
             .await?;
 
         // Parse to compute structural fingerprint.
-        // Images go through the async LLM-vision path first (falls back to Tesseract on failure).
-        let doc = {
-            #[cfg(feature = "llm")]
-            {
-                if is_image_path(path) {
-                    let llm_guard = self.llm_provider.read().await;
-                    if let Some(llm) = llm_guard.as_deref() {
-                        ingest::image::parse_with_llm(path, &bytes, content_sha256.clone(), llm)
-                            .await?
-                    } else {
-                        dispatch_parse(path, &bytes).map_err(|_| AxonMindError::Ingest {
-                            message: "image ingest requires an active LLM provider (configure \
-                                      one in Settings) or rebuild with `--features ocr` for \
-                                      Tesseract OCR"
-                                .into(),
-                        })?
-                    }
-                } else {
-                    dispatch_parse(path, &bytes)?
-                }
-            }
-            #[cfg(not(feature = "llm"))]
-            dispatch_parse(path, &bytes)?
-        };
+        let doc = self
+            .parse_source_document(path, &bytes)
+            .await?;
         let structural_sha256 = structural_signature(&doc);
         let next_fp = DocFingerprint {
             content_sha256,
@@ -1322,7 +1356,7 @@ impl AxonMindEngine {
 
         let blob_path = self.config.blob_dir.join(sha256);
         let bytes = tokio::fs::read(&blob_path).await?;
-        let doc = dispatch_parse(&source_path, &bytes)?;
+        let doc = self.parse_source_document(&source_path, &bytes).await?;
         Ok(render_markdown(&doc))
     }
 
@@ -1338,28 +1372,7 @@ impl AxonMindEngine {
             .map_err(|e| AxonMindError::Ingest {
                 message: format!("blob read failed for restore {}: {e}", source_path),
             })?;
-        let doc = {
-            #[cfg(feature = "llm")]
-            {
-                if is_image_path(&path) {
-                    let llm_guard = self.llm_provider.read().await;
-                    if let Some(llm) = llm_guard.as_deref() {
-                        ingest::image::parse_with_llm(&path, &bytes, sha256.to_owned(), llm).await?
-                    } else {
-                        dispatch_parse(&path, &bytes).map_err(|_| AxonMindError::Ingest {
-                            message: "image ingest requires an active LLM provider (configure \
-                                      one in Settings) or rebuild with `--features ocr` for \
-                                      Tesseract OCR"
-                                .into(),
-                        })?
-                    }
-                } else {
-                    dispatch_parse(&path, &bytes)?
-                }
-            }
-            #[cfg(not(feature = "llm"))]
-            dispatch_parse(&path, &bytes)?
-        };
+        let doc = self.parse_source_document(&path, &bytes).await?;
         let structural_sha256 = structural_signature(&doc);
         let restored_doc = NormalizedDocument {
             title: doc.title.clone().or_else(|| Some(name.to_owned())),
@@ -1670,28 +1683,7 @@ impl AxonMindEngine {
                 message: format!("blob read failed for {}: {e}", node_id.0),
             })?;
         let path = std::path::PathBuf::from(&source_path);
-        let doc = {
-            #[cfg(feature = "llm")]
-            {
-                if is_image_path(&path) {
-                    let llm_guard = self.llm_provider.read().await;
-                    if let Some(llm) = llm_guard.as_deref() {
-                        ingest::image::parse_with_llm(&path, &bytes, sha.clone(), llm).await?
-                    } else {
-                        dispatch_parse(&path, &bytes).map_err(|_| AxonMindError::Ingest {
-                            message: "image ingest requires an active LLM provider (configure \
-                                      one in Settings) or rebuild with `--features ocr` for \
-                                      Tesseract OCR"
-                                .into(),
-                        })?
-                    }
-                } else {
-                    dispatch_parse(&path, &bytes)?
-                }
-            }
-            #[cfg(not(feature = "llm"))]
-            dispatch_parse(&path, &bytes)?
-        };
+        let doc = self.parse_source_document(&path, &bytes).await?;
         let fingerprint = DocFingerprint {
             content_sha256: sha,
             structural_sha256: structural_signature(&doc),
@@ -2586,7 +2578,7 @@ impl AxonMindEngine {
             };
 
             let path = std::path::PathBuf::from(&src);
-            let normalized = match dispatch_parse(&path, &bytes) {
+            let normalized = match self.parse_source_document(&path, &bytes).await {
                 Ok(d) => d,
                 Err(e) => {
                     errors.push(format!("{}: parse failed: {e}", doc.node_id));

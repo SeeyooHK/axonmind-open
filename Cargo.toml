@@ -48,3 +48,6 @@ tempfile = "3"
 axonmind_core   = { path = "crates/axonmind_core", version = "0.1.0" }
 axonmind_engine = { path = "crates/axonmind_engine", version = "0.1.0" }
 seeyoo_llm      = { path = "crates/seeyoo_llm",     version = "0.1.0" }
+
+[patch."https://github.com/firecrawl/pdf-inspector"]
+pdf-inspector = { path = "vendor/pdf-inspector" }
