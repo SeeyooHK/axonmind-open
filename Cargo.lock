@@ -395,6 +395,7 @@ dependencies = [
  "futures-util",
  "pdf-inspector",
  "petgraph",
+ "regex",
  "reqwest",
  "rmp-serde",
  "rusqlite",

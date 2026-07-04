@@ -239,6 +239,66 @@ pub(crate) struct NewDocumentVersion {
     pub superseded: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentAliasRecord {
+    pub alias: String,
+    pub alias_norm: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentIdentityRecord {
+    pub doc_node_id: String,
+    pub source_filename: String,
+    pub source_path: Option<String>,
+    pub raw_title: Option<String>,
+    pub canonical_title: String,
+    pub language: Option<String>,
+    pub jurisdiction: Vec<String>,
+    pub domain: Vec<String>,
+    pub instrument_type: Option<String>,
+    pub corpus: Vec<String>,
+    pub confidence: f32,
+    pub reviewed_at: Option<i64>,
+    pub updated_at: i64,
+    pub aliases: Vec<DocumentAliasRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegalUnitRecord {
+    pub unit_id: String,
+    pub doc_node_id: String,
+    pub parent_unit_id: Option<String>,
+    pub section_id: String,
+    pub unit_type: String,
+    pub label: String,
+    pub label_norm: String,
+    pub article: Option<String>,
+    pub recital: Option<String>,
+    pub section_label: Option<String>,
+    pub paragraph: Option<String>,
+    pub title: Option<String>,
+    pub ordinal: i64,
+    pub level: i64,
+    pub text: String,
+    pub span_start: i64,
+    pub span_end: i64,
+    pub page_start: Option<i64>,
+    pub page_end: Option<i64>,
+    pub path: String,
+    pub parser_profile: String,
+    pub confidence: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegalUnitRefRecord {
+    pub from_unit_id: String,
+    pub to_doc_node_id: Option<String>,
+    pub target_label: String,
+    pub target_label_norm: String,
+    pub ref_text: String,
+}
+
 // ── GraphStore ────────────────────────────────────────────────────────────────
 
 pub struct GraphStore {
@@ -494,6 +554,14 @@ pub(crate) fn to_db_str<T: Serialize>(v: &T) -> Result<String, AxonMindError> {
 pub(crate) fn from_db_str<T: for<'de> Deserialize<'de>>(s: &str) -> Result<T, AxonMindError> {
     serde_json::from_value(serde_json::Value::String(s.to_owned()))
         .map_err(|e| AxonMindError::Serialization(e.to_string()))
+}
+
+fn vec_to_json(v: &[String]) -> Result<String, AxonMindError> {
+    serde_json::to_string(v).map_err(|e| AxonMindError::Serialization(e.to_string()))
+}
+
+fn vec_from_json(s: &str) -> Result<Vec<String>, AxonMindError> {
+    serde_json::from_str(s).map_err(|e| AxonMindError::Serialization(e.to_string()))
 }
 
 /// Insert one `document_versions` row inside an open transaction. Shared by the new-HEAD and
@@ -1359,6 +1427,865 @@ impl GraphStore {
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
+    pub(crate) async fn upsert_document_identity(
+        &self,
+        identity: &DocumentIdentityRecord,
+    ) -> Result<(), AxonMindError> {
+        let identity = identity.clone();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<(), AxonMindError> {
+            let tx = conn
+                .transaction()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let jurisdiction = vec_to_json(&identity.jurisdiction)?;
+            let domain = vec_to_json(&identity.domain)?;
+            let corpus = vec_to_json(&identity.corpus)?;
+            tx.execute(
+                "INSERT INTO document_identity
+                    (doc_node_id, source_filename, source_path, raw_title, canonical_title, language,
+                     jurisdiction, domain, instrument_type, corpus, confidence, reviewed_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+                 ON CONFLICT(doc_node_id) DO UPDATE SET
+                    source_filename=excluded.source_filename,
+                    source_path=excluded.source_path,
+                    raw_title=excluded.raw_title,
+                    canonical_title=excluded.canonical_title,
+                    language=excluded.language,
+                    jurisdiction=excluded.jurisdiction,
+                    domain=excluded.domain,
+                    instrument_type=excluded.instrument_type,
+                    corpus=excluded.corpus,
+                    confidence=excluded.confidence,
+                    reviewed_at=excluded.reviewed_at,
+                    updated_at=excluded.updated_at",
+                rusqlite::params![
+                    identity.doc_node_id,
+                    identity.source_filename,
+                    identity.source_path,
+                    identity.raw_title,
+                    identity.canonical_title,
+                    identity.language,
+                    jurisdiction,
+                    domain,
+                    identity.instrument_type,
+                    corpus,
+                    identity.confidence,
+                    identity.reviewed_at,
+                    identity.updated_at,
+                ],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            tx.execute(
+                "DELETE FROM document_aliases WHERE doc_node_id = ?1",
+                rusqlite::params![identity.doc_node_id],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            for alias in &identity.aliases {
+                tx.execute(
+                    "INSERT INTO document_aliases (doc_node_id, alias, alias_norm, source)
+                     VALUES (?1,?2,?3,?4)",
+                    rusqlite::params![
+                        identity.doc_node_id,
+                        alias.alias,
+                        alias.alias_norm,
+                        alias.source
+                    ],
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            }
+            tx.execute(
+                "DELETE FROM document_identity_fts WHERE doc_node_id = ?1",
+                rusqlite::params![identity.doc_node_id],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let alias_blob = identity
+                .aliases
+                .iter()
+                .map(|alias| alias.alias.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            tx.execute(
+                "INSERT INTO document_identity_fts
+                    (doc_node_id, canonical_title, aliases, source_filename, corpus, jurisdiction, domain, instrument_type)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                rusqlite::params![
+                    identity.doc_node_id,
+                    identity.canonical_title,
+                    alias_blob,
+                    identity.source_filename,
+                    identity.corpus.join(" "),
+                    identity.jurisdiction.join(" "),
+                    identity.domain.join(" "),
+                    identity.instrument_type,
+                ],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            tx.commit()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn fetch_document_identity(
+        &self,
+        doc_node_id: &str,
+    ) -> Result<Option<DocumentIdentityRecord>, AxonMindError> {
+        let doc_id = doc_node_id.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Option<DocumentIdentityRecord>, AxonMindError> {
+            let row = conn
+                .query_row(
+                    "SELECT doc_node_id, source_filename, source_path, raw_title, canonical_title, language,
+                            jurisdiction, domain, instrument_type, corpus, confidence, reviewed_at, updated_at
+                     FROM document_identity
+                     WHERE doc_node_id = ?1",
+                    [&doc_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, Option<String>>(5)?,
+                            row.get::<_, String>(6)?,
+                            row.get::<_, String>(7)?,
+                            row.get::<_, Option<String>>(8)?,
+                            row.get::<_, String>(9)?,
+                            row.get::<_, f64>(10)?,
+                            row.get::<_, Option<i64>>(11)?,
+                            row.get::<_, i64>(12)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+
+            let Some(row) = row else {
+                return Ok(None);
+            };
+
+            let mut stmt = conn
+                .prepare(
+                    "SELECT alias, alias_norm, source
+                     FROM document_aliases
+                     WHERE doc_node_id = ?1
+                     ORDER BY alias ASC",
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let aliases = stmt
+                .query_map([&doc_id], |alias_row| {
+                    Ok(DocumentAliasRecord {
+                        alias: alias_row.get(0)?,
+                        alias_norm: alias_row.get(1)?,
+                        source: alias_row.get(2)?,
+                    })
+                })
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+
+            Ok(Some(DocumentIdentityRecord {
+                doc_node_id: row.0,
+                source_filename: row.1,
+                source_path: row.2,
+                raw_title: row.3,
+                canonical_title: row.4,
+                language: row.5,
+                jurisdiction: vec_from_json(&row.6)?,
+                domain: vec_from_json(&row.7)?,
+                instrument_type: row.8,
+                corpus: vec_from_json(&row.9)?,
+                confidence: row.10 as f32,
+                reviewed_at: row.11,
+                updated_at: row.12,
+                aliases,
+            }))
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn search_document_identities(
+        &self,
+        query: Option<&str>,
+        corpus: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<DocumentIdentityRecord>, AxonMindError> {
+        let query = query.map(|q| {
+            q.split_whitespace()
+                .map(|part| format!("\"{}\"", part.replace('"', "")))
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+        let corpus = corpus.map(str::to_owned);
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Vec<DocumentIdentityRecord>, AxonMindError> {
+            let sql = match (query.as_ref(), corpus.as_ref()) {
+                (Some(_), Some(_)) => {
+                    "SELECT di.doc_node_id
+                     FROM document_identity di
+                     JOIN document_identity_fts fts ON fts.doc_node_id = di.doc_node_id
+                     WHERE document_identity_fts MATCH ?1 AND di.corpus LIKE ?2
+                     ORDER BY di.confidence DESC, di.updated_at DESC
+                     LIMIT ?3"
+                }
+                (Some(_), None) => {
+                    "SELECT di.doc_node_id
+                     FROM document_identity di
+                     JOIN document_identity_fts fts ON fts.doc_node_id = di.doc_node_id
+                     WHERE document_identity_fts MATCH ?1
+                     ORDER BY di.confidence DESC, di.updated_at DESC
+                     LIMIT ?2"
+                }
+                (None, Some(_)) => {
+                    "SELECT doc_node_id
+                     FROM document_identity
+                     WHERE corpus LIKE ?1
+                     ORDER BY confidence DESC, updated_at DESC
+                     LIMIT ?2"
+                }
+                (None, None) => {
+                    "SELECT doc_node_id
+                     FROM document_identity
+                     ORDER BY confidence DESC, updated_at DESC
+                     LIMIT ?1"
+                }
+            };
+
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+
+            let like_corpus = corpus.as_ref().map(|value| format!("%{value}%"));
+            let doc_ids: Vec<String> = match (query.as_ref(), like_corpus.as_ref()) {
+                (Some(query), Some(corpus)) => stmt
+                    .query_map(rusqlite::params![query, corpus, limit as i64], |row| row.get(0))
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?
+                    .collect::<rusqlite::Result<_>>()
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?,
+                (Some(query), None) => stmt
+                    .query_map(rusqlite::params![query, limit as i64], |row| row.get(0))
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?
+                    .collect::<rusqlite::Result<_>>()
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?,
+                (None, Some(corpus)) => stmt
+                    .query_map(rusqlite::params![corpus, limit as i64], |row| row.get(0))
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?
+                    .collect::<rusqlite::Result<_>>()
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?,
+                (None, None) => stmt
+                    .query_map(rusqlite::params![limit as i64], |row| row.get(0))
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?
+                    .collect::<rusqlite::Result<_>>()
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?,
+            };
+
+            let mut out = Vec::with_capacity(doc_ids.len());
+            for doc_id in doc_ids {
+                if let Some(identity) = conn
+                    .query_row(
+                        "SELECT doc_node_id, source_filename, source_path, raw_title, canonical_title, language,
+                                jurisdiction, domain, instrument_type, corpus, confidence, reviewed_at, updated_at
+                         FROM document_identity
+                         WHERE doc_node_id = ?1",
+                        [&doc_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                                row.get::<_, Option<String>>(3)?,
+                                row.get::<_, String>(4)?,
+                                row.get::<_, Option<String>>(5)?,
+                                row.get::<_, String>(6)?,
+                                row.get::<_, String>(7)?,
+                                row.get::<_, Option<String>>(8)?,
+                                row.get::<_, String>(9)?,
+                                row.get::<_, f64>(10)?,
+                                row.get::<_, Option<i64>>(11)?,
+                                row.get::<_, i64>(12)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?
+                {
+                    let mut alias_stmt = conn
+                        .prepare(
+                            "SELECT alias, alias_norm, source
+                             FROM document_aliases
+                             WHERE doc_node_id = ?1
+                             ORDER BY alias ASC",
+                        )
+                        .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                    let aliases = alias_stmt
+                        .query_map([&doc_id], |row| {
+                            Ok(DocumentAliasRecord {
+                                alias: row.get(0)?,
+                                alias_norm: row.get(1)?,
+                                source: row.get(2)?,
+                            })
+                        })
+                        .map_err(|e| AxonMindError::Database(e.to_string()))?
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                        .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                    out.push(DocumentIdentityRecord {
+                        doc_node_id: identity.0,
+                        source_filename: identity.1,
+                        source_path: identity.2,
+                        raw_title: identity.3,
+                        canonical_title: identity.4,
+                        language: identity.5,
+                        jurisdiction: vec_from_json(&identity.6)?,
+                        domain: vec_from_json(&identity.7)?,
+                        instrument_type: identity.8,
+                        corpus: vec_from_json(&identity.9)?,
+                        confidence: identity.10 as f32,
+                        reviewed_at: identity.11,
+                        updated_at: identity.12,
+                        aliases,
+                    });
+                }
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn list_document_ids_by_corpus(
+        &self,
+        corpus: &str,
+    ) -> Result<Vec<String>, AxonMindError> {
+        let corpus = format!("%{corpus}%");
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Vec<String>, AxonMindError> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT doc_node_id
+                     FROM document_identity
+                     WHERE corpus LIKE ?1
+                     ORDER BY confidence DESC, updated_at DESC",
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            stmt.query_map([&corpus], |row| row.get(0))
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn count_legal_units_for_doc(
+        &self,
+        doc_node_id: &str,
+    ) -> Result<usize, AxonMindError> {
+        let doc_id = doc_node_id.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<usize, AxonMindError> {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM legal_units WHERE doc_node_id = ?1",
+                    [&doc_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(count as usize)
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn replace_legal_units(
+        &self,
+        doc_node_id: &str,
+        units: &[LegalUnitRecord],
+        refs: &[LegalUnitRefRecord],
+    ) -> Result<(), AxonMindError> {
+        let doc_id = doc_node_id.to_owned();
+        let units = units.to_vec();
+        let refs = refs.to_vec();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<(), AxonMindError> {
+            let tx = conn
+                .transaction()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            tx.execute(
+                "DELETE FROM legal_unit_refs
+                 WHERE from_unit_id IN (SELECT unit_id FROM legal_units WHERE doc_node_id = ?1)",
+                rusqlite::params![doc_id],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            tx.execute(
+                "DELETE FROM legal_units WHERE doc_node_id = ?1",
+                rusqlite::params![doc_id],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            for unit in &units {
+                tx.execute(
+                    "INSERT INTO legal_units
+                        (unit_id, doc_node_id, parent_unit_id, section_id, unit_type, label, label_norm,
+                         article, recital, section_label, paragraph, title, ordinal, level, text,
+                         span_start, span_end, page_start, page_end, path, parser_profile, confidence)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
+                    rusqlite::params![
+                        unit.unit_id,
+                        unit.doc_node_id,
+                        unit.parent_unit_id,
+                        unit.section_id,
+                        unit.unit_type,
+                        unit.label,
+                        unit.label_norm,
+                        unit.article,
+                        unit.recital,
+                        unit.section_label,
+                        unit.paragraph,
+                        unit.title,
+                        unit.ordinal,
+                        unit.level,
+                        unit.text,
+                        unit.span_start,
+                        unit.span_end,
+                        unit.page_start,
+                        unit.page_end,
+                        unit.path,
+                        unit.parser_profile,
+                        unit.confidence,
+                    ],
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            }
+            for reference in &refs {
+                tx.execute(
+                    "INSERT OR REPLACE INTO legal_unit_refs
+                        (from_unit_id, to_doc_node_id, target_label, target_label_norm, ref_text)
+                     VALUES (?1,?2,?3,?4,?5)",
+                    rusqlite::params![
+                        reference.from_unit_id,
+                        reference.to_doc_node_id,
+                        reference.target_label,
+                        reference.target_label_norm,
+                        reference.ref_text,
+                    ],
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            }
+            tx.commit()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn fetch_legal_units_by_section_ids(
+        &self,
+        section_ids: &[String],
+    ) -> Result<Vec<LegalUnitRecord>, AxonMindError> {
+        if section_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let ids = section_ids.to_vec();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Vec<LegalUnitRecord>, AxonMindError> {
+            let placeholders = ids
+                .iter()
+                .enumerate()
+                .map(|(idx, _)| format!("?{}", idx + 1))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT unit_id, doc_node_id, parent_unit_id, section_id, unit_type, label, label_norm,
+                        article, recital, section_label, paragraph, title, ordinal, level, text,
+                        span_start, span_end, page_start, page_end, path, parser_profile, confidence
+                 FROM legal_units
+                 WHERE section_id IN ({placeholders})"
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let params: Vec<&dyn rusqlite::ToSql> =
+                ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+            stmt.query_map(params.as_slice(), |row| {
+                Ok(LegalUnitRecord {
+                    unit_id: row.get(0)?,
+                    doc_node_id: row.get(1)?,
+                    parent_unit_id: row.get(2)?,
+                    section_id: row.get(3)?,
+                    unit_type: row.get(4)?,
+                    label: row.get(5)?,
+                    label_norm: row.get(6)?,
+                    article: row.get(7)?,
+                    recital: row.get(8)?,
+                    section_label: row.get(9)?,
+                    paragraph: row.get(10)?,
+                    title: row.get(11)?,
+                    ordinal: row.get(12)?,
+                    level: row.get(13)?,
+                    text: row.get(14)?,
+                    span_start: row.get(15)?,
+                    span_end: row.get(16)?,
+                    page_start: row.get(17)?,
+                    page_end: row.get(18)?,
+                    path: row.get(19)?,
+                    parser_profile: row.get(20)?,
+                    confidence: row.get::<_, f64>(21)? as f32,
+                })
+            })
+            .map_err(|e| AxonMindError::Database(e.to_string()))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| AxonMindError::Database(e.to_string()))
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn fetch_legal_unit_by_section(
+        &self,
+        doc_node_id: &str,
+        section_id: &str,
+    ) -> Result<Option<LegalUnitRecord>, AxonMindError> {
+        let doc_id = doc_node_id.to_owned();
+        let section_id = section_id.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Option<LegalUnitRecord>, AxonMindError> {
+            conn.query_row(
+                "SELECT unit_id, doc_node_id, parent_unit_id, section_id, unit_type, label, label_norm,
+                        article, recital, section_label, paragraph, title, ordinal, level, text,
+                        span_start, span_end, page_start, page_end, path, parser_profile, confidence
+                 FROM legal_units
+                 WHERE doc_node_id = ?1 AND section_id = ?2",
+                rusqlite::params![doc_id, section_id],
+                |row| {
+                    Ok(LegalUnitRecord {
+                        unit_id: row.get(0)?,
+                        doc_node_id: row.get(1)?,
+                        parent_unit_id: row.get(2)?,
+                        section_id: row.get(3)?,
+                        unit_type: row.get(4)?,
+                        label: row.get(5)?,
+                        label_norm: row.get(6)?,
+                        article: row.get(7)?,
+                        recital: row.get(8)?,
+                        section_label: row.get(9)?,
+                        paragraph: row.get(10)?,
+                        title: row.get(11)?,
+                        ordinal: row.get(12)?,
+                        level: row.get(13)?,
+                        text: row.get(14)?,
+                        span_start: row.get(15)?,
+                        span_end: row.get(16)?,
+                        page_start: row.get(17)?,
+                        page_end: row.get(18)?,
+                        path: row.get(19)?,
+                        parser_profile: row.get(20)?,
+                        confidence: row.get::<_, f64>(21)? as f32,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| AxonMindError::Database(e.to_string()))
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn fetch_legal_units_by_locator(
+        &self,
+        doc_node_id: &str,
+        article: Option<&str>,
+        recital: Option<&str>,
+        section_label: Option<&str>,
+        paragraph: Option<&str>,
+    ) -> Result<Vec<LegalUnitRecord>, AxonMindError> {
+        let doc_id = doc_node_id.to_owned();
+        let article = article.map(str::to_owned);
+        let recital = recital.map(str::to_owned);
+        let section_label = section_label.map(str::to_owned);
+        let paragraph = paragraph.map(str::to_owned);
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Vec<LegalUnitRecord>, AxonMindError> {
+            let sql = if article.is_some() {
+                "SELECT unit_id, doc_node_id, parent_unit_id, section_id, unit_type, label, label_norm,
+                        article, recital, section_label, paragraph, title, ordinal, level, text,
+                        span_start, span_end, page_start, page_end, path, parser_profile, confidence
+                 FROM legal_units
+                 WHERE doc_node_id = ?1 AND article = ?2
+                   AND ((?3 IS NULL AND paragraph IS NULL) OR paragraph = ?3)"
+            } else if recital.is_some() {
+                "SELECT unit_id, doc_node_id, parent_unit_id, section_id, unit_type, label, label_norm,
+                        article, recital, section_label, paragraph, title, ordinal, level, text,
+                        span_start, span_end, page_start, page_end, path, parser_profile, confidence
+                 FROM legal_units
+                 WHERE doc_node_id = ?1 AND recital = ?2"
+            } else {
+                "SELECT unit_id, doc_node_id, parent_unit_id, section_id, unit_type, label, label_norm,
+                        article, recital, section_label, paragraph, title, ordinal, level, text,
+                        span_start, span_end, page_start, page_end, path, parser_profile, confidence
+                 FROM legal_units
+                 WHERE doc_node_id = ?1 AND section_label = ?2"
+            };
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let params: Vec<&dyn rusqlite::ToSql> = if let Some(article) = article.as_ref() {
+                vec![
+                    &doc_id as &dyn rusqlite::ToSql,
+                    article as &dyn rusqlite::ToSql,
+                    &paragraph as &dyn rusqlite::ToSql,
+                ]
+            } else if let Some(recital) = recital.as_ref() {
+                vec![&doc_id as &dyn rusqlite::ToSql, recital as &dyn rusqlite::ToSql]
+            } else {
+                vec![
+                    &doc_id as &dyn rusqlite::ToSql,
+                    &section_label as &dyn rusqlite::ToSql,
+                ]
+            };
+            stmt.query_map(params.as_slice(), |row| {
+                Ok(LegalUnitRecord {
+                    unit_id: row.get(0)?,
+                    doc_node_id: row.get(1)?,
+                    parent_unit_id: row.get(2)?,
+                    section_id: row.get(3)?,
+                    unit_type: row.get(4)?,
+                    label: row.get(5)?,
+                    label_norm: row.get(6)?,
+                    article: row.get(7)?,
+                    recital: row.get(8)?,
+                    section_label: row.get(9)?,
+                    paragraph: row.get(10)?,
+                    title: row.get(11)?,
+                    ordinal: row.get(12)?,
+                    level: row.get(13)?,
+                    text: row.get(14)?,
+                    span_start: row.get(15)?,
+                    span_end: row.get(16)?,
+                    page_start: row.get(17)?,
+                    page_end: row.get(18)?,
+                    path: row.get(19)?,
+                    parser_profile: row.get(20)?,
+                    confidence: row.get::<_, f64>(21)? as f32,
+                })
+            })
+            .map_err(|e| AxonMindError::Database(e.to_string()))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| AxonMindError::Database(e.to_string()))
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn fetch_legal_units_by_label_norm(
+        &self,
+        doc_node_id: &str,
+        label_norm: &str,
+    ) -> Result<Vec<LegalUnitRecord>, AxonMindError> {
+        let doc_id = doc_node_id.to_owned();
+        let label_norm = label_norm.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Vec<LegalUnitRecord>, AxonMindError> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT unit_id, doc_node_id, parent_unit_id, section_id, unit_type, label, label_norm,
+                            article, recital, section_label, paragraph, title, ordinal, level, text,
+                            span_start, span_end, page_start, page_end, path, parser_profile, confidence
+                     FROM legal_units
+                     WHERE doc_node_id = ?1 AND label_norm = ?2",
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            stmt.query_map(rusqlite::params![doc_id, label_norm], |row| {
+                Ok(LegalUnitRecord {
+                    unit_id: row.get(0)?,
+                    doc_node_id: row.get(1)?,
+                    parent_unit_id: row.get(2)?,
+                    section_id: row.get(3)?,
+                    unit_type: row.get(4)?,
+                    label: row.get(5)?,
+                    label_norm: row.get(6)?,
+                    article: row.get(7)?,
+                    recital: row.get(8)?,
+                    section_label: row.get(9)?,
+                    paragraph: row.get(10)?,
+                    title: row.get(11)?,
+                    ordinal: row.get(12)?,
+                    level: row.get(13)?,
+                    text: row.get(14)?,
+                    span_start: row.get(15)?,
+                    span_end: row.get(16)?,
+                    page_start: row.get(17)?,
+                    page_end: row.get(18)?,
+                    path: row.get(19)?,
+                    parser_profile: row.get(20)?,
+                    confidence: row.get::<_, f64>(21)? as f32,
+                })
+            })
+            .map_err(|e| AxonMindError::Database(e.to_string()))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| AxonMindError::Database(e.to_string()))
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn fetch_child_legal_units(
+        &self,
+        parent_unit_id: &str,
+    ) -> Result<Vec<LegalUnitRecord>, AxonMindError> {
+        let parent_unit_id = parent_unit_id.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Vec<LegalUnitRecord>, AxonMindError> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT unit_id, doc_node_id, parent_unit_id, section_id, unit_type, label, label_norm,
+                            article, recital, section_label, paragraph, title, ordinal, level, text,
+                            span_start, span_end, page_start, page_end, path, parser_profile, confidence
+                     FROM legal_units
+                     WHERE parent_unit_id = ?1
+                     ORDER BY ordinal",
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            stmt.query_map([&parent_unit_id], |row| {
+                Ok(LegalUnitRecord {
+                    unit_id: row.get(0)?,
+                    doc_node_id: row.get(1)?,
+                    parent_unit_id: row.get(2)?,
+                    section_id: row.get(3)?,
+                    unit_type: row.get(4)?,
+                    label: row.get(5)?,
+                    label_norm: row.get(6)?,
+                    article: row.get(7)?,
+                    recital: row.get(8)?,
+                    section_label: row.get(9)?,
+                    paragraph: row.get(10)?,
+                    title: row.get(11)?,
+                    ordinal: row.get(12)?,
+                    level: row.get(13)?,
+                    text: row.get(14)?,
+                    span_start: row.get(15)?,
+                    span_end: row.get(16)?,
+                    page_start: row.get(17)?,
+                    page_end: row.get(18)?,
+                    path: row.get(19)?,
+                    parser_profile: row.get(20)?,
+                    confidence: row.get::<_, f64>(21)? as f32,
+                })
+            })
+            .map_err(|e| AxonMindError::Database(e.to_string()))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| AxonMindError::Database(e.to_string()))
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn fetch_legal_refs(
+        &self,
+        from_unit_ids: &[String],
+    ) -> Result<Vec<LegalUnitRefRecord>, AxonMindError> {
+        if from_unit_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let ids = from_unit_ids.to_vec();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Vec<LegalUnitRefRecord>, AxonMindError> {
+            let placeholders = ids
+                .iter()
+                .enumerate()
+                .map(|(idx, _)| format!("?{}", idx + 1))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT from_unit_id, to_doc_node_id, target_label, target_label_norm, ref_text
+                 FROM legal_unit_refs
+                 WHERE from_unit_id IN ({placeholders})"
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let params: Vec<&dyn rusqlite::ToSql> =
+                ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+            stmt.query_map(params.as_slice(), |row| {
+                Ok(LegalUnitRefRecord {
+                    from_unit_id: row.get(0)?,
+                    to_doc_node_id: row.get(1)?,
+                    target_label: row.get(2)?,
+                    target_label_norm: row.get(3)?,
+                    ref_text: row.get(4)?,
+                })
+            })
+            .map_err(|e| AxonMindError::Database(e.to_string()))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| AxonMindError::Database(e.to_string()))
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
     /// The Document node `document_cache` currently points at for `path` (the live HEAD), if the
     /// path is known. Feeds the ingest identity resolver (§1 matrix, path-first).
     pub(crate) async fn document_cache_node_for_path(
@@ -1624,7 +2551,10 @@ impl GraphStore {
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
-    pub(crate) async fn delete_ingest_status(&self, source_path: &str) -> Result<(), AxonMindError> {
+    pub(crate) async fn delete_ingest_status(
+        &self,
+        source_path: &str,
+    ) -> Result<(), AxonMindError> {
         let path = source_path.to_owned();
         let conn = self
             .db
@@ -1710,44 +2640,46 @@ impl GraphStore {
             .get()
             .await
             .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
-        conn.interact(move |conn| -> Result<Option<IngestStatusRow>, AxonMindError> {
-            conn.query_row(
-                "SELECT source_path, name, content_sha256, job_id, status, phase, error,
+        conn.interact(
+            move |conn| -> Result<Option<IngestStatusRow>, AxonMindError> {
+                conn.query_row(
+                    "SELECT source_path, name, content_sha256, job_id, status, phase, error,
                         started_at, updated_at, trashed_at
                  FROM document_ingest_status WHERE source_path = ?1",
-                [&path],
-                |row| {
-                    let status: String = row.get(4)?;
-                    let phase: String = row.get(5)?;
-                    Ok(IngestStatusRow {
-                        source_path: row.get(0)?,
-                        name: row.get(1)?,
-                        content_sha256: row.get(2)?,
-                        job_id: row.get(3)?,
-                        status: from_db_str(&status).map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                4,
-                                rusqlite::types::Type::Text,
-                                Box::new(e),
-                            )
-                        })?,
-                        phase: from_db_str(&phase).map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                5,
-                                rusqlite::types::Type::Text,
-                                Box::new(e),
-                            )
-                        })?,
-                        error: row.get(6)?,
-                        started_at: row.get(7)?,
-                        updated_at: row.get(8)?,
-                        trashed_at: row.get(9)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(|e| AxonMindError::Database(e.to_string()))
-        })
+                    [&path],
+                    |row| {
+                        let status: String = row.get(4)?;
+                        let phase: String = row.get(5)?;
+                        Ok(IngestStatusRow {
+                            source_path: row.get(0)?,
+                            name: row.get(1)?,
+                            content_sha256: row.get(2)?,
+                            job_id: row.get(3)?,
+                            status: from_db_str(&status).map_err(|e| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    4,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(e),
+                                )
+                            })?,
+                            phase: from_db_str(&phase).map_err(|e| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    5,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(e),
+                                )
+                            })?,
+                            error: row.get(6)?,
+                            started_at: row.get(7)?,
+                            updated_at: row.get(8)?,
+                            trashed_at: row.get(9)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(|e| AxonMindError::Database(e.to_string()))
+            },
+        )
         .await
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
@@ -1776,7 +2708,10 @@ impl GraphStore {
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
-    pub(crate) async fn restore_ingest_status(&self, source_path: &str) -> Result<(), AxonMindError> {
+    pub(crate) async fn restore_ingest_status(
+        &self,
+        source_path: &str,
+    ) -> Result<(), AxonMindError> {
         let path = source_path.to_owned();
         let conn = self
             .db
@@ -1923,7 +2858,10 @@ impl GraphStore {
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
-    pub(crate) async fn delete_document_trash(&self, source_path: &str) -> Result<(), AxonMindError> {
+    pub(crate) async fn delete_document_trash(
+        &self,
+        source_path: &str,
+    ) -> Result<(), AxonMindError> {
         let path = source_path.to_owned();
         let conn = self
             .db

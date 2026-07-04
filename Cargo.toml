@@ -31,6 +31,7 @@ futures-util = "0.3"
 petgraph = "0.6"
 rand = "0.8"
 pdf-inspector = { git = "https://github.com/firecrawl/pdf-inspector", rev = "9360c846" }
+regex = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls-vendored", "stream"] }
 rmp-serde = "1"
 rusqlite = { version = "0.38", features = ["bundled"] }

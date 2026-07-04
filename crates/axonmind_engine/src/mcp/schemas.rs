@@ -131,6 +131,87 @@ pub fn tool_defs() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "document_resolve",
+            description: "Resolve legal or reference documents by title, alias, corpus, or filename metadata.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "corpus": { "type": "string" },
+                    "limit": { "type": "integer", "description": "Maximum results. Default: 5." }
+                }
+            }),
+        },
+        ToolDef {
+            name: "document_search",
+            description: "Search grounded document sections and enrich the hits with legal locators when available.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "doc_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Restrict to specific document node ids."
+                    },
+                    "corpus": { "type": "string" },
+                    "unit_types": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional unit-type filter, e.g. article, recital, section, paragraph."
+                    },
+                    "top_k": { "type": "integer", "description": "Maximum results. Default: 8." }
+                },
+                "required": ["query"]
+            }),
+        },
+        ToolDef {
+            name: "document_read_section",
+            description: "Fetch a legal unit or document section by locator, section id, or normalized label.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "doc_id": { "type": "string" },
+                    "locator": {
+                        "type": "object",
+                        "properties": {
+                            "article": { "type": "string" },
+                            "recital": { "type": "string" },
+                            "section": { "type": "string" },
+                            "paragraph": { "type": "string" }
+                        }
+                    },
+                    "section_id": { "type": "string" },
+                    "label_norm": { "type": "string" },
+                    "include_children": { "type": "boolean" }
+                },
+                "required": ["doc_id"]
+            }),
+        },
+        ToolDef {
+            name: "document_quote",
+            description: "Return a citation-ready quote from a grounded legal unit.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "doc_id": { "type": "string" },
+                    "locator": {
+                        "type": "object",
+                        "properties": {
+                            "article": { "type": "string" },
+                            "recital": { "type": "string" },
+                            "section": { "type": "string" },
+                            "paragraph": { "type": "string" }
+                        }
+                    },
+                    "section_id": { "type": "string" },
+                    "label_norm": { "type": "string" },
+                    "max_chars": { "type": "integer", "description": "Maximum quote length. Default: 1200." }
+                },
+                "required": ["doc_id"]
+            }),
+        },
+        ToolDef {
             name: "graph_stats",
             description: "Return node/edge/evidence counts, average confidence, taint and review-required counts, and a per-kind node breakdown.",
             input_schema: json!({ "type": "object", "properties": {} }),

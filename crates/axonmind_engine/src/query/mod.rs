@@ -14,10 +14,16 @@ pub mod conflicts;
 pub mod evidence;
 pub mod focus;
 pub mod impact;
+pub mod legal;
 pub mod reasoning;
 pub mod search;
 
 pub use conflicts::{ConflictPair, EdgeWithEvidence, FindConflictsInput, FindConflictsOutput};
+pub use legal::{
+    DocumentQuoteInput, DocumentQuoteOutput, DocumentReadSectionInput, DocumentReadSectionOutput,
+    DocumentResolveInput, DocumentResolveOutput, DocumentSearchInput, DocumentSearchOutput,
+    DocumentSearchResult, LegalLocator, PageLocator, ResolvedDocument,
+};
 pub use reasoning::{ReasoningSearchInput, ReasoningSearchOutput, RetrievedSection};
 
 use axonmind_core::{Edge, Evidence, EvidenceId, Node, NodeId, NodeKind};

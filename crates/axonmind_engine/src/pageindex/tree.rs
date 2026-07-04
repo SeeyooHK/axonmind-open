@@ -37,6 +37,7 @@ pub struct SectionRow {
 }
 
 /// Document metadata + flattened sections for one atomic upsert.
+#[derive(Debug, Clone)]
 pub struct PersistTree {
     pub doc_node_id: String,
     pub sha256: String,

@@ -3,6 +3,7 @@ pub mod config;
 pub mod events;
 pub mod extract;
 pub mod ingest;
+pub mod legal;
 pub mod mcp;
 pub mod pageindex;
 pub mod query;
@@ -13,8 +14,8 @@ pub mod workers;
 use axonmind_core::{AxonMindError, EdgeKind, KpiAttrs, KpiUnit, Node, NodeId, NodeKind};
 use chrono::Datelike;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, RwLock, Semaphore, broadcast};
 
 use crate::config::EngineConfig;
@@ -29,11 +30,14 @@ use crate::ingest::{
 };
 use crate::pageindex::{PageIndexSearchCfg, PageIndexStore};
 use crate::query::{
-    ExplainKpiInput, ExplainKpiOutput, FindConflictsInput, FindConflictsOutput, FocusKpiInput,
-    FocusKpiOutput, GetEvidenceInput, GetEvidenceOutput, GraphDiff, GraphSearchInput,
-    GraphSearchOutput, GraphStatsOutput, ImpactRadiusInput, ImpactRadiusOutput, NodeKindCount,
-    ReasoningSearchInput, ReasoningSearchOutput, SuggestActionsInput, SuggestActionsOutput,
-    TraceDecisionInput, TraceDecisionOutput,
+    DocumentQuoteInput, DocumentQuoteOutput, DocumentReadSectionInput, DocumentReadSectionOutput,
+    DocumentResolveInput, DocumentResolveOutput, DocumentSearchInput, DocumentSearchOutput,
+    DocumentSearchResult, ExplainKpiInput, ExplainKpiOutput, FindConflictsInput,
+    FindConflictsOutput, FocusKpiInput, FocusKpiOutput, GetEvidenceInput, GetEvidenceOutput,
+    GraphDiff, GraphSearchInput, GraphSearchOutput, GraphStatsOutput, ImpactRadiusInput,
+    ImpactRadiusOutput, LegalLocator, NodeKindCount, ReasoningSearchInput, ReasoningSearchOutput,
+    ResolvedDocument, SuggestActionsInput, SuggestActionsOutput, TraceDecisionInput,
+    TraceDecisionOutput,
 };
 use crate::store::{
     DocumentSummary, GraphCache, GraphMutation, GraphStore, IngestPhase, IngestStatusKind,
@@ -145,6 +149,72 @@ fn is_image_path(path: &std::path::Path) -> bool {
                 "jpg" | "jpeg" | "png" | "bmp" | "webp" | "tiff" | "tif" | "gif"
             )
         })
+}
+
+fn locator_from_unit(unit: &crate::store::LegalUnitRecord) -> LegalLocator {
+    LegalLocator {
+        article: unit.article.clone(),
+        recital: unit.recital.clone(),
+        section: unit.section_label.clone(),
+        paragraph: unit.paragraph.clone(),
+    }
+}
+
+fn page_from_unit(unit: &crate::store::LegalUnitRecord) -> crate::query::PageLocator {
+    crate::query::PageLocator {
+        start: unit.page_start,
+        end: unit.page_end,
+    }
+}
+
+fn unit_display_title(unit: &crate::store::LegalUnitRecord) -> String {
+    match unit.title.as_deref() {
+        Some(title) if !title.is_empty() => format!("{} - {}", unit.label, title),
+        _ => unit.label.clone(),
+    }
+}
+
+fn build_citation(canonical_title: &str, locator: &LegalLocator) -> String {
+    if let Some(article) = locator.article.as_deref() {
+        if let Some(paragraph) = locator.paragraph.as_deref() {
+            format!("{canonical_title}, Article {article}({paragraph})")
+        } else {
+            format!("{canonical_title}, Article {article}")
+        }
+    } else if let Some(recital) = locator.recital.as_deref() {
+        format!("{canonical_title}, Recital {recital}")
+    } else if let Some(section) = locator.section.as_deref() {
+        format!("{canonical_title}, Section {section}")
+    } else {
+        canonical_title.to_string()
+    }
+}
+
+fn snippet(text: &str, max_chars: usize) -> String {
+    let mut snippet: String = text.chars().take(max_chars).collect();
+    if text.chars().count() > max_chars {
+        snippet.push_str("...");
+    }
+    snippet
+}
+
+fn italian_query_expansions(query: &str) -> Vec<&'static str> {
+    let lower = query.to_lowercase();
+    let mut expansions = Vec::new();
+    if lower.contains("personal data breach") {
+        expansions.push("violazione dei dati personali");
+    }
+    if lower.contains("controller") {
+        expansions.push("titolare");
+    }
+    if lower.contains("processor") {
+        expansions.push("responsabile");
+    }
+    if lower.contains("supervisory authority") {
+        expansions.push("autorita di controllo");
+        expansions.push("garante");
+    }
+    expansions
 }
 
 impl AxonMindEngine {
@@ -360,7 +430,8 @@ impl AxonMindEngine {
         recursive: bool,
     ) -> Result<Vec<QueuedFile>, AxonMindError> {
         let mut files = Vec::new();
-        let mut stack: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+        let mut stack: Vec<std::path::PathBuf> =
+            paths.iter().map(std::path::PathBuf::from).collect();
         while let Some(path) = stack.pop() {
             let meta = tokio::fs::metadata(&path)
                 .await
@@ -377,17 +448,19 @@ impl AxonMindEngine {
             if !meta.is_dir() {
                 continue;
             }
-            let mut entries = tokio::fs::read_dir(&path)
-                .await
-                .map_err(|e| AxonMindError::Ingest {
-                    message: format!("{}: {e}", path.display()),
-                })?;
-            while let Some(entry) = entries
-                .next_entry()
-                .await
-                .map_err(|e| AxonMindError::Ingest {
-                    message: format!("{}: {e}", path.display()),
-                })?
+            let mut entries =
+                tokio::fs::read_dir(&path)
+                    .await
+                    .map_err(|e| AxonMindError::Ingest {
+                        message: format!("{}: {e}", path.display()),
+                    })?;
+            while let Some(entry) =
+                entries
+                    .next_entry()
+                    .await
+                    .map_err(|e| AxonMindError::Ingest {
+                        message: format!("{}: {e}", path.display()),
+                    })?
             {
                 let child = entry.path();
                 let name = child.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -466,14 +539,14 @@ impl AxonMindEngine {
                         .collect::<String>();
                     return ingest::image::parse_with_llm(path, bytes, sha256, llm).await;
                 }
-                return Self::parse_blocking_document(path, bytes).await.map_err(|_| {
-                    AxonMindError::Ingest {
+                return Self::parse_blocking_document(path, bytes)
+                    .await
+                    .map_err(|_| AxonMindError::Ingest {
                         message: "image ingest requires an active LLM provider (configure \
                                   one in Settings) or rebuild with `--features ocr` for \
                                   Tesseract OCR"
                             .into(),
-                    }
-                });
+                    });
             }
         }
 
@@ -511,10 +584,12 @@ impl AxonMindEngine {
             for (index, file) in files.into_iter().enumerate() {
                 let path_str = file.path.to_string_lossy().to_string();
                 let maybe_control = engine.ingest_jobs.lock().await;
-                let Some(control) = maybe_control.get(&job_id_for_task.0).map(|c| (
-                    Arc::clone(&c.cancel_requested),
-                    Arc::clone(&c.cancelled_paths),
-                )) else {
+                let Some(control) = maybe_control.get(&job_id_for_task.0).map(|c| {
+                    (
+                        Arc::clone(&c.cancel_requested),
+                        Arc::clone(&c.cancelled_paths),
+                    )
+                }) else {
                     break;
                 };
                 drop(maybe_control);
@@ -562,7 +637,10 @@ impl AxonMindEngine {
                     }
                 });
 
-                let hard_timeout = std::cmp::min(expected.saturating_mul(3), std::time::Duration::from_secs(900));
+                let hard_timeout = std::cmp::min(
+                    expected.saturating_mul(3),
+                    std::time::Duration::from_secs(900),
+                );
                 match tokio::time::timeout(
                     hard_timeout,
                     engine.ingest_file(&file.path, &options, &job_id_for_task),
@@ -592,7 +670,9 @@ impl AxonMindEngine {
                     Ok(Err(err)) => {
                         done.store(true, Ordering::Relaxed);
                         processed += 1;
-                        summary.errors.push(format!("{}: {}", file.path.display(), err));
+                        summary
+                            .errors
+                            .push(format!("{}: {}", file.path.display(), err));
                         let _ = engine
                             .fail_ingest_status(
                                 &file.path,
@@ -614,7 +694,9 @@ impl AxonMindEngine {
                         let _ = engine
                             .fail_ingest_status(&file.path, None, &message, None)
                             .await;
-                        summary.errors.push(format!("{}: {}", file.path.display(), message));
+                        summary
+                            .errors
+                            .push(format!("{}: {}", file.path.display(), message));
                         let _ = engine.event_tx.send(EngineEvent::IngestFileFailed {
                             job_id: job_id_for_task.clone(),
                             path: file.path.clone(),
@@ -938,9 +1020,7 @@ impl AxonMindEngine {
             .await?;
 
         // Parse to compute structural fingerprint.
-        let doc = self
-            .parse_source_document(path, &bytes)
-            .await?;
+        let doc = self.parse_source_document(path, &bytes).await?;
         let structural_sha256 = structural_signature(&doc);
         let next_fp = DocFingerprint {
             content_sha256,
@@ -1251,14 +1331,38 @@ impl AxonMindEngine {
         sha256: &str,
         summary: &mut IngestSummary,
     ) {
-        if let Err(e) = self
-            .store
-            .upsert_document_markdown(sha256, &render_markdown(doc))
-            .await
-        {
+        let markdown = render_markdown(doc);
+        if let Err(e) = self.store.upsert_document_markdown(sha256, &markdown).await {
             summary.errors.push(format!("document_markdown cache: {e}"));
         }
+        let identity = legal::infer_document_identity(
+            &doc_node_id.0,
+            doc.title.as_deref(),
+            doc.source_path.as_ref().and_then(|p| p.to_str()),
+        );
+        if let Err(e) = self.store.upsert_document_identity(&identity).await {
+            summary.errors.push(format!("document_identity: {e}"));
+        }
         let page_store = PageIndexStore::new(self.store.db.0.clone());
+        if let Some(mut legal_index) = legal::build_legal_index(
+            &doc_node_id.0,
+            doc.title.as_deref(),
+            doc.source_path.as_ref().and_then(|p| p.to_str()),
+            &markdown,
+        ) {
+            legal_index.tree.sha256 = sha256.to_string();
+            if let Err(e) = self
+                .store
+                .replace_legal_units(&doc_node_id.0, &legal_index.units, &legal_index.refs)
+                .await
+            {
+                summary.errors.push(format!("legal_units: {e}"));
+            }
+            if let Err(e) = page_store.upsert_document(&legal_index.tree).await {
+                summary.errors.push(format!("pageindex: {e}"));
+            }
+            return;
+        }
         let llm = self.llm_provider.read().await.clone();
         if let Err(e) = pageindex::index_document(
             doc,
@@ -1309,13 +1413,17 @@ impl AxonMindEngine {
             .ok_or_else(|| AxonMindError::Ingest {
                 message: format!("document not found for source_path: {source_path}"),
             })?;
-        let versions = self.store.list_document_versions(&doc.logical_doc_id).await?;
-        let head_sha = versions
-            .first()
-            .map(|v| v.sha256.clone())
-            .ok_or_else(|| AxonMindError::Ingest {
-                message: format!("no versions found for {}", doc.logical_doc_id),
-            })?;
+        let versions = self
+            .store
+            .list_document_versions(&doc.logical_doc_id)
+            .await?;
+        let head_sha =
+            versions
+                .first()
+                .map(|v| v.sha256.clone())
+                .ok_or_else(|| AxonMindError::Ingest {
+                    message: format!("no versions found for {}", doc.logical_doc_id),
+                })?;
         let mut shas: Vec<String> = versions.into_iter().map(|v| v.sha256).collect();
         shas.sort();
         shas.dedup();
@@ -1327,7 +1435,10 @@ impl AxonMindEngine {
         Ok(())
     }
 
-    pub async fn restore_document(self: &Arc<Self>, source_path: &str) -> Result<(), AxonMindError> {
+    pub async fn restore_document(
+        self: &Arc<Self>,
+        source_path: &str,
+    ) -> Result<(), AxonMindError> {
         if self.store.fetch_ingest_status(source_path).await?.is_some() {
             self.store.restore_ingest_status(source_path).await?;
             return Ok(());
@@ -1337,9 +1448,12 @@ impl AxonMindEngine {
                 message: format!("trash row not found for source_path: {source_path}"),
             });
         };
-        let head_sha = row.head_sha256.clone().ok_or_else(|| AxonMindError::Ingest {
-            message: format!("trash row missing head sha for source_path: {source_path}"),
-        })?;
+        let head_sha = row
+            .head_sha256
+            .clone()
+            .ok_or_else(|| AxonMindError::Ingest {
+                message: format!("trash row missing head sha for source_path: {source_path}"),
+            })?;
         let summary = self
             .ingest_blob_restore(source_path, &row.name, &head_sha)
             .await?;
@@ -1438,6 +1552,65 @@ impl AxonMindEngine {
             .upsert_document_markdown(sha256, &markdown)
             .await?;
         Ok(markdown)
+    }
+
+    async fn ensure_document_identity_catalog(&self) -> Result<(), AxonMindError> {
+        for node in self.store.fetch_nodes_by_kind(NodeKind::Document).await? {
+            let source_path = node
+                .attrs
+                .get("source_path")
+                .and_then(|value| value.as_str());
+            let identity =
+                legal::infer_document_identity(&node.id.0, Some(&node.name), source_path);
+            self.store.upsert_document_identity(&identity).await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_document_grounding(&self, node_id: &NodeId) -> Result<(), AxonMindError> {
+        let node = self
+            .store
+            .fetch_node(node_id)
+            .await?
+            .ok_or_else(|| AxonMindError::Preview {
+                message: "Document not found.".to_string(),
+            })?;
+        if node.kind != NodeKind::Document {
+            return Err(AxonMindError::Preview {
+                message: "Document not found.".to_string(),
+            });
+        }
+
+        let source_path = node
+            .attrs
+            .get("source_path")
+            .and_then(|value| value.as_str());
+        let identity = legal::infer_document_identity(&node.id.0, Some(&node.name), source_path);
+        self.store.upsert_document_identity(&identity).await?;
+
+        if self.store.count_legal_units_for_doc(&node.id.0).await? > 0 {
+            return Ok(());
+        }
+
+        let markdown = self.get_document_content(&node.id).await?;
+        let Some(mut legal_index) =
+            legal::build_legal_index(&node.id.0, Some(&node.name), source_path, &markdown)
+        else {
+            return Ok(());
+        };
+        legal_index.tree.sha256 = node
+            .attrs
+            .get("sha256")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        self.store
+            .replace_legal_units(&node.id.0, &legal_index.units, &legal_index.refs)
+            .await?;
+        PageIndexStore::new(self.store.db.0.clone())
+            .upsert_document(&legal_index.tree)
+            .await?;
+        Ok(())
     }
 
     async fn ingest_blob_restore(
@@ -1714,10 +1887,7 @@ impl AxonMindEngine {
     /// On-demand enrichment: same as `regenerate_document` but forces the LLM extraction pass even
     /// when `enable_llm_extraction` is off — so hosts can keep uploads structural-only and enrich
     /// a document explicitly. Requires an active LLM provider (`update_llm_provider`).
-    pub async fn enrich_document(
-        &self,
-        node_id: NodeId,
-    ) -> Result<IngestSummary, AxonMindError> {
+    pub async fn enrich_document(&self, node_id: NodeId) -> Result<IngestSummary, AxonMindError> {
         self.regenerate_inner(node_id, true).await
     }
 
@@ -1925,6 +2095,372 @@ impl AxonMindEngine {
             ..Default::default()
         };
         pageindex::search::reasoning_search(input, &store, llm.as_deref(), &cfg).await
+    }
+
+    pub async fn document_resolve(
+        &self,
+        input: DocumentResolveInput,
+    ) -> Result<DocumentResolveOutput, AxonMindError> {
+        self.ensure_document_identity_catalog().await?;
+        let identities = self
+            .store
+            .search_document_identities(
+                input.query.as_deref(),
+                input.corpus.as_deref(),
+                input.limit.unwrap_or(5),
+            )
+            .await?;
+        Ok(DocumentResolveOutput {
+            documents: identities
+                .into_iter()
+                .map(|identity| ResolvedDocument {
+                    doc_id: identity.doc_node_id,
+                    canonical_title: identity.canonical_title,
+                    source_filename: identity.source_filename,
+                    aliases: identity
+                        .aliases
+                        .into_iter()
+                        .map(|alias| alias.alias)
+                        .collect(),
+                    language: identity.language,
+                    corpus: identity.corpus,
+                    confidence: identity.confidence,
+                })
+                .collect(),
+        })
+    }
+
+    pub async fn document_search(
+        &self,
+        input: DocumentSearchInput,
+    ) -> Result<DocumentSearchOutput, AxonMindError> {
+        let query = input.query.clone();
+        let corpus = input.corpus.clone();
+        let mut scope = input.doc_ids.unwrap_or_default();
+        if scope.is_empty() {
+            self.ensure_document_identity_catalog().await?;
+            if let Some(corpus) = corpus.as_deref() {
+                scope = self.store.list_document_ids_by_corpus(corpus).await?;
+            }
+        }
+        for doc_id in &scope {
+            self.ensure_document_grounding(&NodeId(doc_id.clone()))
+                .await?;
+        }
+
+        let top_k = input.top_k.unwrap_or(8);
+        let mut scoped_identities = Vec::new();
+        for doc_id in &scope {
+            if let Some(identity) = self.store.fetch_document_identity(doc_id).await? {
+                scoped_identities.push(identity);
+            }
+        }
+        let expanded_query = if scoped_identities
+            .iter()
+            .any(|identity| identity.language.as_deref() == Some("it"))
+        {
+            let expansions = italian_query_expansions(&query);
+            if expansions.is_empty() {
+                query.clone()
+            } else {
+                format!("{query} {}", expansions.join(" "))
+            }
+        } else {
+            query.clone()
+        };
+        let reasoning = self
+            .reasoning_search(ReasoningSearchInput {
+                query: expanded_query,
+                doc_node_ids: if scope.is_empty() {
+                    None
+                } else {
+                    Some(scope.clone())
+                },
+                max_results: Some((top_k * 4).max(top_k)),
+            })
+            .await?;
+
+        let legal_units = self
+            .store
+            .fetch_legal_units_by_section_ids(
+                &reasoning
+                    .sections
+                    .iter()
+                    .map(|section| section.section_id.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+        let unit_by_section: std::collections::HashMap<String, crate::store::LegalUnitRecord> = legal_units
+            .iter()
+            .cloned()
+            .map(|unit| (unit.section_id.clone(), unit))
+            .collect();
+        let unit_by_id: std::collections::HashMap<String, crate::store::LegalUnitRecord> = legal_units
+            .iter()
+            .cloned()
+            .map(|unit| (unit.unit_id.clone(), unit))
+            .collect();
+
+        let allowed_types = input
+            .unit_types
+            .map(|types| types.into_iter().collect::<std::collections::HashSet<_>>());
+        let mut results = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for section in reasoning.sections {
+            let maybe_unit = unit_by_section.get(&section.section_id);
+            if let Some(unit) = maybe_unit {
+                if let Some(allowed) = allowed_types.as_ref() {
+                    if !allowed.contains(&unit.unit_type) {
+                        continue;
+                    }
+                }
+            }
+            let result = if let Some(unit) = maybe_unit {
+                if !seen.insert((section.doc_node_id.clone(), unit.label_norm.clone())) {
+                    continue;
+                }
+                DocumentSearchResult {
+                    doc_id: section.doc_node_id.clone(),
+                    section_id: section.section_id.clone(),
+                    unit_id: Some(unit.unit_id.clone()),
+                    locator: Some(locator_from_unit(unit)),
+                    page: page_from_unit(unit),
+                    title: unit_display_title(unit),
+                    snippet: snippet(&unit.text, 320),
+                    score_source: if reasoning.reasoning_applied {
+                        "bm25_llm_rerank".to_string()
+                    } else {
+                        "bm25".to_string()
+                    },
+                    citation_safe: true,
+                }
+            } else {
+                if !seen.insert((section.doc_node_id.clone(), section.section_id.clone())) {
+                    continue;
+                }
+                DocumentSearchResult {
+                    doc_id: section.doc_node_id.clone(),
+                    section_id: section.section_id.clone(),
+                    unit_id: None,
+                    locator: None,
+                    page: crate::query::PageLocator {
+                        start: None,
+                        end: None,
+                    },
+                    title: section.title.clone(),
+                    snippet: snippet(&section.text, 320),
+                    score_source: if reasoning.reasoning_applied {
+                        "bm25_llm_rerank".to_string()
+                    } else {
+                        "bm25".to_string()
+                    },
+                    citation_safe: false,
+                }
+            };
+            results.push(result);
+            if results.len() >= top_k {
+                break;
+            }
+        }
+
+        if results.len() < top_k {
+            let seed_unit_ids = results
+                .iter()
+                .filter_map(|result| result.unit_id.clone())
+                .collect::<Vec<_>>();
+            let refs = self.store.fetch_legal_refs(&seed_unit_ids).await?;
+            let gdpr_doc_id = if corpus.as_deref() == Some("gdpr") || scope.is_empty() {
+                self.document_resolve(DocumentResolveInput {
+                    query: Some("GDPR".to_string()),
+                    corpus: Some("gdpr".to_string()),
+                    limit: Some(5),
+                })
+                .await?
+                .documents
+                .into_iter()
+                .find(|doc| doc.canonical_title.contains("2016/679"))
+                .map(|doc| doc.doc_id)
+            } else {
+                None
+            };
+
+            for reference in refs {
+                let Some(source_unit) = unit_by_id.get(&reference.from_unit_id) else {
+                    continue;
+                };
+                let target_doc_id = if let Some(doc_id) = reference.to_doc_node_id.clone() {
+                    doc_id
+                } else if source_unit.parser_profile == "edpb_guidance_en"
+                    && (reference.target_label_norm.starts_with("art.")
+                        || reference.target_label_norm.starts_with("recital."))
+                {
+                    gdpr_doc_id
+                        .clone()
+                        .unwrap_or_else(|| source_unit.doc_node_id.clone())
+                } else {
+                    source_unit.doc_node_id.clone()
+                };
+                self.ensure_document_grounding(&NodeId(target_doc_id.clone()))
+                    .await?;
+                let matches = self
+                    .store
+                    .fetch_legal_units_by_label_norm(&target_doc_id, &reference.target_label_norm)
+                    .await?;
+                for unit in matches {
+                    if let Some(allowed) = allowed_types.as_ref() {
+                        if !allowed.contains(&unit.unit_type) {
+                            continue;
+                        }
+                    }
+                    if !seen.insert((unit.doc_node_id.clone(), unit.label_norm.clone())) {
+                        continue;
+                    }
+                    results.push(DocumentSearchResult {
+                        doc_id: unit.doc_node_id.clone(),
+                        section_id: unit.section_id.clone(),
+                        unit_id: Some(unit.unit_id.clone()),
+                        locator: Some(locator_from_unit(&unit)),
+                        page: page_from_unit(&unit),
+                        title: unit_display_title(&unit),
+                        snippet: snippet(&unit.text, 320),
+                        score_source: "cross_reference".to_string(),
+                        citation_safe: true,
+                    });
+                    if results.len() >= top_k {
+                        break;
+                    }
+                }
+                if results.len() >= top_k {
+                    break;
+                }
+            }
+        }
+
+        Ok(DocumentSearchOutput {
+            results,
+            reasoning_applied: reasoning.reasoning_applied,
+        })
+    }
+
+    pub async fn document_read_section(
+        &self,
+        input: DocumentReadSectionInput,
+    ) -> Result<DocumentReadSectionOutput, AxonMindError> {
+        let doc_id = NodeId(input.doc_id.clone());
+        self.ensure_document_grounding(&doc_id).await?;
+        let matches = self
+            .resolve_legal_units(
+                &input.doc_id,
+                input.section_id.as_deref(),
+                input.locator.as_ref(),
+                input.label_norm.as_deref(),
+            )
+            .await?;
+        if matches.is_empty() {
+            return Err(AxonMindError::ValidationFailed {
+                message: "no legal unit matched the requested locator".to_string(),
+            });
+        }
+        if matches.len() > 1 {
+            return Err(AxonMindError::ValidationFailed {
+                message: "multiple legal units matched the requested locator".to_string(),
+            });
+        }
+        let unit = matches.into_iter().next().expect("single match");
+        let mut text = unit.text.clone();
+        if input.include_children.unwrap_or(false) && text.trim().is_empty() {
+            let children = self.store.fetch_child_legal_units(&unit.unit_id).await?;
+            text = children
+                .into_iter()
+                .map(|child| child.text)
+                .collect::<Vec<_>>()
+                .join("\n\n");
+        }
+        Ok(DocumentReadSectionOutput {
+            doc_id: input.doc_id,
+            unit_id: unit.unit_id.clone(),
+            section_id: unit.section_id.clone(),
+            title: unit_display_title(&unit),
+            locator: locator_from_unit(&unit),
+            page: page_from_unit(&unit),
+            text,
+            citation_safe: true,
+        })
+    }
+
+    pub async fn document_quote(
+        &self,
+        input: DocumentQuoteInput,
+    ) -> Result<DocumentQuoteOutput, AxonMindError> {
+        let section = self
+            .document_read_section(DocumentReadSectionInput {
+                doc_id: input.doc_id.clone(),
+                locator: input.locator.clone(),
+                section_id: input.section_id.clone(),
+                label_norm: input.label_norm.clone(),
+                include_children: Some(false),
+            })
+            .await?;
+        let identity = self
+            .store
+            .fetch_document_identity(&input.doc_id)
+            .await?
+            .ok_or_else(|| AxonMindError::ValidationFailed {
+                message: "document identity missing for quoted document".to_string(),
+            })?;
+        let max_chars = input.max_chars.unwrap_or(1200);
+        let truncated = section.text.chars().count() > max_chars;
+        let quote = if truncated {
+            section.text.chars().take(max_chars).collect::<String>()
+        } else {
+            section.text.clone()
+        };
+        Ok(DocumentQuoteOutput {
+            quote,
+            citation: build_citation(&identity.canonical_title, &section.locator),
+            locator: section.locator,
+            page: section.page,
+            truncated,
+            citation_safe: true,
+        })
+    }
+
+    async fn resolve_legal_units(
+        &self,
+        doc_id: &str,
+        section_id: Option<&str>,
+        locator: Option<&LegalLocator>,
+        label_norm: Option<&str>,
+    ) -> Result<Vec<crate::store::LegalUnitRecord>, AxonMindError> {
+        if let Some(section_id) = section_id {
+            return Ok(self
+                .store
+                .fetch_legal_unit_by_section(doc_id, section_id)
+                .await?
+                .into_iter()
+                .collect());
+        }
+        if let Some(locator) = locator {
+            return self
+                .store
+                .fetch_legal_units_by_locator(
+                    doc_id,
+                    locator.article.as_deref(),
+                    locator.recital.as_deref(),
+                    locator.section.as_deref(),
+                    locator.paragraph.as_deref(),
+                )
+                .await;
+        }
+        if let Some(label_norm) = label_norm {
+            return self
+                .store
+                .fetch_legal_units_by_label_norm(doc_id, label_norm)
+                .await;
+        }
+        Err(AxonMindError::ValidationFailed {
+            message: "one of section_id, locator, or label_norm is required".to_string(),
+        })
     }
 
     pub async fn graph_stats(&self) -> Result<GraphStatsOutput, AxonMindError> {

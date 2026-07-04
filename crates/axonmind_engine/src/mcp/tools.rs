@@ -4,6 +4,7 @@ use serde_json::Value;
 use crate::AxonMindEngine;
 use crate::mcp::schemas::{self, ToolDef};
 use crate::query::{
+    DocumentQuoteInput, DocumentReadSectionInput, DocumentResolveInput, DocumentSearchInput,
     ExplainKpiInput, FindConflictsInput, FocusKpiInput, GetEvidenceInput, GraphExportV1,
     GraphSearchInput, ImpactRadiusInput, ReasoningSearchInput, SuggestActionsInput,
     TraceDecisionInput, diff_exports,
@@ -62,6 +63,22 @@ pub async fn call_tool(
             engine
                 .reasoning_search(parse!(ReasoningSearchInput))
                 .await?
+        )),
+        "document_resolve" => Ok(serialize!(
+            engine
+                .document_resolve(parse!(DocumentResolveInput))
+                .await?
+        )),
+        "document_search" => Ok(serialize!(
+            engine.document_search(parse!(DocumentSearchInput)).await?
+        )),
+        "document_read_section" => Ok(serialize!(
+            engine
+                .document_read_section(parse!(DocumentReadSectionInput))
+                .await?
+        )),
+        "document_quote" => Ok(serialize!(
+            engine.document_quote(parse!(DocumentQuoteInput)).await?
         )),
         "graph_stats" => Ok(serialize!(engine.graph_stats().await?)),
         "graph_diff" => {
