@@ -8,6 +8,7 @@ pub mod mcp;
 pub mod pageindex;
 pub mod query;
 pub mod store;
+pub mod structure;
 pub(crate) mod util;
 pub mod workers;
 
@@ -41,9 +42,10 @@ use crate::query::{
 };
 use crate::store::{
     DocumentSummary, GraphCache, GraphMutation, GraphStore, IngestPhase, IngestStatusKind,
-    IngestStatusRow, TrashRow,
+    IngestStatusRow, LegalUnitRecord, TrashRow,
     generations::{GenerationId, GenerationSummary},
 };
+use crate::structure::{InstallReport, PackageInfo, StructurePackage};
 
 /// Max number of existing concept-node names passed to the LLM entity extractor as the
 /// cross-document "avoid duplicating" hint. Bounds prompt size as the graph grows.
@@ -137,6 +139,51 @@ fn summarize_mutations(mutations: &[GraphMutation]) -> IngestSummary {
         }
     }
     summary
+}
+
+fn structure_legacy_units(index: &crate::structure::ParsedDocumentIndex) -> Vec<LegalUnitRecord> {
+    index
+        .units
+        .iter()
+        .map(|unit| LegalUnitRecord {
+            unit_id: unit.unit_id.clone(),
+            doc_node_id: unit.doc_node_id.clone(),
+            parent_unit_id: unit.parent_unit_id.clone(),
+            section_id: unit.section_id.clone(),
+            unit_type: unit.unit_kind.clone(),
+            label: unit.label.clone(),
+            label_norm: unit.label_norm.clone(),
+            article: unit
+                .locators
+                .get("article")
+                .cloned()
+                .or_else(|| unit.locators.get("number").cloned()),
+            recital: unit.locators.get("recital").cloned(),
+            section_label: unit
+                .locators
+                .get("section")
+                .cloned()
+                .or_else(|| unit.locators.get("number").cloned()),
+            paragraph: unit.locators.get("paragraph").cloned().or_else(|| {
+                if unit.unit_kind == "paragraph" {
+                    unit.locators.get("number").cloned()
+                } else {
+                    None
+                }
+            }),
+            title: unit.title.clone(),
+            ordinal: unit.ordinal,
+            level: unit.level,
+            text: unit.text.clone(),
+            span_start: unit.span_start,
+            span_end: unit.span_end,
+            page_start: unit.page_start,
+            page_end: unit.page_end,
+            path: unit.path.clone(),
+            parser_profile: format!("{}/{}", unit.package_name, unit.profile_name),
+            confidence: unit.confidence,
+        })
+        .collect()
 }
 
 #[cfg(feature = "llm")]
@@ -1335,15 +1382,77 @@ impl AxonMindEngine {
         if let Err(e) = self.store.upsert_document_markdown(sha256, &markdown).await {
             summary.errors.push(format!("document_markdown cache: {e}"));
         }
-        let identity = legal::infer_document_identity(
+        let installed_packages = self
+            .store
+            .load_structure_packages()
+            .await
+            .unwrap_or_default();
+        let derived = crate::structure::derive_identity(
             &doc_node_id.0,
             doc.title.as_deref(),
             doc.source_path.as_ref().and_then(|p| p.to_str()),
+            Some(&markdown),
+            &installed_packages,
         );
+        let identity = if installed_packages.is_empty() {
+            legal::infer_document_identity(
+                &doc_node_id.0,
+                doc.title.as_deref(),
+                doc.source_path.as_ref().and_then(|p| p.to_str()),
+            )
+        } else {
+            derived.identity.clone()
+        };
         if let Err(e) = self.store.upsert_document_identity(&identity).await {
             summary.errors.push(format!("document_identity: {e}"));
         }
         let page_store = PageIndexStore::new(self.store.db.0.clone());
+        if let Some(profile_name) = derived.profile_name.as_deref() {
+            if let Some(pkg) = installed_packages.iter().find(|pkg| {
+                pkg.profiles
+                    .iter()
+                    .any(|profile| profile.profile.name == profile_name)
+            }) {
+                if let Some(profile) = pkg
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.profile.name == profile_name)
+                {
+                    match crate::structure::parse_document(
+                        &pkg.manifest.package.name,
+                        profile,
+                        &doc_node_id.0,
+                        &identity,
+                        &markdown,
+                    ) {
+                        Ok(Some(mut parsed)) => {
+                            parsed.tree.sha256 = sha256.to_string();
+                            if let Err(e) = self
+                                .store
+                                .replace_legal_units(
+                                    &doc_node_id.0,
+                                    &structure_legacy_units(&parsed),
+                                    &parsed.refs,
+                                )
+                                .await
+                            {
+                                summary.errors.push(format!("legal_units: {e}"));
+                            }
+                            if let Err(e) = page_store.upsert_document(&parsed.tree).await {
+                                summary.errors.push(format!("pageindex: {e}"));
+                            }
+                            return;
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            summary
+                                .errors
+                                .push(format!("structure parse {}: {e}", profile.profile.name));
+                        }
+                    }
+                }
+            }
+        }
         if let Some(mut legal_index) = legal::build_legal_index(
             &doc_node_id.0,
             doc.title.as_deref(),
@@ -1554,14 +1663,88 @@ impl AxonMindEngine {
         Ok(markdown)
     }
 
+    pub async fn install_structure_package(
+        &self,
+        pkg: StructurePackage,
+        source: &str,
+    ) -> Result<InstallReport, AxonMindError> {
+        pkg.validate()?;
+        let record = self.store.install_structure_package(&pkg, source).await?;
+        Ok(InstallReport {
+            package_name: record.package_name,
+            version: record.version,
+            profiles: pkg.profiles.len(),
+            identity_rules: pkg.identity.rules.len(),
+            corpus_bindings: pkg
+                .corpus
+                .as_ref()
+                .map(|corpus| corpus.binds.len() + corpus.term_maps.len() + corpus.xrefs.len())
+                .unwrap_or(0),
+        })
+    }
+
+    pub async fn install_structure_package_from_dir(
+        &self,
+        path: &std::path::Path,
+        source: &str,
+    ) -> Result<InstallReport, AxonMindError> {
+        let pkg = StructurePackage::from_dir(path)?;
+        self.install_structure_package(pkg, source).await
+    }
+
+    pub async fn list_structure_packages(&self) -> Result<Vec<PackageInfo>, AxonMindError> {
+        Ok(self
+            .store
+            .list_structure_packages()
+            .await?
+            .into_iter()
+            .map(|record| PackageInfo {
+                package_name: record.package_name,
+                version: record.version,
+                description: record.description,
+                sources: record.sources,
+            })
+            .collect())
+    }
+
+    pub async fn remove_structure_package_source(
+        &self,
+        package_name: &str,
+        source: &str,
+    ) -> Result<(), AxonMindError> {
+        let _removed = self
+            .store
+            .remove_structure_package_source(package_name, source)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn retro_apply_structure_packages(&self) -> Result<(), AxonMindError> {
+        for node in self.store.fetch_nodes_by_kind(NodeKind::Document).await? {
+            self.ensure_document_grounding(&node.id).await?;
+        }
+        Ok(())
+    }
+
     async fn ensure_document_identity_catalog(&self) -> Result<(), AxonMindError> {
+        let packages = self.store.load_structure_packages().await?;
         for node in self.store.fetch_nodes_by_kind(NodeKind::Document).await? {
             let source_path = node
                 .attrs
                 .get("source_path")
                 .and_then(|value| value.as_str());
-            let identity =
-                legal::infer_document_identity(&node.id.0, Some(&node.name), source_path);
+            let identity = if packages.is_empty() {
+                legal::infer_document_identity(&node.id.0, Some(&node.name), source_path)
+            } else {
+                crate::structure::derive_identity(
+                    &node.id.0,
+                    Some(&node.name),
+                    source_path,
+                    None,
+                    &packages,
+                )
+                .identity
+            };
             self.store.upsert_document_identity(&identity).await?;
         }
         Ok(())
@@ -1585,14 +1768,65 @@ impl AxonMindEngine {
             .attrs
             .get("source_path")
             .and_then(|value| value.as_str());
-        let identity = legal::infer_document_identity(&node.id.0, Some(&node.name), source_path);
+        let packages = self.store.load_structure_packages().await?;
+        let markdown = self.get_document_content(&node.id).await?;
+        let derived = crate::structure::derive_identity(
+            &node.id.0,
+            Some(&node.name),
+            source_path,
+            Some(&markdown),
+            &packages,
+        );
+        let identity = if packages.is_empty() {
+            legal::infer_document_identity(&node.id.0, Some(&node.name), source_path)
+        } else {
+            derived.identity.clone()
+        };
         self.store.upsert_document_identity(&identity).await?;
 
         if self.store.count_legal_units_for_doc(&node.id.0).await? > 0 {
             return Ok(());
         }
 
-        let markdown = self.get_document_content(&node.id).await?;
+        if let Some(profile_name) = derived.profile_name.as_deref() {
+            if let Some(pkg) = packages.iter().find(|pkg| {
+                pkg.profiles
+                    .iter()
+                    .any(|profile| profile.profile.name == profile_name)
+            }) {
+                if let Some(profile) = pkg
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.profile.name == profile_name)
+                {
+                    if let Some(mut parsed) = crate::structure::parse_document(
+                        &pkg.manifest.package.name,
+                        profile,
+                        &node.id.0,
+                        &identity,
+                        &markdown,
+                    )? {
+                        parsed.tree.sha256 = node
+                            .attrs
+                            .get("sha256")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        self.store
+                            .replace_legal_units(
+                                &node.id.0,
+                                &structure_legacy_units(&parsed),
+                                &parsed.refs,
+                            )
+                            .await?;
+                        PageIndexStore::new(self.store.db.0.clone())
+                            .upsert_document(&parsed.tree)
+                            .await?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
         let Some(mut legal_index) =
             legal::build_legal_index(&node.id.0, Some(&node.name), source_path, &markdown)
         else {
@@ -2190,16 +2424,18 @@ impl AxonMindEngine {
                     .collect::<Vec<_>>(),
             )
             .await?;
-        let unit_by_section: std::collections::HashMap<String, crate::store::LegalUnitRecord> = legal_units
-            .iter()
-            .cloned()
-            .map(|unit| (unit.section_id.clone(), unit))
-            .collect();
-        let unit_by_id: std::collections::HashMap<String, crate::store::LegalUnitRecord> = legal_units
-            .iter()
-            .cloned()
-            .map(|unit| (unit.unit_id.clone(), unit))
-            .collect();
+        let unit_by_section: std::collections::HashMap<String, crate::store::LegalUnitRecord> =
+            legal_units
+                .iter()
+                .cloned()
+                .map(|unit| (unit.section_id.clone(), unit))
+                .collect();
+        let unit_by_id: std::collections::HashMap<String, crate::store::LegalUnitRecord> =
+            legal_units
+                .iter()
+                .cloned()
+                .map(|unit| (unit.unit_id.clone(), unit))
+                .collect();
 
         let allowed_types = input
             .unit_types

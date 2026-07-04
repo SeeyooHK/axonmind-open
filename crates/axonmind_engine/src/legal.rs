@@ -246,6 +246,7 @@ pub fn infer_document_identity(
         confidence: profile.confidence,
         reviewed_at: None,
         updated_at: chrono::Utc::now().timestamp(),
+        pinned_profile: profile.parser_profile.clone(),
         aliases,
     }
 }

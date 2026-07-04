@@ -33,6 +33,7 @@ use axonmind_core::{
 use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 pub use graph_cache::GraphCache;
 pub use sqlite::GraphDb;
@@ -261,6 +262,7 @@ pub struct DocumentIdentityRecord {
     pub confidence: f32,
     pub reviewed_at: Option<i64>,
     pub updated_at: i64,
+    pub pinned_profile: Option<String>,
     pub aliases: Vec<DocumentAliasRecord>,
 }
 
@@ -297,6 +299,40 @@ pub struct LegalUnitRefRecord {
     pub target_label: String,
     pub target_label_norm: String,
     pub ref_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructurePackageRecord {
+    pub package_name: String,
+    pub version: i64,
+    pub description: Option<String>,
+    pub content_sha: String,
+    pub imported_at: i64,
+    pub sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructureProfileRecord {
+    pub package_name: String,
+    pub profile_name: String,
+    pub version: i64,
+    pub definition: String,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdentityRuleRecord {
+    pub package_name: String,
+    pub ordinal: i64,
+    pub definition: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorpusBindingRecord {
+    pub package_name: String,
+    pub ordinal: i64,
+    pub kind: String,
+    pub definition: String,
 }
 
 // ── GraphStore ────────────────────────────────────────────────────────────────
@@ -1448,8 +1484,9 @@ impl GraphStore {
             tx.execute(
                 "INSERT INTO document_identity
                     (doc_node_id, source_filename, source_path, raw_title, canonical_title, language,
-                     jurisdiction, domain, instrument_type, corpus, confidence, reviewed_at, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+                     jurisdiction, domain, instrument_type, corpus, confidence, reviewed_at, updated_at,
+                     pinned_profile)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
                  ON CONFLICT(doc_node_id) DO UPDATE SET
                     source_filename=excluded.source_filename,
                     source_path=excluded.source_path,
@@ -1462,7 +1499,8 @@ impl GraphStore {
                     corpus=excluded.corpus,
                     confidence=excluded.confidence,
                     reviewed_at=excluded.reviewed_at,
-                    updated_at=excluded.updated_at",
+                    updated_at=excluded.updated_at,
+                    pinned_profile=excluded.pinned_profile",
                 rusqlite::params![
                     identity.doc_node_id,
                     identity.source_filename,
@@ -1477,6 +1515,7 @@ impl GraphStore {
                     identity.confidence,
                     identity.reviewed_at,
                     identity.updated_at,
+                    identity.pinned_profile,
                 ],
             )
             .map_err(|e| AxonMindError::Database(e.to_string()))?;
@@ -1548,7 +1587,8 @@ impl GraphStore {
             let row = conn
                 .query_row(
                     "SELECT doc_node_id, source_filename, source_path, raw_title, canonical_title, language,
-                            jurisdiction, domain, instrument_type, corpus, confidence, reviewed_at, updated_at
+                            jurisdiction, domain, instrument_type, corpus, confidence, reviewed_at, updated_at,
+                            pinned_profile
                      FROM document_identity
                      WHERE doc_node_id = ?1",
                     [&doc_id],
@@ -1567,6 +1607,7 @@ impl GraphStore {
                             row.get::<_, f64>(10)?,
                             row.get::<_, Option<i64>>(11)?,
                             row.get::<_, i64>(12)?,
+                            row.get::<_, Option<String>>(13)?,
                         ))
                     },
                 )
@@ -1612,6 +1653,7 @@ impl GraphStore {
                 reviewed_at: row.11,
                 updated_at: row.12,
                 aliases,
+                pinned_profile: row.13,
             }))
         })
         .await
@@ -1703,7 +1745,8 @@ impl GraphStore {
                 if let Some(identity) = conn
                     .query_row(
                         "SELECT doc_node_id, source_filename, source_path, raw_title, canonical_title, language,
-                                jurisdiction, domain, instrument_type, corpus, confidence, reviewed_at, updated_at
+                                jurisdiction, domain, instrument_type, corpus, confidence, reviewed_at, updated_at,
+                                pinned_profile
                          FROM document_identity
                          WHERE doc_node_id = ?1",
                         [&doc_id],
@@ -1722,6 +1765,7 @@ impl GraphStore {
                                 row.get::<_, f64>(10)?,
                                 row.get::<_, Option<i64>>(11)?,
                                 row.get::<_, i64>(12)?,
+                                row.get::<_, Option<String>>(13)?,
                             ))
                         },
                     )
@@ -1761,6 +1805,7 @@ impl GraphStore {
                         confidence: identity.10 as f32,
                         reviewed_at: identity.11,
                         updated_at: identity.12,
+                        pinned_profile: identity.13,
                         aliases,
                     });
                 }
@@ -1795,6 +1840,421 @@ impl GraphStore {
                 .map_err(|e| AxonMindError::Database(e.to_string()))?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(|e| AxonMindError::Database(e.to_string()))
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn install_structure_package(
+        &self,
+        pkg: &crate::structure::model::StructurePackage,
+        source: &str,
+    ) -> Result<StructurePackageRecord, AxonMindError> {
+        let package_name = pkg.manifest.package.name.clone();
+        let version = pkg.manifest.package.version;
+        let description = pkg.manifest.package.description.clone();
+        let content_sha = pkg.content_sha()?;
+        let profiles = pkg.profiles.clone();
+        let identity_rules = pkg.identity.rules.clone();
+        let corpus = pkg.corpus.clone();
+        let source = source.to_string();
+        let imported_at = chrono::Utc::now().timestamp();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<StructurePackageRecord, AxonMindError> {
+            let tx = conn
+                .transaction()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            if let Some((existing_version, existing_sha)) = tx
+                .query_row(
+                    "SELECT version, content_sha FROM structure_packages WHERE package_name = ?1",
+                    [&package_name],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+            {
+                if existing_version == version && existing_sha != content_sha {
+                    return Err(AxonMindError::ValidationFailed {
+                        message: format!(
+                            "package {} version {} changed without version bump",
+                            package_name, version
+                        ),
+                    });
+                }
+            }
+
+            tx.execute(
+                "INSERT INTO structure_packages (package_name, version, description, content_sha, imported_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(package_name) DO UPDATE SET
+                    version=excluded.version,
+                    description=excluded.description,
+                    content_sha=excluded.content_sha,
+                    imported_at=excluded.imported_at",
+                rusqlite::params![package_name, version, description, content_sha, imported_at],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+
+            tx.execute(
+                "INSERT INTO structure_package_sources (package_name, source, imported_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(package_name, source) DO UPDATE SET imported_at=excluded.imported_at",
+                rusqlite::params![package_name, source, imported_at],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+
+            tx.execute(
+                "DELETE FROM structure_profiles WHERE package_name = ?1",
+                [&package_name],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            for profile in profiles {
+                let definition = serde_json::to_string(&profile)
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                tx.execute(
+                    "INSERT INTO structure_profiles (package_name, profile_name, version, definition, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![
+                        package_name,
+                        profile.profile.name,
+                        profile.profile.version,
+                        definition,
+                        imported_at
+                    ],
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            }
+
+            tx.execute("DELETE FROM identity_rules WHERE package_name = ?1", [&package_name])
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            for (ordinal, rule) in identity_rules.iter().enumerate() {
+                let definition = serde_json::to_string(rule)
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                tx.execute(
+                    "INSERT INTO identity_rules (package_name, ordinal, definition)
+                     VALUES (?1, ?2, ?3)",
+                    rusqlite::params![package_name, ordinal as i64, definition],
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            }
+
+            tx.execute(
+                "DELETE FROM corpus_bindings WHERE package_name = ?1",
+                [&package_name],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            if let Some(corpus) = corpus {
+                for (ordinal, binding) in corpus.binds.iter().enumerate() {
+                    let definition = serde_json::to_string(binding)
+                        .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                    tx.execute(
+                        "INSERT INTO corpus_bindings (package_name, ordinal, kind, definition)
+                         VALUES (?1, ?2, 'bind', ?3)",
+                        rusqlite::params![package_name, ordinal as i64, definition],
+                    )
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                }
+                for (ordinal, binding) in corpus.term_maps.iter().enumerate() {
+                    let definition = serde_json::to_string(binding)
+                        .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                    tx.execute(
+                        "INSERT INTO corpus_bindings (package_name, ordinal, kind, definition)
+                         VALUES (?1, ?2, 'term_map', ?3)",
+                        rusqlite::params![package_name, ordinal as i64, definition],
+                    )
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                }
+                for (ordinal, binding) in corpus.xrefs.iter().enumerate() {
+                    let definition = serde_json::to_string(binding)
+                        .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                    tx.execute(
+                        "INSERT INTO corpus_bindings (package_name, ordinal, kind, definition)
+                         VALUES (?1, ?2, 'xref', ?3)",
+                        rusqlite::params![package_name, ordinal as i64, definition],
+                    )
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                }
+                if let Some(binding) = corpus.enrichment.as_ref() {
+                    let definition = serde_json::to_string(binding)
+                        .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                    tx.execute(
+                        "INSERT INTO corpus_bindings (package_name, ordinal, kind, definition)
+                         VALUES (?1, 0, 'enrichment', ?2)",
+                        rusqlite::params![package_name, definition],
+                    )
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                }
+            }
+
+            tx.commit()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(StructurePackageRecord {
+                package_name,
+                version,
+                description,
+                content_sha,
+                imported_at,
+                sources: vec![source],
+            })
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn list_structure_packages(
+        &self,
+    ) -> Result<Vec<StructurePackageRecord>, AxonMindError> {
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Vec<StructurePackageRecord>, AxonMindError> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT package_name, version, description, content_sha, imported_at
+                     FROM structure_packages
+                     ORDER BY package_name",
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let base_rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                })
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+
+            let mut out = Vec::new();
+            for (package_name, version, description, content_sha, imported_at) in base_rows {
+                let mut source_stmt = conn
+                    .prepare(
+                        "SELECT source FROM structure_package_sources WHERE package_name = ?1 ORDER BY source",
+                    )
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                let sources = source_stmt
+                    .query_map([&package_name], |row| row.get::<_, String>(0))
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                out.push(StructurePackageRecord {
+                    package_name,
+                    version,
+                    description,
+                    content_sha,
+                    imported_at,
+                    sources,
+                });
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn remove_structure_package_source(
+        &self,
+        package_name: &str,
+        source: &str,
+    ) -> Result<bool, AxonMindError> {
+        let package_name = package_name.to_string();
+        let source = source.to_string();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<bool, AxonMindError> {
+            let tx = conn
+                .transaction()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            tx.execute(
+                "DELETE FROM structure_package_sources WHERE package_name = ?1 AND source = ?2",
+                rusqlite::params![package_name, source],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let remaining: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM structure_package_sources WHERE package_name = ?1",
+                    [&package_name],
+                    |row| row.get(0),
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            if remaining == 0 {
+                tx.execute(
+                    "DELETE FROM structure_packages WHERE package_name = ?1",
+                    [&package_name],
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                tx.execute(
+                    "DELETE FROM structure_profiles WHERE package_name = ?1",
+                    [&package_name],
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                tx.execute(
+                    "DELETE FROM identity_rules WHERE package_name = ?1",
+                    [&package_name],
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                tx.execute(
+                    "DELETE FROM corpus_bindings WHERE package_name = ?1",
+                    [&package_name],
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            }
+            tx.commit()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(remaining == 0)
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    pub(crate) async fn load_structure_packages(
+        &self,
+    ) -> Result<Vec<crate::structure::model::StructurePackage>, AxonMindError> {
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Vec<crate::structure::model::StructurePackage>, AxonMindError> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT package_name, version, description
+                     FROM structure_packages
+                     ORDER BY package_name",
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+
+            let mut out = Vec::new();
+            for (package_name, version, description) in rows {
+                let mut profile_stmt = conn
+                    .prepare(
+                        "SELECT definition FROM structure_profiles WHERE package_name = ?1 ORDER BY profile_name",
+                    )
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                let profiles = profile_stmt
+                    .query_map([&package_name], |row| row.get::<_, String>(0))
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?
+                    .into_iter()
+                    .map(|value| {
+                        serde_json::from_str::<crate::structure::model::ProfileDefinition>(&value)
+                            .map_err(|e| AxonMindError::Database(e.to_string()))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let mut rule_stmt = conn
+                    .prepare(
+                        "SELECT definition FROM identity_rules WHERE package_name = ?1 ORDER BY ordinal",
+                    )
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                let rules = rule_stmt
+                    .query_map([&package_name], |row| row.get::<_, String>(0))
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?
+                    .into_iter()
+                    .map(|value| {
+                        serde_json::from_str::<crate::structure::model::IdentityRule>(&value)
+                            .map_err(|e| AxonMindError::Database(e.to_string()))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let mut bind_stmt = conn
+                    .prepare(
+                        "SELECT kind, definition FROM corpus_bindings WHERE package_name = ?1 ORDER BY kind, ordinal",
+                    )
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                let bindings = bind_stmt
+                    .query_map([&package_name], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+
+                let mut corpus = crate::structure::model::CorpusFile {
+                    corpus: None,
+                    binds: Vec::new(),
+                    term_maps: Vec::new(),
+                    xrefs: Vec::new(),
+                    enrichment: None,
+                };
+                for (kind, definition) in bindings {
+                    match kind.as_str() {
+                        "bind" => corpus.binds.push(
+                            serde_json::from_str(&definition)
+                                .map_err(|e| AxonMindError::Database(e.to_string()))?,
+                        ),
+                        "term_map" => corpus.term_maps.push(
+                            serde_json::from_str(&definition)
+                                .map_err(|e| AxonMindError::Database(e.to_string()))?,
+                        ),
+                        "xref" => corpus.xrefs.push(
+                            serde_json::from_str(&definition)
+                                .map_err(|e| AxonMindError::Database(e.to_string()))?,
+                        ),
+                        "enrichment" => {
+                            corpus.enrichment = Some(
+                                serde_json::from_str(&definition)
+                                    .map_err(|e| AxonMindError::Database(e.to_string()))?,
+                            )
+                        }
+                        _ => {}
+                    }
+                }
+
+                out.push(crate::structure::model::StructurePackage {
+                    root_dir: PathBuf::new(),
+                    manifest: crate::structure::model::PackageManifest {
+                        package: crate::structure::model::PackageMeta {
+                            name: package_name,
+                            version,
+                            description,
+                        },
+                    },
+                    profiles,
+                    identity: crate::structure::model::IdentityRulesFile { rules },
+                    corpus: if corpus.binds.is_empty()
+                        && corpus.term_maps.is_empty()
+                        && corpus.xrefs.is_empty()
+                        && corpus.enrichment.is_none()
+                    {
+                        None
+                    } else {
+                        Some(corpus)
+                    },
+                });
+            }
+            Ok(out)
         })
         .await
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
@@ -2252,36 +2712,38 @@ impl GraphStore {
             .get()
             .await
             .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
-        conn.interact(move |conn| -> Result<Vec<LegalUnitRefRecord>, AxonMindError> {
-            let placeholders = ids
-                .iter()
-                .enumerate()
-                .map(|(idx, _)| format!("?{}", idx + 1))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let sql = format!(
-                "SELECT from_unit_id, to_doc_node_id, target_label, target_label_norm, ref_text
+        conn.interact(
+            move |conn| -> Result<Vec<LegalUnitRefRecord>, AxonMindError> {
+                let placeholders = ids
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, _)| format!("?{}", idx + 1))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = format!(
+                    "SELECT from_unit_id, to_doc_node_id, target_label, target_label_norm, ref_text
                  FROM legal_unit_refs
                  WHERE from_unit_id IN ({placeholders})"
-            );
-            let mut stmt = conn
-                .prepare(&sql)
-                .map_err(|e| AxonMindError::Database(e.to_string()))?;
-            let params: Vec<&dyn rusqlite::ToSql> =
-                ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-            stmt.query_map(params.as_slice(), |row| {
-                Ok(LegalUnitRefRecord {
-                    from_unit_id: row.get(0)?,
-                    to_doc_node_id: row.get(1)?,
-                    target_label: row.get(2)?,
-                    target_label_norm: row.get(3)?,
-                    ref_text: row.get(4)?,
+                );
+                let mut stmt = conn
+                    .prepare(&sql)
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                let params: Vec<&dyn rusqlite::ToSql> =
+                    ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+                stmt.query_map(params.as_slice(), |row| {
+                    Ok(LegalUnitRefRecord {
+                        from_unit_id: row.get(0)?,
+                        to_doc_node_id: row.get(1)?,
+                        target_label: row.get(2)?,
+                        target_label_norm: row.get(3)?,
+                        ref_text: row.get(4)?,
+                    })
                 })
-            })
-            .map_err(|e| AxonMindError::Database(e.to_string()))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| AxonMindError::Database(e.to_string()))
-        })
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))
+            },
+        )
         .await
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }

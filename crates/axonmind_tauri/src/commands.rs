@@ -178,10 +178,7 @@ pub async fn start_ingest(
 }
 
 #[tauri::command]
-pub async fn cancel_ingest(
-    state: State<'_, EngineState>,
-    job_id: String,
-) -> Result<(), String> {
+pub async fn cancel_ingest(state: State<'_, EngineState>, job_id: String) -> Result<(), String> {
     state
         .0
         .cancel_ingest(&JobId(job_id))
@@ -254,7 +251,11 @@ pub async fn list_documents(state: State<'_, EngineState>) -> Result<Vec<Documen
 pub async fn list_ingest_status(
     state: State<'_, EngineState>,
 ) -> Result<Vec<IngestStatusRow>, String> {
-    state.0.list_ingest_status().await.map_err(|e| e.to_string())
+    state
+        .0
+        .list_ingest_status()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
