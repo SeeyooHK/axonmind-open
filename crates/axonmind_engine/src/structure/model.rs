@@ -307,14 +307,67 @@ impl StructurePackage {
         hasher.update(serde_json::to_vec(&self.corpus).map_err(json_error)?);
         Ok(format!("{:x}", hasher.finalize()))
     }
+
+    /// Builds a package from in-memory file contents keyed by path relative to
+    /// the package root (`"package.toml"`, `"profiles/foo.toml"`, ...), the
+    /// same layout `from_dir` reads off disk. This is how production installs
+    /// load a package carried as DB rows (e.g. Soverex `skill_files`) rather
+    /// than a filesystem directory; callers own stripping any storage-specific
+    /// path prefix before calling this.
+    pub fn from_files(files: &BTreeMap<String, String>) -> Result<Self, AxonMindError> {
+        let manifest: PackageManifest = parse_toml_str(get_required(files, "package.toml")?)?;
+        let identity: IdentityRulesFile = parse_toml_str(get_required(files, "identity.toml")?)?;
+        let corpus = match files.get("corpus.toml") {
+            Some(text) => Some(parse_toml_str(text)?),
+            None => None,
+        };
+
+        let mut profiles: Vec<ProfileDefinition> = Vec::new();
+        for (path, text) in files {
+            let Some(rest) = path.strip_prefix("profiles/") else {
+                continue;
+            };
+            if rest.contains('/') || !rest.ends_with(".toml") {
+                continue;
+            }
+            profiles.push(parse_toml_str(text)?);
+        }
+        profiles.sort_by(|a, b| a.profile.name.cmp(&b.profile.name));
+
+        Ok(Self {
+            root_dir: PathBuf::new(),
+            manifest,
+            profiles,
+            identity,
+            corpus,
+        })
+    }
+}
+
+fn get_required<'a>(
+    files: &'a BTreeMap<String, String>,
+    path: &str,
+) -> Result<&'a str, AxonMindError> {
+    files
+        .get(path)
+        .map(String::as_str)
+        .ok_or_else(|| AxonMindError::ValidationFailed {
+            message: format!("missing required file: {path}"),
+        })
+}
+
+fn parse_toml_str<T: for<'de> Deserialize<'de>>(text: &str) -> Result<T, AxonMindError> {
+    toml::from_str(text).map_err(|e| AxonMindError::ValidationFailed {
+        message: format!("parse toml: {e}"),
+    })
 }
 
 fn parse_toml_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, AxonMindError> {
     let text = std::fs::read_to_string(path).map_err(|e| AxonMindError::ValidationFailed {
         message: format!("read {}: {e}", path.display()),
     })?;
-    toml::from_str(&text).map_err(|e| AxonMindError::ValidationFailed {
-        message: format!("parse {}: {e}", path.display()),
+    parse_toml_str(&text).map_err(|_| AxonMindError::ValidationFailed {
+        message: format!("parse {}", path.display()),
     })
 }
 
@@ -353,5 +406,37 @@ mod tests {
         assert_eq!(pkg.manifest.package.name, "generic-manual");
         assert_eq!(pkg.profiles.len(), 3);
         assert_eq!(pkg.identity.rules.len(), 4);
+    }
+
+    #[test]
+    fn from_files_matches_from_dir_for_the_same_package() {
+        // Production installs (Soverex skill_files) carry package files as DB
+        // rows, not a filesystem directory. from_files must build an identical
+        // package to from_dir given the same content, keyed the same way.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic_manual");
+        let from_dir_pkg = StructurePackage::from_dir(&dir).expect("from_dir");
+
+        let mut files = BTreeMap::new();
+        for name in ["package.toml", "identity.toml", "corpus.toml"] {
+            files.insert(
+                name.to_string(),
+                std::fs::read_to_string(dir.join(name)).expect("read"),
+            );
+        }
+        for entry in std::fs::read_dir(dir.join("profiles")).expect("read profiles dir") {
+            let entry = entry.expect("dir entry");
+            let file_name = entry.file_name().into_string().expect("utf8 filename");
+            files.insert(
+                format!("profiles/{file_name}"),
+                std::fs::read_to_string(entry.path()).expect("read profile"),
+            );
+        }
+
+        let from_files_pkg = StructurePackage::from_files(&files).expect("from_files");
+        from_files_pkg.validate().expect("validates");
+        assert_eq!(
+            from_files_pkg.content_sha().expect("sha"),
+            from_dir_pkg.content_sha().expect("sha"),
+        );
     }
 }

@@ -1683,12 +1683,27 @@ impl AxonMindEngine {
         })
     }
 
+    /// Test/dev-only: loads a package from a filesystem directory. Production
+    /// installs carry package files as DB rows (e.g. Soverex `skill_files`) and
+    /// should use `install_structure_package_from_files` instead.
     pub async fn install_structure_package_from_dir(
         &self,
         path: &std::path::Path,
         source: &str,
     ) -> Result<InstallReport, AxonMindError> {
         let pkg = StructurePackage::from_dir(path)?;
+        self.install_structure_package(pkg, source).await
+    }
+
+    /// Loads a package from in-memory file contents keyed by path relative to
+    /// the package root (see `StructurePackage::from_files`) and installs it.
+    /// This is the production path for packages carried as DB rows.
+    pub async fn install_structure_package_from_files(
+        &self,
+        files: &std::collections::BTreeMap<String, String>,
+        source: &str,
+    ) -> Result<InstallReport, AxonMindError> {
+        let pkg = StructurePackage::from_files(files)?;
         self.install_structure_package(pkg, source).await
     }
 
