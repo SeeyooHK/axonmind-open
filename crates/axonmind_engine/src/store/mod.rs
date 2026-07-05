@@ -1499,8 +1499,7 @@ impl GraphStore {
                     corpus=excluded.corpus,
                     confidence=excluded.confidence,
                     reviewed_at=excluded.reviewed_at,
-                    updated_at=excluded.updated_at,
-                    pinned_profile=excluded.pinned_profile",
+                    updated_at=excluded.updated_at",
                 rusqlite::params![
                     identity.doc_node_id,
                     identity.source_filename,
@@ -5071,6 +5070,61 @@ mod tests {
         assert_eq!(fetched.len(), 1);
         assert_eq!(fetched[0].value, 1_234_567.0);
         assert_eq!(fetched[0].unit, "USD");
+    }
+
+    #[tokio::test]
+    async fn reingest_upsert_does_not_clobber_an_existing_pinned_profile() {
+        // pinned_profile is a user pin that must "survive re-ingestion"
+        // (docs/structure_packages.md). Automated re-ingest always upserts with
+        // pinned_profile: None, so the upsert itself must leave an existing pin
+        // untouched rather than overwrite it with the incoming NULL.
+        let dir = TempDir::new().unwrap();
+        let (store, _cache, _tx) = open_store(&dir).await;
+
+        let identity = DocumentIdentityRecord {
+            doc_node_id: "doc.gdpr".to_string(),
+            source_filename: "gdpr.pdf".to_string(),
+            source_path: None,
+            raw_title: None,
+            canonical_title: "Regulation (EU) 2016/679".to_string(),
+            language: Some("en".to_string()),
+            jurisdiction: vec!["EU".to_string()],
+            domain: vec![],
+            instrument_type: Some("regulation".to_string()),
+            corpus: vec!["gdpr".to_string()],
+            confidence: 0.98,
+            reviewed_at: None,
+            updated_at: chrono::Utc::now().timestamp(),
+            pinned_profile: None,
+            aliases: vec![],
+        };
+        store.upsert_document_identity(&identity).await.unwrap();
+
+        // Simulate a user pinning the profile out-of-band (the future pin API).
+        let conn = store.db.0.get().await.unwrap();
+        conn.interact(|conn| {
+            conn.execute(
+                "UPDATE document_identity SET pinned_profile = ?1 WHERE doc_node_id = ?2",
+                rusqlite::params!["legal-eu-privacy/eu-regulation-en", "doc.gdpr"],
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        // Re-ingestion re-derives identity automatically and upserts again with
+        // pinned_profile: None — this must not erase the pin set above.
+        store.upsert_document_identity(&identity).await.unwrap();
+
+        let fetched = store
+            .fetch_document_identity("doc.gdpr")
+            .await
+            .unwrap()
+            .expect("identity row");
+        assert_eq!(
+            fetched.pinned_profile.as_deref(),
+            Some("legal-eu-privacy/eu-regulation-en")
+        );
     }
 }
 

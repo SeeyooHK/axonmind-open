@@ -28,7 +28,6 @@ struct DocumentProfile {
     corpus: Vec<String>,
     confidence: f32,
     aliases: Vec<(String, String)>,
-    parser_profile: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,7 +95,6 @@ pub fn infer_document_identity(
         corpus: vec![],
         confidence: 0.35,
         aliases: vec![(fallback_title.clone(), "extracted".to_string())],
-        parser_profile: None,
     };
 
     if haystack.contains("edpb")
@@ -120,7 +118,6 @@ pub fn infer_document_identity(
                 "inferred".to_string(),
             ),
         ]);
-        profile.parser_profile = Some("edpb_guidance_en".to_string());
     } else if haystack.contains("edpb")
         && (haystack.contains("9_2022")
             || haystack.contains("9/2022")
@@ -141,7 +138,6 @@ pub fn infer_document_identity(
                 "inferred".to_string(),
             ),
         ]);
-        profile.parser_profile = Some("edpb_guidance_en".to_string());
     } else if haystack.contains("2016_679")
         || haystack.contains("2016/679")
         || haystack.contains("gdpr")
@@ -161,7 +157,6 @@ pub fn infer_document_identity(
                 "inferred".to_string(),
             ),
         ]);
-        profile.parser_profile = Some("eu_regulation_en".to_string());
     } else if haystack.contains("2018_1725") || haystack.contains("2018/1725") {
         profile.canonical_title = "Regulation (EU) 2018/1725".to_string();
         profile.language = Some("en".to_string());
@@ -177,7 +172,6 @@ pub fn infer_document_identity(
                 "inferred".to_string(),
             ),
         ]);
-        profile.parser_profile = Some("eu_regulation_en".to_string());
     } else if haystack.contains("eprivacy") {
         profile.language = Some("en".to_string());
         profile.jurisdiction = vec!["EU".to_string()];
@@ -188,7 +182,6 @@ pub fn infer_document_identity(
         profile
             .aliases
             .push(("ePrivacy Directive".to_string(), "inferred".to_string()));
-        profile.parser_profile = Some("eu_regulation_en".to_string());
     } else if haystack.contains("101_2018")
         || haystack.contains("101/2018")
         || haystack.contains("d.lgs")
@@ -208,7 +201,6 @@ pub fn infer_document_identity(
                 "inferred".to_string(),
             ),
         ]);
-        profile.parser_profile = Some("it_statute".to_string());
     }
 
     let mut aliases: Vec<DocumentAliasRecord> = Vec::new();
@@ -246,7 +238,7 @@ pub fn infer_document_identity(
         confidence: profile.confidence,
         reviewed_at: None,
         updated_at: chrono::Utc::now().timestamp(),
-        pinned_profile: profile.parser_profile.clone(),
+        pinned_profile: None,
         aliases,
     }
 }
@@ -928,6 +920,20 @@ mod tests {
                 .iter()
                 .any(|unit| unit.label_norm == "art.33.p1")
         );
+    }
+
+    #[test]
+    fn automated_identity_never_sets_pinned_profile() {
+        // pinned_profile is reserved for an explicit user pin that survives
+        // re-ingestion; automated classification must never write it, even for
+        // a document the catalog matches confidently (see docs/structure_packages.md).
+        let identity = infer_document_identity(
+            "doc.gdpr",
+            Some("GDPR"),
+            Some("legal_gdpr_Regulation_2016_679__GDPR_.pdf"),
+        );
+        assert_eq!(identity.instrument_type.as_deref(), Some("regulation"));
+        assert_eq!(identity.pinned_profile, None);
     }
 
     #[test]

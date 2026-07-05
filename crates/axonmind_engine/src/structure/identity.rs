@@ -126,7 +126,7 @@ fn apply_rule(
             confidence: rule.confidence,
             reviewed_at: None,
             updated_at: chrono::Utc::now().timestamp(),
-            pinned_profile: Some(rule.profile.clone()),
+            pinned_profile: None,
             aliases,
         });
     }
@@ -284,5 +284,9 @@ mod tests {
                 .any(|alias| alias.alias == "GDPR")
         );
         assert_eq!(derived.profile_name.as_deref(), Some("eu-regulation-en"));
+        // pinned_profile is reserved for an explicit user pin that survives
+        // re-ingestion; package-derived identity must not write it. Profile
+        // selection is carried separately via DerivedIdentity.profile_name.
+        assert_eq!(derived.identity.pinned_profile, None);
     }
 }
