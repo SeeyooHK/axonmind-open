@@ -14,5 +14,6 @@ pub struct PackageInfo {
     pub package_name: String,
     pub version: i64,
     pub description: Option<String>,
+    pub content_sha: String,
     pub sources: Vec<String>,
 }

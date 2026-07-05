@@ -1717,6 +1717,7 @@ impl AxonMindEngine {
                 package_name: record.package_name,
                 version: record.version,
                 description: record.description,
+                content_sha: record.content_sha,
                 sources: record.sources,
             })
             .collect())
