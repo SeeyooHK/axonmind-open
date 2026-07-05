@@ -1,0 +1,68 @@
+[profile]
+name = "handbook-en"
+version = 1
+description = "Synthetic handbook grammar: chapters, clauses, prefatory notes"
+language = ["en"]
+
+[[region]]
+name = "preface"
+from = "start"
+until = "first:chapter"
+
+[toc]
+strip_lines = ['(?m)^.{0,120}\.{3,}\s*\d{1,4}\s*$']
+strip_headings = ["Table of contents", "Contents"]
+
+[[unit]]
+kind = "note"
+region = "preface"
+marker = '(?m)^\((\d+)\)\s+'
+captures = { number = 1 }
+label = "Note {number}"
+label_norm = "note.{number}"
+citation = "{doc}, Note {number}"
+level = 1
+
+[[unit]]
+kind = "chapter"
+marker = '(?m)^(?:Chapter|Ch\.)\s+(\d+[a-z]?)\b[ \t]*(.*)$'
+captures = { number = 1, inline_title = 2 }
+title = "inline_or_next_heading"
+label = "Chapter {number}"
+label_norm = "chapter.{number}"
+citation = "{doc}, Chapter {number}"
+level = 1
+
+[[unit]]
+kind = "clause"
+parent = "chapter"
+marker = '(?m)^(?:(\d+)\.|\((\d+)\))\s+'
+captures = { number = "1|2" }
+label = "{parent.label}({number})"
+label_norm = "{parent.label_norm}.c{number}"
+citation = "{doc}, Chapter {parent.number}({number})"
+level = 2
+
+[[unit]]
+kind = "appendix"
+marker = '(?m)^(?:APPENDIX|Appendix)\b[ \t]*([IVXLC0-9]*)'
+captures = { number = 1 }
+label = "Appendix {number}"
+label_norm = "appendix.{number}"
+citation = "{doc}, Appendix {number}"
+level = 1
+
+[[ref]]
+target_kind = "clause"
+pattern = '\bChapter\s+(\d+[a-z]?)\((\d+)\)'
+target_label_norm = "chapter.{1}.c{2}"
+
+[[ref]]
+target_kind = "chapter"
+pattern = '\bChapter\s+(\d+[a-z]?)\b'
+target_label_norm = "chapter.{1}"
+
+[[ref]]
+target_kind = "note"
+pattern = '(?i)\bnote\s+(\d+)\b'
+target_label_norm = "note.{1}"

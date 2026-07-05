@@ -1,0 +1,4 @@
+[package]
+name = "generic-manual"
+version = 1
+description = "Synthetic package used to test the generic structure interpreter (no real-world domain)"

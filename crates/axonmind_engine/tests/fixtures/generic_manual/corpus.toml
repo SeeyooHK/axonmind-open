@@ -1,0 +1,32 @@
+[corpus]
+name = "acme-ops"
+
+[[bind]]
+match = { canonical_title = 'Acme Operations Handbook, Edition 3' }
+aliases = ["The Handbook", "Ops Manual"]
+corpus = ["acme-ops"]
+domain = ["operations"]
+
+[[bind]]
+match = { canonical_title = 'Acme Checklist No\. 7' }
+aliases = ["QC Checklist"]
+corpus = ["acme-ops"]
+domain = ["operations"]
+
+[[bind]]
+match = { instrument_type = "procedure" }
+corpus = ["acme-ops"]
+domain = ["operations"]
+
+[[term_map]]
+from_lang = "en"
+to_lang = "es"
+terms = { "operator" = "operador", "supervisor" = "supervisor" }
+
+[[xref]]
+from = { corpus = "acme-ops", instrument_type = "procedure" }
+to = { corpus = "acme-ops", canonical_title = 'Acme Operations Handbook, Edition 3' }
+kinds = ["chapter", "note"]
+
+[enrichment]
+prompt = "Summarize this section for retrieval: steps, roles, tools, and cross-references."

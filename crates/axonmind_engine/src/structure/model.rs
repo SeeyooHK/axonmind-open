@@ -346,12 +346,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn loads_and_validates_legal_package() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../soverex-open/docs/legal_agent/structure");
+    fn loads_and_validates_generic_package() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic_manual");
         let pkg = StructurePackage::from_dir(&dir).expect("package loads");
         pkg.validate().expect("package validates");
-        assert_eq!(pkg.manifest.package.name, "legal-eu-privacy");
+        assert_eq!(pkg.manifest.package.name, "generic-manual");
         assert_eq!(pkg.profiles.len(), 3);
         assert_eq!(pkg.identity.rules.len(), 4);
     }

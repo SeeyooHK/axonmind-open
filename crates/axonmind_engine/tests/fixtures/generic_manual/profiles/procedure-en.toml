@@ -1,0 +1,24 @@
+[profile]
+name = "procedure-en"
+version = 1
+description = "Synthetic procedure grammar: decimal-numbered steps with TOC stripping"
+language = ["en"]
+
+[toc]
+strip_lines = ['(?m)^.{0,120}\.{3,}\s*\d{1,4}\s*$', '(?m)^\d+(?:\.\d+)+\s+.+\s+\d{1,4}$']
+strip_headings = ["Table of Contents", "Contents"]
+
+[[unit]]
+kind = "step"
+marker = '(?m)^(\d+(?:\.\d+)+)\s+(.+)$'
+captures = { number = 1, inline_title = 2 }
+title = "inline"
+label = "{number}"
+label_norm = "step.{number}"
+citation = "{doc}, Step {number}"
+level = "depth:number"
+
+[[ref]]
+target_kind = "chapter"
+pattern = '\bChapter\s+(\d+[a-z]?)\b'
+target_label_norm = "chapter.{1}"

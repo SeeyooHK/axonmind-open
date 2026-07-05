@@ -1,0 +1,35 @@
+[[rule]]
+sources = ["filename", "raw_title", "first_chars:12000"]
+match = '(?i)acme\s+operations\s+handbook\s*,?\s*(?:ed(?:ition)?\.?\s*)?(\d+)'
+canonical_title = "Acme Operations Handbook, Edition {1}"
+aliases = ["Ops Handbook Ed. {1}", "Handbook {1}"]
+profile = "handbook-en"
+confidence = 0.95
+set = { instrument_type = "handbook", jurisdiction = [], language = "en" }
+
+[[rule]]
+sources = ["filename", "raw_title", "first_chars:12000"]
+match = '(?i)acme\s+policy\s+(\d+)'
+canonical_title = "Acme Policy {1}"
+aliases = ["Policy {1}"]
+profile = "handbook-en"
+confidence = 0.9
+set = { instrument_type = "policy", jurisdiction = [], language = "en" }
+
+[[rule]]
+sources = ["filename", "raw_title", "first_chars:12000"]
+match = '(?i)acme\s+checklist\s+(?:no\.?\s*)?(\d+)'
+canonical_title = "Acme Checklist No. {1}"
+aliases = ["Checklist {1}"]
+profile = "checklist-en"
+confidence = 0.9
+set = { instrument_type = "checklist", jurisdiction = [], language = "en" }
+
+[[rule]]
+sources = ["filename", "raw_title", "first_chars:12000"]
+match = '(?i)acme\s+field\s+procedure\s+(\d+)'
+canonical_title = "Acme Field Procedure {1}"
+aliases = ["Procedure {1}"]
+profile = "procedure-en"
+confidence = 0.85
+set = { instrument_type = "procedure", jurisdiction = [], language = "en" }

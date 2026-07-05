@@ -482,21 +482,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_regulation_fixture_article_and_paragraph() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../soverex-open/docs/legal_agent/structure");
+    fn parses_handbook_fixture_chapter_and_clause() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic_manual");
         let pkg = crate::structure::model::StructurePackage::from_dir(&dir).expect("package");
         let profile = pkg
             .profiles
             .iter()
-            .find(|profile| profile.profile.name == "eu-regulation-en")
+            .find(|profile| profile.profile.name == "handbook-en")
             .expect("profile");
         let markdown =
-            std::fs::read_to_string(dir.join("fixtures/eu-regulation-en.md")).expect("fixture");
+            std::fs::read_to_string(dir.join("fixtures/handbook-en.md")).expect("fixture");
         let identity = crate::structure::derive_identity(
-            "doc.gdpr",
-            Some("GDPR"),
-            Some("legal_gdpr_Regulation_2016_679__GDPR_.pdf"),
+            "doc.handbook",
+            Some("Acme Operations Handbook"),
+            Some("acme_operations_handbook_ed3.pdf"),
             Some(&markdown),
             std::slice::from_ref(&pkg),
         )
@@ -504,37 +504,42 @@ mod tests {
         let parsed = parse_document(
             &pkg.manifest.package.name,
             profile,
-            "doc.gdpr",
+            "doc.handbook",
             &identity,
             &markdown,
         )
         .expect("parse")
         .expect("units");
-        assert!(parsed.units.iter().any(|unit| unit.label_norm == "art.33"));
         assert!(
             parsed
                 .units
                 .iter()
-                .any(|unit| unit.label_norm == "art.33.p1")
+                .any(|unit| unit.label_norm == "chapter.3")
+        );
+        assert!(
+            parsed
+                .units
+                .iter()
+                .any(|unit| unit.label_norm == "chapter.3.c1")
         );
     }
 
     #[test]
-    fn parses_guidance_fixture_and_strips_toc() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../soverex-open/docs/legal_agent/structure");
+    fn parses_procedure_fixture_and_strips_toc() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic_manual");
         let pkg = crate::structure::model::StructurePackage::from_dir(&dir).expect("package");
         let profile = pkg
             .profiles
             .iter()
-            .find(|profile| profile.profile.name == "edpb-guidance-en")
+            .find(|profile| profile.profile.name == "procedure-en")
             .expect("profile");
         let markdown =
-            std::fs::read_to_string(dir.join("fixtures/edpb-guidance-en.md")).expect("fixture");
+            std::fs::read_to_string(dir.join("fixtures/procedure-en.md")).expect("fixture");
         let identity = crate::structure::derive_identity(
-            "doc.edpb",
-            Some("EDPB Guidelines 07/2020"),
-            Some("legal_gdpr_EDPB_guidelines_202007_controllerprocessor_final_en.pdf"),
+            "doc.procedure",
+            Some("Acme Field Procedure 9"),
+            Some("acme_field_procedure_9.pdf"),
             Some(&markdown),
             std::slice::from_ref(&pkg),
         )
@@ -542,7 +547,7 @@ mod tests {
         let parsed = parse_document(
             &pkg.manifest.package.name,
             profile,
-            "doc.edpb",
+            "doc.procedure",
             &identity,
             &markdown,
         )
@@ -552,10 +557,10 @@ mod tests {
             parsed
                 .units
                 .iter()
-                .filter(|unit| unit.unit_kind == "section")
+                .filter(|unit| unit.unit_kind == "step")
                 .count(),
             1
         );
-        assert_eq!(parsed.units[0].label_norm, "section.1.3.6");
+        assert_eq!(parsed.units[0].label_norm, "step.1.3.6");
     }
 }

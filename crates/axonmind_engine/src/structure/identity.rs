@@ -261,29 +261,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn derives_gdpr_identity_from_opening_text() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../soverex-open/docs/legal_agent/structure");
+    fn derives_handbook_identity_from_opening_text() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic_manual");
         let pkg = crate::structure::model::StructurePackage::from_dir(&dir).expect("package");
         let derived = derive_identity(
-            "doc.gdpr",
+            "doc.handbook",
             Some("Untitled"),
-            Some("Regulation_2016_679__GDPR_.pdf"),
-            Some("REGULATION (EU) 2016/679"),
+            Some("Acme_Operations_Handbook_Ed3.pdf"),
+            Some("ACME OPERATIONS HANDBOOK, EDITION 3"),
             &[pkg],
         );
         assert_eq!(
             derived.identity.instrument_type.as_deref(),
-            Some("regulation")
+            Some("handbook")
         );
         assert!(
             derived
                 .identity
                 .aliases
                 .iter()
-                .any(|alias| alias.alias == "GDPR")
+                .any(|alias| alias.alias == "The Handbook")
         );
-        assert_eq!(derived.profile_name.as_deref(), Some("eu-regulation-en"));
+        assert_eq!(derived.profile_name.as_deref(), Some("handbook-en"));
         // pinned_profile is reserved for an explicit user pin that survives
         // re-ingestion; package-derived identity must not write it. Profile
         // selection is carried separately via DerivedIdentity.profile_name.

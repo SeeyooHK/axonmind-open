@@ -1,0 +1,34 @@
+[profile]
+name = "checklist-en"
+version = 1
+description = "Synthetic checklist grammar: numbered items with sub-points"
+language = ["en"]
+
+[toc]
+strip_lines = ['(?m)^.{0,120}\.{3,}\s*\d{1,4}\s*$']
+strip_headings = ["Contents"]
+
+[[unit]]
+kind = "item"
+marker = '(?m)^(?:Item|It\.)\s+(\d+[a-z]?)\b[ \t]*(.*)$'
+captures = { number = 1, inline_title = 2 }
+title = "inline_or_next_heading"
+label = "Item {number}"
+label_norm = "item.{number}"
+citation = "{doc}, Item {number}"
+level = 1
+
+[[unit]]
+kind = "point"
+parent = "item"
+marker = '(?m)^(?:(\d+)\.|\((\d+)\))\s+'
+captures = { number = "1|2" }
+label = "{parent.label}({number})"
+label_norm = "{parent.label_norm}.pt{number}"
+citation = "{doc}, Item {parent.number}({number})"
+level = 2
+
+[[ref]]
+target_kind = "item"
+pattern = '\bItem\s+(\d+[a-z]?)\b'
+target_label_norm = "item.{1}"
