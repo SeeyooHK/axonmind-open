@@ -1737,7 +1737,9 @@ impl AxonMindEngine {
 
     pub async fn retro_apply_structure_packages(&self) -> Result<(), AxonMindError> {
         for node in self.store.fetch_nodes_by_kind(NodeKind::Document).await? {
-            self.ensure_document_grounding(&node.id).await?;
+            if let Err(e) = self.ensure_document_grounding(&node.id).await {
+                tracing::warn!("structure retro-apply: doc {} grounding failed: {e}", node.id.0);
+            }
         }
         Ok(())
     }

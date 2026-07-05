@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use axonmind_core::AxonMindError;
 
 use crate::pageindex::tree::{PersistTree, SectionRow};
-use crate::store::{DocumentIdentityRecord, LegalUnitRefRecord};
+use crate::store::{DocumentIdentityRecord, UnitRefRecord};
 use crate::structure::model::{CaptureSelector, LevelSpec, ProfileDefinition, StructureUnit};
 
 const PATH_SEP: &str = " \u{203a} ";
@@ -11,7 +11,7 @@ const PATH_SEP: &str = " \u{203a} ";
 #[derive(Debug, Clone)]
 pub struct ParsedDocumentIndex {
     pub units: Vec<ParsedUnit>,
-    pub refs: Vec<LegalUnitRefRecord>,
+    pub refs: Vec<UnitRefRecord>,
     pub tree: PersistTree,
 }
 
@@ -118,7 +118,7 @@ fn build_units(
     markers: &[MarkerMatch],
     units: &mut Vec<ParsedUnit>,
     sections: &mut Vec<SectionRow>,
-    refs: &mut Vec<LegalUnitRefRecord>,
+    refs: &mut Vec<UnitRefRecord>,
 ) -> Result<(), AxonMindError> {
     for (ordinal, marker) in markers.iter().enumerate() {
         let start = lines[marker.line_idx].start;
@@ -394,7 +394,7 @@ fn is_toc_heading(line: &str, profile: &ProfileDefinition) -> bool {
     })
 }
 
-fn extract_refs(profile: &ProfileDefinition, unit: &ParsedUnit) -> Vec<LegalUnitRefRecord> {
+fn extract_refs(profile: &ProfileDefinition, unit: &ParsedUnit) -> Vec<UnitRefRecord> {
     let mut refs = Vec::new();
     for reference in &profile.refs {
         let Ok(regex) = regex::Regex::new(&reference.pattern) else {
@@ -406,7 +406,7 @@ fn extract_refs(profile: &ProfileDefinition, unit: &ParsedUnit) -> Vec<LegalUnit
             if target_label_norm == unit.label_norm {
                 continue;
             }
-            refs.push(LegalUnitRefRecord {
+            refs.push(UnitRefRecord {
                 from_unit_id: unit.unit_id.clone(),
                 to_doc_node_id: None,
                 target_label: target_label_norm.clone(),

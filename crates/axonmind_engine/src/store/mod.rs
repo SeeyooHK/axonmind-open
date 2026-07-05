@@ -293,7 +293,7 @@ pub struct LegalUnitRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LegalUnitRefRecord {
+pub struct UnitRefRecord {
     pub from_unit_id: String,
     pub to_doc_node_id: Option<String>,
     pub target_label: String,
@@ -2288,7 +2288,7 @@ impl GraphStore {
         &self,
         doc_node_id: &str,
         units: &[LegalUnitRecord],
-        refs: &[LegalUnitRefRecord],
+        refs: &[UnitRefRecord],
     ) -> Result<(), AxonMindError> {
         let doc_id = doc_node_id.to_owned();
         let units = units.to_vec();
@@ -2700,7 +2700,7 @@ impl GraphStore {
     pub(crate) async fn fetch_legal_refs(
         &self,
         from_unit_ids: &[String],
-    ) -> Result<Vec<LegalUnitRefRecord>, AxonMindError> {
+    ) -> Result<Vec<UnitRefRecord>, AxonMindError> {
         if from_unit_ids.is_empty() {
             return Ok(vec![]);
         }
@@ -2712,7 +2712,7 @@ impl GraphStore {
             .await
             .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
         conn.interact(
-            move |conn| -> Result<Vec<LegalUnitRefRecord>, AxonMindError> {
+            move |conn| -> Result<Vec<UnitRefRecord>, AxonMindError> {
                 let placeholders = ids
                     .iter()
                     .enumerate()
@@ -2730,7 +2730,7 @@ impl GraphStore {
                 let params: Vec<&dyn rusqlite::ToSql> =
                     ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
                 stmt.query_map(params.as_slice(), |row| {
-                    Ok(LegalUnitRefRecord {
+                    Ok(UnitRefRecord {
                         from_unit_id: row.get(0)?,
                         to_doc_node_id: row.get(1)?,
                         target_label: row.get(2)?,

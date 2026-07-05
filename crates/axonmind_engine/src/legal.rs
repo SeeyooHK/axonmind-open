@@ -5,7 +5,7 @@ use regex::Regex;
 
 use crate::pageindex::tree::{PersistTree, SectionRow};
 use crate::store::{
-    DocumentAliasRecord, DocumentIdentityRecord, LegalUnitRecord, LegalUnitRefRecord,
+    DocumentAliasRecord, DocumentIdentityRecord, LegalUnitRecord, UnitRefRecord,
 };
 
 const PATH_SEP: &str = " \u{203a} ";
@@ -14,7 +14,7 @@ const PATH_SEP: &str = " \u{203a} ";
 pub struct LegalDocumentIndex {
     pub identity: DocumentIdentityRecord,
     pub units: Vec<LegalUnitRecord>,
-    pub refs: Vec<LegalUnitRefRecord>,
+    pub refs: Vec<UnitRefRecord>,
     pub tree: PersistTree,
 }
 
@@ -332,7 +332,7 @@ pub fn build_legal_index(
             None => continue,
         };
         for reference in &parsed.refs {
-            refs.push(LegalUnitRefRecord {
+            refs.push(UnitRefRecord {
                 from_unit_id: from_unit_id.clone(),
                 to_doc_node_id: None,
                 target_label: reference.target_label.clone(),
