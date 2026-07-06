@@ -2122,6 +2122,53 @@ impl GraphStore {
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
+    /// Distinct corpus names a package's `[[bind]]` rows resolve into, read straight from
+    /// `corpus_bindings` (kind='bind'). The `[corpus] name` in a package's `corpus.toml` is
+    /// never persisted itself — only the bind rows' `corpus: Vec<String>` are (see
+    /// `install_structure_package`) — so this is the only source of truth for "what corpus
+    /// name(s) does this package actually resolve documents into."
+    pub(crate) async fn structure_package_corpora(
+        &self,
+        package_name: &str,
+    ) -> Result<Vec<String>, AxonMindError> {
+        let package_name = package_name.to_string();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Vec<String>, AxonMindError> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT definition FROM corpus_bindings
+                     WHERE package_name = ?1 AND kind = 'bind'
+                     ORDER BY ordinal",
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let definitions = stmt
+                .query_map([&package_name], |row| row.get::<_, String>(0))
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+
+            let mut corpora = Vec::new();
+            for definition in definitions {
+                let binding: crate::structure::model::CorpusBinding =
+                    serde_json::from_str(&definition)
+                        .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                for name in binding.corpus {
+                    if !corpora.contains(&name) {
+                        corpora.push(name);
+                    }
+                }
+            }
+            Ok(corpora)
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("pool interact: {e}")))?
+    }
+
     pub(crate) async fn load_structure_packages(
         &self,
     ) -> Result<Vec<crate::structure::model::StructurePackage>, AxonMindError> {

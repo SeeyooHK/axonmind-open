@@ -1723,6 +1723,16 @@ impl AxonMindEngine {
             .collect())
     }
 
+    /// Distinct corpus names a package's `[[bind]]` rules resolve documents into. See
+    /// `GraphStore::structure_package_corpora` for why this reads `corpus_bindings` directly
+    /// rather than the package's `[corpus] name` (never persisted).
+    pub async fn structure_package_corpora(
+        &self,
+        package_name: &str,
+    ) -> Result<Vec<String>, AxonMindError> {
+        self.store.structure_package_corpora(package_name).await
+    }
+
     pub async fn remove_structure_package_source(
         &self,
         package_name: &str,
