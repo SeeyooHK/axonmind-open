@@ -50,10 +50,13 @@ pub fn derive_identity(
         }],
     };
     let mut best_profile = None;
+    // Worse than any real match's tier (0-2, see `source_specificity`); ensures the very first
+    // rule match always beats the untyped fallback identity above, matching prior behavior.
+    let mut best_specificity = u8::MAX;
 
     for pkg in packages {
         for rule in &pkg.identity.rules {
-            if let Some(identity) = apply_rule(
+            if let Some((identity, specificity)) = apply_rule(
                 doc_node_id,
                 raw_title,
                 source_path,
@@ -62,9 +65,12 @@ pub fn derive_identity(
                 &fallback_title,
                 rule,
             ) {
-                if identity.confidence > best.confidence {
+                let better = specificity < best_specificity
+                    || (specificity == best_specificity && identity.confidence > best.confidence);
+                if better {
                     best = identity;
                     best_profile = Some(rule.profile.clone());
+                    best_specificity = specificity;
                 }
             }
         }
@@ -79,6 +85,21 @@ pub fn derive_identity(
     }
 }
 
+/// How authoritative a source is as evidence of a document's *own* identity, versus an
+/// incidental match somewhere in its body (e.g. a citation to a different instrument). Lower
+/// is more authoritative. `filename`/`raw_title` are short and identity-bearing by construction;
+/// `first_lines`/`first_chars` scan a growing window of body text and can just as easily match
+/// a reference to a *different* document mentioned early on (a citation, a "having regard to").
+fn source_specificity(source: &str) -> u8 {
+    if source == "filename" || source == "raw_title" {
+        0
+    } else if source.starts_with("first_lines:") {
+        1
+    } else {
+        2
+    }
+}
+
 fn apply_rule(
     doc_node_id: &str,
     raw_title: Option<&str>,
@@ -87,7 +108,7 @@ fn apply_rule(
     source_filename: &str,
     fallback_title: &str,
     rule: &IdentityRule,
-) -> Option<DocumentIdentityRecord> {
+) -> Option<(DocumentIdentityRecord, u8)> {
     let regex = Regex::new(&rule.pattern).ok()?;
     for source in &rule.sources {
         let haystack = source_text(source, source_filename, raw_title, fallback_title, markdown)?;
@@ -112,23 +133,26 @@ fn apply_rule(
                 source: "inferred".to_string(),
             });
         }
-        return Some(DocumentIdentityRecord {
-            doc_node_id: doc_node_id.to_string(),
-            source_filename: source_filename.to_string(),
-            source_path: source_path.map(str::to_string),
-            raw_title: raw_title.map(str::to_string),
-            canonical_title,
-            language: rule.set.language.clone(),
-            jurisdiction: rule.set.jurisdiction.clone(),
-            domain: rule.set.domain.clone(),
-            instrument_type: rule.set.instrument_type.clone(),
-            corpus: rule.set.corpus.clone(),
-            confidence: rule.confidence,
-            reviewed_at: None,
-            updated_at: chrono::Utc::now().timestamp(),
-            pinned_profile: None,
-            aliases,
-        });
+        return Some((
+            DocumentIdentityRecord {
+                doc_node_id: doc_node_id.to_string(),
+                source_filename: source_filename.to_string(),
+                source_path: source_path.map(str::to_string),
+                raw_title: raw_title.map(str::to_string),
+                canonical_title,
+                language: rule.set.language.clone(),
+                jurisdiction: rule.set.jurisdiction.clone(),
+                domain: rule.set.domain.clone(),
+                instrument_type: rule.set.instrument_type.clone(),
+                corpus: rule.set.corpus.clone(),
+                confidence: rule.confidence,
+                reviewed_at: None,
+                updated_at: chrono::Utc::now().timestamp(),
+                pinned_profile: None,
+                aliases,
+            },
+            source_specificity(source),
+        ));
     }
     None
 }
@@ -287,5 +311,35 @@ mod tests {
         // re-ingestion; package-derived identity must not write it. Profile
         // selection is carried separately via DerivedIdentity.profile_name.
         assert_eq!(derived.identity.pinned_profile, None);
+    }
+
+    /// A document's own title (matched via `raw_title`, tier 0) must win over a higher-confidence
+    /// rule that only matches an incidental mention deep in the body (`first_chars`, tier 2).
+    /// Regression for the `doc.063f63d2` misidentification in docs/structure_packages.md
+    /// (2026-07-06): a real EDPB Guidelines document titled "Guidelines 9/2022..." (Guidelines
+    /// rule, confidence 0.85) got mislabeled "Directive 2009/136" because that rule (confidence
+    /// 0.9) matched a citation to a *different* instrument buried in the body — a higher
+    /// confidence number for an incidental match beat the document's own, lower-confidence,
+    /// title-level match. Mirrors that shape with the synthetic fixture: "Acme Field Procedure 9"
+    /// (confidence 0.85) is the document's actual title; "Acme Policy 3" (confidence 0.90) is
+    /// only cited in passing within the body.
+    #[test]
+    fn title_level_match_beats_a_higher_confidence_body_citation() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic_manual");
+        let pkg = crate::structure::model::StructurePackage::from_dir(&dir).expect("package");
+        let markdown = "Acme Field Procedure 9\n\nStep 1. As required by Acme Policy 3, verify the equipment is locked out before proceeding.\n";
+        let derived = derive_identity(
+            "doc.procedure",
+            Some("Acme Field Procedure 9"),
+            None,
+            Some(markdown),
+            &[pkg],
+        );
+        assert_eq!(
+            derived.identity.instrument_type.as_deref(),
+            Some("procedure"),
+            "expected the document's own title to win, got: {:?}",
+            derived.identity.canonical_title
+        );
     }
 }
