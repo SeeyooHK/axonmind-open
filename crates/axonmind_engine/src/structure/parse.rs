@@ -78,6 +78,7 @@ pub fn parse_document(
     let mut units = Vec::new();
     let mut sections = Vec::new();
     let mut refs = Vec::new();
+    let mut seen_unit_ids = BTreeMap::new();
     build_units(
         package_name,
         profile,
@@ -91,6 +92,7 @@ pub fn parse_document(
         &mut units,
         &mut sections,
         &mut refs,
+        &mut seen_unit_ids,
     )?;
 
     Ok(Some(ParsedDocumentIndex {
@@ -119,6 +121,7 @@ fn build_units(
     units: &mut Vec<ParsedUnit>,
     sections: &mut Vec<SectionRow>,
     refs: &mut Vec<UnitRefRecord>,
+    seen_unit_ids: &mut BTreeMap<String, usize>,
 ) -> Result<(), AxonMindError> {
     for (ordinal, marker) in markers.iter().enumerate() {
         let start = lines[marker.line_idx].start;
@@ -148,7 +151,7 @@ fn build_units(
             }
             _ => format!("{}{}{}", identity.canonical_title, PATH_SEP, label),
         };
-        let unit_id = format!("{doc_node_id}:{label_norm}");
+        let unit_id = dedupe_unit_id(format!("{doc_node_id}:{label_norm}"), seen_unit_ids);
         let section_id = format!("{doc_node_id}#{:04}", sections.len() + 1);
         let locators = marker.captures.clone();
         let level = resolve_level(&marker.unit.level, &locators);
@@ -219,9 +222,41 @@ fn build_units(
             units,
             sections,
             refs,
+            seen_unit_ids,
         )?;
     }
     Ok(())
+}
+
+/// Guarantees `unit_id` uniqueness within one document's parse. Two markers can legitimately
+/// render the same `label_norm` (e.g. a duplicated section number left behind by an
+/// imperfectly-stripped TOC) — without this, `replace_legal_units`'s single INSERT transaction
+/// hits a PRIMARY KEY collision and the *entire* document's units are discarded (see
+/// docs/structure_packages.md's 2026-07-06 findings). Suffixing keeps every extracted unit
+/// instead of losing a whole document over one collision; the first occurrence keeps the clean
+/// id so normal (non-colliding) documents are unaffected.
+fn dedupe_unit_id(base: String, seen: &mut BTreeMap<String, usize>) -> String {
+    let count = seen.entry(base.clone()).or_insert(0);
+    *count += 1;
+    if *count == 1 {
+        base
+    } else {
+        format!("{base}~{count}")
+    }
+}
+
+/// Strips a leading Markdown heading marker (`#`..`######` + whitespace) before applying a
+/// structure marker regex. The PDF→Markdown extractor renders many structural headings
+/// (e.g. article/section titles) as Markdown headings rather than bare text; marker regexes
+/// are authored against the bare-text form (`^Article\s+\d+`), so without this they silently
+/// miss every heading-rendered occurrence and only match the rare bare-text ones.
+fn strip_heading_prefix(text: &str) -> &str {
+    let stripped = text.trim_start_matches('#');
+    if stripped.len() < text.len() && stripped.starts_with(|c: char| c.is_whitespace()) {
+        stripped.trim_start()
+    } else {
+        text
+    }
 }
 
 fn slice_lines(lines: &[LineSpan], start: usize, end: usize) -> Vec<LineSpan> {
@@ -244,6 +279,7 @@ fn find_markers(
         if trimmed.is_empty() {
             continue;
         }
+        let target = strip_heading_prefix(trimmed);
         for candidate in candidates {
             if !region_allows(profile, candidate, parent_marker, idx, lines) {
                 continue;
@@ -251,7 +287,7 @@ fn find_markers(
             let Ok(regex) = regex::Regex::new(&candidate.marker) else {
                 continue;
             };
-            let Some(captures) = regex.captures(trimmed) else {
+            let Some(captures) = regex.captures(target) else {
                 continue;
             };
             let values = candidate
@@ -299,25 +335,31 @@ fn region_allows(
     let Some(until_kind) = region.until.strip_prefix("first:") else {
         return false;
     };
-    for (idx, line) in lines.iter().enumerate() {
-        if idx < line_idx {
-            continue;
-        }
-        if profile
+    // Boundary = the first line (searched from the document start, not from `line_idx`) whose
+    // text matches an `until_kind` marker. A candidate belongs to the region iff it sits before
+    // that boundary; no boundary found means the whole document is the region. (Previously this
+    // scanned forward *from* `line_idx` and compared `idx == line_idx`, which is only ever true
+    // when the candidate's own line happens to be the boundary itself — every genuine
+    // region-scoped unit before the boundary was rejected. Confirmed via the "note.1" line in
+    // tests/fixtures/generic_manual/fixtures/handbook-en.md, which the old logic silently
+    // dropped and no existing test asserted on.)
+    let boundary = lines.iter().enumerate().find_map(|(idx, line)| {
+        profile
             .units
             .iter()
             .filter(|candidate| candidate.parent.is_none())
             .any(|candidate| {
                 candidate.kind == until_kind
-                    && regex::Regex::new(&candidate.marker)
-                        .ok()
-                        .is_some_and(|regex| regex.is_match(line.text.trim()))
+                    && regex::Regex::new(&candidate.marker).ok().is_some_and(|regex| {
+                        regex.is_match(strip_heading_prefix(line.text.trim()))
+                    })
             })
-        {
-            return idx == line_idx;
-        }
+            .then_some(idx)
+    });
+    match boundary {
+        Some(boundary_idx) => line_idx < boundary_idx,
+        None => true,
     }
-    true
 }
 
 fn resolve_capture(selector: &CaptureSelector, captures: &regex::Captures<'_>) -> Option<String> {
@@ -562,5 +604,118 @@ mod tests {
             1
         );
         assert_eq!(parsed.units[0].label_norm, "step.1.3.6");
+    }
+
+    fn handbook_profile() -> (
+        crate::structure::model::StructurePackage,
+        std::path::PathBuf,
+    ) {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic_manual");
+        let pkg = crate::structure::model::StructurePackage::from_dir(&dir).expect("package");
+        (pkg, dir)
+    }
+
+    /// A region-scoped unit (`note`, `region = "preface"`) positioned before the region's
+    /// boundary marker (`Chapter 3`) must be captured. Regression for the boundary-comparison
+    /// bug in `region_allows`: it used to scan forward *from* the candidate's own line looking
+    /// for the boundary and only accept an exact-position match, which no genuine region-scoped
+    /// unit ever satisfies — every "before the boundary" candidate was silently rejected and no
+    /// existing test asserted on `note` units to catch it.
+    #[test]
+    fn region_scoped_unit_before_boundary_is_captured() {
+        let (pkg, _dir) = handbook_profile();
+        let profile = pkg
+            .profiles
+            .iter()
+            .find(|profile| profile.profile.name == "handbook-en")
+            .expect("profile");
+        let markdown = "(1) This handbook governs day-to-day operations.\n\nChapter 3\nEquipment safety checks\n\n1. The operator shall inspect equipment before each shift.\n";
+        let identity = crate::structure::derive_identity(
+            "doc.handbook",
+            Some("Acme Operations Handbook"),
+            None,
+            Some(markdown),
+            std::slice::from_ref(&pkg),
+        )
+        .identity;
+        let parsed = parse_document(&pkg.manifest.package.name, profile, "doc.handbook", &identity, markdown)
+            .expect("parse")
+            .expect("units");
+        assert!(
+            parsed.units.iter().any(|unit| unit.label_norm == "note.1"),
+            "expected note.1 before the Chapter 3 boundary, got: {:?}",
+            parsed.units.iter().map(|u| &u.label_norm).collect::<Vec<_>>()
+        );
+    }
+
+    /// A structural marker rendered as a Markdown heading (`## Chapter 3`) must match the same
+    /// as its bare-text form (`Chapter 3`). Regression for the PDF-extraction finding in
+    /// docs/structure_packages.md (2026-07-06): the real GDPR Regulation PDF renders most
+    /// article headings as `### Article N`, and the marker regexes (authored against bare text)
+    /// silently missed all of them — only the rare bare-text occurrences matched.
+    #[test]
+    fn heading_rendered_marker_is_captured() {
+        let (pkg, _dir) = handbook_profile();
+        let profile = pkg
+            .profiles
+            .iter()
+            .find(|profile| profile.profile.name == "handbook-en")
+            .expect("profile");
+        let markdown = "## Chapter 3\nEquipment safety checks\n\n1. The operator shall inspect equipment before each shift.\n";
+        let identity = crate::structure::derive_identity(
+            "doc.handbook",
+            Some("Acme Operations Handbook"),
+            None,
+            Some(markdown),
+            std::slice::from_ref(&pkg),
+        )
+        .identity;
+        let parsed = parse_document(&pkg.manifest.package.name, profile, "doc.handbook", &identity, markdown)
+            .expect("parse")
+            .expect("units");
+        assert!(
+            parsed.units.iter().any(|unit| unit.label_norm == "chapter.3"),
+            "expected chapter.3 despite the '## ' heading prefix, got: {:?}",
+            parsed.units.iter().map(|u| &u.label_norm).collect::<Vec<_>>()
+        );
+    }
+
+    /// Two markers producing the same `label_norm` within one document (e.g. a duplicated
+    /// heading left behind by an imperfectly-stripped TOC) must not collide on `unit_id` — both
+    /// units are kept, the second disambiguated. Regression for the `UNIQUE constraint failed:
+    /// legal_units.unit_id` finding in docs/structure_packages.md (2026-07-06), which discarded
+    /// the *entire* document's parsed units when `replace_legal_units`'s single insert
+    /// transaction hit the collision.
+    #[test]
+    fn duplicate_label_norm_gets_a_disambiguated_unit_id() {
+        let (pkg, _dir) = handbook_profile();
+        let profile = pkg
+            .profiles
+            .iter()
+            .find(|profile| profile.profile.name == "handbook-en")
+            .expect("profile");
+        let markdown = "Chapter 5\nFirst occurrence.\n\nChapter 5\nSecond occurrence.\n";
+        let identity = crate::structure::derive_identity(
+            "doc.handbook",
+            Some("Acme Operations Handbook"),
+            None,
+            Some(markdown),
+            std::slice::from_ref(&pkg),
+        )
+        .identity;
+        let parsed = parse_document(&pkg.manifest.package.name, profile, "doc.handbook", &identity, markdown)
+            .expect("parse")
+            .expect("units");
+        let chapter_5s: Vec<_> = parsed
+            .units
+            .iter()
+            .filter(|unit| unit.label_norm == "chapter.5")
+            .collect();
+        assert_eq!(chapter_5s.len(), 2, "both occurrences must be kept, not just the first");
+        assert_ne!(
+            chapter_5s[0].unit_id, chapter_5s[1].unit_id,
+            "duplicate label_norm must not produce duplicate unit_id"
+        );
     }
 }
