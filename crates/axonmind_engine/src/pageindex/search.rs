@@ -165,5 +165,5 @@ fn sanitize_fts_query(q: &str) -> String {
     q.split_whitespace()
         .map(|w| format!("\"{}\"", w.replace('"', "")))
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" OR ")
 }

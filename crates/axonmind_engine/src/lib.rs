@@ -1747,6 +1747,18 @@ impl AxonMindEngine {
     async fn ensure_document_identity_catalog(&self) -> Result<(), AxonMindError> {
         let packages = self.store.load_structure_packages().await?;
         for node in self.store.fetch_nodes_by_kind(NodeKind::Document).await? {
+            // A document already carries a confident, rule-matched identity (instrument_type
+            // set) when `ensure_document_grounding` derived it against the real document body.
+            // This catalog pass has no body text to work with (see below) — recomputing here
+            // would silently downgrade that identity back to the untyped fallback, wiping
+            // `corpus`/`instrument_type` on every `document_search` call. Skip, matching the
+            // "don't redo settled work" gate `ensure_document_grounding` already uses for
+            // `legal_units`.
+            if let Some(existing) = self.store.fetch_document_identity(&node.id.0).await?
+                && existing.instrument_type.is_some()
+            {
+                continue;
+            }
             let source_path = node
                 .attrs
                 .get("source_path")
