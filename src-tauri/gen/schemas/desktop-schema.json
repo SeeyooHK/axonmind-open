@@ -177,10 +177,22 @@
       "description": "Permission identifier",
       "oneOf": [
         {
-          "description": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-focus-kpi`\n- `allow-explain-kpi`\n- `allow-get-evidence`\n- `allow-impact-radius`\n- `allow-trace-decision`\n- `allow-suggest-actions`\n- `allow-graph-search`\n- `allow-reasoning-search`\n- `allow-graph-diff`\n- `allow-graph-stats`\n- `allow-find-conflicts`\n- `allow-index-path`\n- `allow-index-markdown`\n- `allow-parse-and-index`\n- `allow-list-documents`\n- `allow-remove-document`\n- `allow-regenerate-document`\n- `allow-export-json`\n- `allow-suggest-summary`\n- `allow-get-brain-map-default-config`\n- `allow-update-brain-map-default-config`\n- `allow-restore-brain-map-default-config`\n- `allow-resolve-brain-map-default-summary`\n- `allow-resolve-brain-map-lens-children`\n- `allow-rebuild-search-index`\n- `allow-create-generation-from-paths`\n- `allow-list-generations`\n- `allow-export-generation`\n- `allow-list-dir-files`\n- `allow-read-file-text`\n- `allow-list-api-keys`\n- `allow-has-active-api-key`\n- `allow-get-runtime-provider-status`\n- `allow-save-api-key`\n- `allow-delete-api-key`\n- `allow-set-active-provider`\n- `allow-detect-cli-sessions`\n- `allow-get-cli-session-options`\n- `allow-use-cli-session`",
+          "description": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-focus-kpi`\n- `allow-explain-kpi`\n- `allow-get-evidence`\n- `allow-impact-radius`\n- `allow-trace-decision`\n- `allow-suggest-actions`\n- `allow-graph-search`\n- `allow-reasoning-search`\n- `allow-graph-diff`\n- `allow-graph-stats`\n- `allow-find-conflicts`\n- `allow-index-path`\n- `allow-start-ingest`\n- `allow-cancel-ingest`\n- `allow-cancel-ingest-file`\n- `allow-index-markdown`\n- `allow-parse-and-index`\n- `allow-list-documents`\n- `allow-list-ingest-status`\n- `allow-list-trash`\n- `allow-remove-document`\n- `allow-regenerate-document`\n- `allow-trash-document`\n- `allow-restore-document`\n- `allow-delete-document-permanently`\n- `allow-empty-trash`\n- `allow-export-json`\n- `allow-suggest-summary`\n- `allow-get-brain-map-default-config`\n- `allow-update-brain-map-default-config`\n- `allow-restore-brain-map-default-config`\n- `allow-resolve-brain-map-default-summary`\n- `allow-resolve-brain-map-lens-children`\n- `allow-rebuild-search-index`\n- `allow-create-generation-from-paths`\n- `allow-list-generations`\n- `allow-export-generation`\n- `allow-list-dir-files`\n- `allow-read-file-text`\n- `allow-list-api-keys`\n- `allow-has-active-api-key`\n- `allow-get-runtime-provider-status`\n- `allow-save-api-key`\n- `allow-delete-api-key`\n- `allow-set-active-provider`\n- `allow-detect-cli-sessions`\n- `allow-get-cli-session-options`\n- `allow-use-cli-session`",
           "type": "string",
           "const": "axonmind:default",
-          "markdownDescription": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-focus-kpi`\n- `allow-explain-kpi`\n- `allow-get-evidence`\n- `allow-impact-radius`\n- `allow-trace-decision`\n- `allow-suggest-actions`\n- `allow-graph-search`\n- `allow-reasoning-search`\n- `allow-graph-diff`\n- `allow-graph-stats`\n- `allow-find-conflicts`\n- `allow-index-path`\n- `allow-index-markdown`\n- `allow-parse-and-index`\n- `allow-list-documents`\n- `allow-remove-document`\n- `allow-regenerate-document`\n- `allow-export-json`\n- `allow-suggest-summary`\n- `allow-get-brain-map-default-config`\n- `allow-update-brain-map-default-config`\n- `allow-restore-brain-map-default-config`\n- `allow-resolve-brain-map-default-summary`\n- `allow-resolve-brain-map-lens-children`\n- `allow-rebuild-search-index`\n- `allow-create-generation-from-paths`\n- `allow-list-generations`\n- `allow-export-generation`\n- `allow-list-dir-files`\n- `allow-read-file-text`\n- `allow-list-api-keys`\n- `allow-has-active-api-key`\n- `allow-get-runtime-provider-status`\n- `allow-save-api-key`\n- `allow-delete-api-key`\n- `allow-set-active-provider`\n- `allow-detect-cli-sessions`\n- `allow-get-cli-session-options`\n- `allow-use-cli-session`"
+          "markdownDescription": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-focus-kpi`\n- `allow-explain-kpi`\n- `allow-get-evidence`\n- `allow-impact-radius`\n- `allow-trace-decision`\n- `allow-suggest-actions`\n- `allow-graph-search`\n- `allow-reasoning-search`\n- `allow-graph-diff`\n- `allow-graph-stats`\n- `allow-find-conflicts`\n- `allow-index-path`\n- `allow-start-ingest`\n- `allow-cancel-ingest`\n- `allow-cancel-ingest-file`\n- `allow-index-markdown`\n- `allow-parse-and-index`\n- `allow-list-documents`\n- `allow-list-ingest-status`\n- `allow-list-trash`\n- `allow-remove-document`\n- `allow-regenerate-document`\n- `allow-trash-document`\n- `allow-restore-document`\n- `allow-delete-document-permanently`\n- `allow-empty-trash`\n- `allow-export-json`\n- `allow-suggest-summary`\n- `allow-get-brain-map-default-config`\n- `allow-update-brain-map-default-config`\n- `allow-restore-brain-map-default-config`\n- `allow-resolve-brain-map-default-summary`\n- `allow-resolve-brain-map-lens-children`\n- `allow-rebuild-search-index`\n- `allow-create-generation-from-paths`\n- `allow-list-generations`\n- `allow-export-generation`\n- `allow-list-dir-files`\n- `allow-read-file-text`\n- `allow-list-api-keys`\n- `allow-has-active-api-key`\n- `allow-get-runtime-provider-status`\n- `allow-save-api-key`\n- `allow-delete-api-key`\n- `allow-set-active-provider`\n- `allow-detect-cli-sessions`\n- `allow-get-cli-session-options`\n- `allow-use-cli-session`"
+        },
+        {
+          "description": "Enables the cancel_ingest command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:allow-cancel-ingest",
+          "markdownDescription": "Enables the cancel_ingest command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the cancel_ingest_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:allow-cancel-ingest-file",
+          "markdownDescription": "Enables the cancel_ingest_file command without any pre-configured scope."
         },
         {
           "description": "Enables the create_generation_from_paths command without any pre-configured scope.",
@@ -195,10 +207,22 @@
           "markdownDescription": "Enables the delete_api_key command without any pre-configured scope."
         },
         {
+          "description": "Enables the delete_document_permanently command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:allow-delete-document-permanently",
+          "markdownDescription": "Enables the delete_document_permanently command without any pre-configured scope."
+        },
+        {
           "description": "Enables the detect_cli_sessions command without any pre-configured scope.",
           "type": "string",
           "const": "axonmind:allow-detect-cli-sessions",
           "markdownDescription": "Enables the detect_cli_sessions command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the empty_trash command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:allow-empty-trash",
+          "markdownDescription": "Enables the empty_trash command without any pre-configured scope."
         },
         {
           "description": "Enables the explain_kpi command without any pre-configured scope.",
@@ -321,6 +345,18 @@
           "markdownDescription": "Enables the list_generations command without any pre-configured scope."
         },
         {
+          "description": "Enables the list_ingest_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:allow-list-ingest-status",
+          "markdownDescription": "Enables the list_ingest_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_trash command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:allow-list-trash",
+          "markdownDescription": "Enables the list_trash command without any pre-configured scope."
+        },
+        {
           "description": "Enables the parse_and_index command without any pre-configured scope.",
           "type": "string",
           "const": "axonmind:allow-parse-and-index",
@@ -375,6 +411,12 @@
           "markdownDescription": "Enables the restore_brain_map_default_config command without any pre-configured scope."
         },
         {
+          "description": "Enables the restore_document command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:allow-restore-document",
+          "markdownDescription": "Enables the restore_document command without any pre-configured scope."
+        },
+        {
           "description": "Enables the save_api_key command without any pre-configured scope.",
           "type": "string",
           "const": "axonmind:allow-save-api-key",
@@ -385,6 +427,12 @@
           "type": "string",
           "const": "axonmind:allow-set-active-provider",
           "markdownDescription": "Enables the set_active_provider command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the start_ingest command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:allow-start-ingest",
+          "markdownDescription": "Enables the start_ingest command without any pre-configured scope."
         },
         {
           "description": "Enables the suggest_actions command without any pre-configured scope.",
@@ -405,6 +453,12 @@
           "markdownDescription": "Enables the trace_decision command without any pre-configured scope."
         },
         {
+          "description": "Enables the trash_document command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:allow-trash-document",
+          "markdownDescription": "Enables the trash_document command without any pre-configured scope."
+        },
+        {
           "description": "Enables the update_brain_map_default_config command without any pre-configured scope.",
           "type": "string",
           "const": "axonmind:allow-update-brain-map-default-config",
@@ -415,6 +469,18 @@
           "type": "string",
           "const": "axonmind:allow-use-cli-session",
           "markdownDescription": "Enables the use_cli_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_ingest command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:deny-cancel-ingest",
+          "markdownDescription": "Denies the cancel_ingest command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_ingest_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:deny-cancel-ingest-file",
+          "markdownDescription": "Denies the cancel_ingest_file command without any pre-configured scope."
         },
         {
           "description": "Denies the create_generation_from_paths command without any pre-configured scope.",
@@ -429,10 +495,22 @@
           "markdownDescription": "Denies the delete_api_key command without any pre-configured scope."
         },
         {
+          "description": "Denies the delete_document_permanently command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:deny-delete-document-permanently",
+          "markdownDescription": "Denies the delete_document_permanently command without any pre-configured scope."
+        },
+        {
           "description": "Denies the detect_cli_sessions command without any pre-configured scope.",
           "type": "string",
           "const": "axonmind:deny-detect-cli-sessions",
           "markdownDescription": "Denies the detect_cli_sessions command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the empty_trash command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:deny-empty-trash",
+          "markdownDescription": "Denies the empty_trash command without any pre-configured scope."
         },
         {
           "description": "Denies the explain_kpi command without any pre-configured scope.",
@@ -555,6 +633,18 @@
           "markdownDescription": "Denies the list_generations command without any pre-configured scope."
         },
         {
+          "description": "Denies the list_ingest_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:deny-list-ingest-status",
+          "markdownDescription": "Denies the list_ingest_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_trash command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:deny-list-trash",
+          "markdownDescription": "Denies the list_trash command without any pre-configured scope."
+        },
+        {
           "description": "Denies the parse_and_index command without any pre-configured scope.",
           "type": "string",
           "const": "axonmind:deny-parse-and-index",
@@ -609,6 +699,12 @@
           "markdownDescription": "Denies the restore_brain_map_default_config command without any pre-configured scope."
         },
         {
+          "description": "Denies the restore_document command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:deny-restore-document",
+          "markdownDescription": "Denies the restore_document command without any pre-configured scope."
+        },
+        {
           "description": "Denies the save_api_key command without any pre-configured scope.",
           "type": "string",
           "const": "axonmind:deny-save-api-key",
@@ -619,6 +715,12 @@
           "type": "string",
           "const": "axonmind:deny-set-active-provider",
           "markdownDescription": "Denies the set_active_provider command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the start_ingest command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:deny-start-ingest",
+          "markdownDescription": "Denies the start_ingest command without any pre-configured scope."
         },
         {
           "description": "Denies the suggest_actions command without any pre-configured scope.",
@@ -637,6 +739,12 @@
           "type": "string",
           "const": "axonmind:deny-trace-decision",
           "markdownDescription": "Denies the trace_decision command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the trash_document command without any pre-configured scope.",
+          "type": "string",
+          "const": "axonmind:deny-trash-document",
+          "markdownDescription": "Denies the trash_document command without any pre-configured scope."
         },
         {
           "description": "Denies the update_brain_map_default_config command without any pre-configured scope.",
