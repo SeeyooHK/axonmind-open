@@ -16,7 +16,7 @@ fn test_engine_config(dir: &TempDir) -> EngineConfig {
 #[test]
 fn tool_defs_count_and_names() {
     let defs = tool_defs();
-    assert_eq!(defs.len(), 11);
+    assert_eq!(defs.len(), 15);
     let names: Vec<_> = defs.iter().map(|t| t.name).collect();
     assert!(names.contains(&"focus_kpi"));
     assert!(names.contains(&"explain_kpi"));
@@ -26,6 +26,10 @@ fn tool_defs_count_and_names() {
     assert!(names.contains(&"suggest_actions"));
     assert!(names.contains(&"graph_search"));
     assert!(names.contains(&"reasoning_search"));
+    assert!(names.contains(&"document_resolve"));
+    assert!(names.contains(&"document_search"));
+    assert!(names.contains(&"document_read_section"));
+    assert!(names.contains(&"document_quote"));
     assert!(names.contains(&"graph_stats"));
     assert!(names.contains(&"graph_diff"));
     assert!(names.contains(&"find_conflicts"));
@@ -92,6 +96,32 @@ fn sample_args(tool_name: &str) -> Value {
             "query": "revenue",
             "doc_node_ids": ["doc.abc12345"],
             "max_results": 5
+        }),
+        "document_resolve" => json!({
+            "query": "GDPR",
+            "corpus": "gdpr",
+            "limit": 5
+        }),
+        "document_search" => json!({
+            "query": "revenue",
+            "doc_ids": ["doc.abc12345"],
+            "corpus": "gdpr",
+            "unit_types": ["article"],
+            "top_k": 8
+        }),
+        "document_read_section" => json!({
+            "doc_id": "doc.abc12345",
+            "locator": { "article": "33" },
+            "section_id": "sec.test",
+            "label_norm": "art.33",
+            "include_children": false
+        }),
+        "document_quote" => json!({
+            "doc_id": "doc.abc12345",
+            "locator": { "article": "33" },
+            "section_id": "sec.test",
+            "label_norm": "art.33",
+            "max_chars": 1200
         }),
         "graph_stats" => json!({}),
         "graph_diff" => {
