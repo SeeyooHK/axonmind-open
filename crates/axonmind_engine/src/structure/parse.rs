@@ -273,6 +273,22 @@ fn find_markers(
     candidates: &[StructureUnit],
     parent_marker: Option<&MarkerMatch>,
 ) -> Vec<MarkerMatch> {
+    // Both the region boundary and the marker regex are invariant across lines for a given
+    // candidate within one `find_markers` call — resolve them once here instead of inside the
+    // per-line loop below. Previously `region_allows` recomputed the region boundary (an O(lines)
+    // scan from the document start, recompiling the boundary regex on every line it checked) for
+    // every single (line, candidate) pair, making a region-scoped candidate's cost O(lines^2).
+    // Measured on the real GDPR Regulation (1457 lines, `recital` unit scoped to the `preamble`
+    // region): 184s in this function alone. Hoisting both here makes it O(lines) total.
+    let gates: Vec<RegionGate> = candidates
+        .iter()
+        .map(|candidate| resolve_region_gate(profile, candidate, parent_marker, lines))
+        .collect();
+    let compiled: Vec<Option<regex::Regex>> = candidates
+        .iter()
+        .map(|candidate| regex::Regex::new(&candidate.marker).ok())
+        .collect();
+
     let mut out = Vec::new();
     for (idx, line) in lines.iter().enumerate() {
         let trimmed = line.text.trim();
@@ -280,11 +296,12 @@ fn find_markers(
             continue;
         }
         let target = strip_heading_prefix(trimmed);
-        for candidate in candidates {
-            if !region_allows(profile, candidate, parent_marker, idx, lines) {
+        for (candidate, (gate, regex)) in candidates.iter().zip(gates.iter().zip(compiled.iter()))
+        {
+            if !gate.allows(idx) {
                 continue;
             }
-            let Ok(regex) = regex::Regex::new(&candidate.marker) else {
+            let Some(regex) = regex else {
                 continue;
             };
             let Some(captures) = regex.captures(target) else {
@@ -309,57 +326,70 @@ fn find_markers(
     out
 }
 
-fn region_allows(
+enum RegionGate {
+    Allow,
+    Deny,
+    Boundary(Option<usize>),
+}
+
+impl RegionGate {
+    fn allows(&self, line_idx: usize) -> bool {
+        match self {
+            RegionGate::Allow => true,
+            RegionGate::Deny => false,
+            RegionGate::Boundary(Some(boundary_idx)) => line_idx < *boundary_idx,
+            RegionGate::Boundary(None) => true,
+        }
+    }
+}
+
+fn resolve_region_gate(
     profile: &ProfileDefinition,
     unit: &StructureUnit,
     parent_marker: Option<&MarkerMatch>,
-    line_idx: usize,
     lines: &[LineSpan],
-) -> bool {
+) -> RegionGate {
     if parent_marker.is_some() {
-        return true;
+        return RegionGate::Allow;
     }
     let Some(region_name) = unit.region.as_deref() else {
-        return true;
+        return RegionGate::Allow;
     };
     let Some(region) = profile
         .region
         .iter()
         .find(|value| value.name == region_name)
     else {
-        return false;
+        return RegionGate::Deny;
     };
     if region.from != "start" {
-        return false;
+        return RegionGate::Deny;
     }
     let Some(until_kind) = region.until.strip_prefix("first:") else {
-        return false;
+        return RegionGate::Deny;
     };
-    // Boundary = the first line (searched from the document start, not from `line_idx`) whose
-    // text matches an `until_kind` marker. A candidate belongs to the region iff it sits before
-    // that boundary; no boundary found means the whole document is the region. (Previously this
-    // scanned forward *from* `line_idx` and compared `idx == line_idx`, which is only ever true
-    // when the candidate's own line happens to be the boundary itself — every genuine
-    // region-scoped unit before the boundary was rejected. Confirmed via the "note.1" line in
-    // tests/fixtures/generic_manual/fixtures/handbook-en.md, which the old logic silently
-    // dropped and no existing test asserted on.)
+    // Boundary = the first line (searched from the document start, not from the candidate's own
+    // line) whose text matches an `until_kind` marker. A candidate belongs to the region iff it
+    // sits before that boundary; no boundary found means the whole document is the region.
+    // (Previously this scanned forward *from* the candidate's line and compared `idx == line_idx`,
+    // which is only ever true when the candidate's own line happens to be the boundary itself —
+    // every genuine region-scoped unit before the boundary was rejected. Confirmed via the
+    // "note.1" line in tests/fixtures/generic_manual/fixtures/handbook-en.md, which the old logic
+    // silently dropped and no existing test asserted on.)
+    let boundary_regexes: Vec<regex::Regex> = profile
+        .units
+        .iter()
+        .filter(|candidate| candidate.parent.is_none() && candidate.kind == until_kind)
+        .filter_map(|candidate| regex::Regex::new(&candidate.marker).ok())
+        .collect();
     let boundary = lines.iter().enumerate().find_map(|(idx, line)| {
-        profile
-            .units
+        let target = strip_heading_prefix(line.text.trim());
+        boundary_regexes
             .iter()
-            .filter(|candidate| candidate.parent.is_none())
-            .any(|candidate| {
-                candidate.kind == until_kind
-                    && regex::Regex::new(&candidate.marker).ok().is_some_and(|regex| {
-                        regex.is_match(strip_heading_prefix(line.text.trim()))
-                    })
-            })
+            .any(|regex| regex.is_match(target))
             .then_some(idx)
     });
-    match boundary {
-        Some(boundary_idx) => line_idx < boundary_idx,
-        None => true,
-    }
+    RegionGate::Boundary(boundary)
 }
 
 fn resolve_capture(selector: &CaptureSelector, captures: &regex::Captures<'_>) -> Option<String> {
