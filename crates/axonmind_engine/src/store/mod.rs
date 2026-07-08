@@ -267,18 +267,14 @@ pub struct DocumentIdentityRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LegalUnitRecord {
+pub struct DocUnitRecord {
     pub unit_id: String,
     pub doc_node_id: String,
     pub parent_unit_id: Option<String>,
     pub section_id: String,
-    pub unit_type: String,
+    pub unit_kind: String,
     pub label: String,
     pub label_norm: String,
-    pub article: Option<String>,
-    pub recital: Option<String>,
-    pub section_label: Option<String>,
-    pub paragraph: Option<String>,
     pub title: Option<String>,
     pub ordinal: i64,
     pub level: i64,
@@ -288,8 +284,14 @@ pub struct LegalUnitRecord {
     pub page_start: Option<i64>,
     pub page_end: Option<i64>,
     pub path: String,
-    pub parser_profile: String,
+    pub citation: String,
+    pub package_name: String,
+    pub profile_name: String,
+    pub profile_version: i64,
     pub confidence: f32,
+    /// Arbitrary capture names -> values (e.g. `article`/`paragraph`, or a medical package's
+    /// `dosage`/`frequency`). Stored normalized in `doc_unit_locators`, not a column here.
+    pub locators: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2306,7 +2308,81 @@ impl GraphStore {
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
-    pub(crate) async fn count_legal_units_for_doc(
+    /// Load `doc_unit_locators` rows for a batch of unit ids into a per-unit map. Kept as a
+    /// free function (not a method) so it can run inside the sync `conn.interact` closures
+    /// below without capturing `&self`.
+    fn load_unit_locators(
+        conn: &rusqlite::Connection,
+        unit_ids: &[String],
+    ) -> rusqlite::Result<std::collections::HashMap<String, std::collections::BTreeMap<String, String>>>
+    {
+        if unit_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let placeholders = unit_ids
+            .iter()
+            .enumerate()
+            .map(|(idx, _)| format!("?{}", idx + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT unit_id, key, value FROM doc_unit_locators WHERE unit_id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> = unit_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
+        let mut out: std::collections::HashMap<String, std::collections::BTreeMap<String, String>> =
+            std::collections::HashMap::new();
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (unit_id, key, value) = row?;
+            out.entry(unit_id).or_default().insert(key, value);
+        }
+        Ok(out)
+    }
+
+    fn row_to_doc_unit(
+        row: &rusqlite::Row<'_>,
+    ) -> rusqlite::Result<DocUnitRecord> {
+        Ok(DocUnitRecord {
+            unit_id: row.get(0)?,
+            doc_node_id: row.get(1)?,
+            parent_unit_id: row.get(2)?,
+            section_id: row.get(3)?,
+            unit_kind: row.get(4)?,
+            label: row.get(5)?,
+            label_norm: row.get(6)?,
+            title: row.get(7)?,
+            ordinal: row.get(8)?,
+            level: row.get(9)?,
+            text: row.get(10)?,
+            span_start: row.get(11)?,
+            span_end: row.get(12)?,
+            page_start: row.get(13)?,
+            page_end: row.get(14)?,
+            path: row.get(15)?,
+            citation: row.get(16)?,
+            package_name: row.get(17)?,
+            profile_name: row.get(18)?,
+            profile_version: row.get(19)?,
+            confidence: row.get::<_, f64>(20)? as f32,
+            locators: std::collections::BTreeMap::new(),
+        })
+    }
+
+    const DOC_UNIT_COLUMNS: &'static str = "unit_id, doc_node_id, parent_unit_id, section_id, unit_kind, label, label_norm, \
+         title, ordinal, level, text, span_start, span_end, page_start, page_end, path, \
+         citation, package_name, profile_name, profile_version, confidence";
+
+    pub(crate) async fn count_doc_units_for_doc(
         &self,
         doc_node_id: &str,
     ) -> Result<usize, AxonMindError> {
@@ -2320,7 +2396,7 @@ impl GraphStore {
         conn.interact(move |conn| -> Result<usize, AxonMindError> {
             let count: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM legal_units WHERE doc_node_id = ?1",
+                    "SELECT COUNT(*) FROM doc_units WHERE doc_node_id = ?1",
                     [&doc_id],
                     |row| row.get(0),
                 )
@@ -2331,10 +2407,10 @@ impl GraphStore {
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
-    pub(crate) async fn replace_legal_units(
+    pub(crate) async fn replace_doc_units(
         &self,
         doc_node_id: &str,
-        units: &[LegalUnitRecord],
+        units: &[DocUnitRecord],
         refs: &[UnitRefRecord],
     ) -> Result<(), AxonMindError> {
         let doc_id = doc_node_id.to_owned();
@@ -2351,35 +2427,37 @@ impl GraphStore {
                 .transaction()
                 .map_err(|e| AxonMindError::Database(e.to_string()))?;
             tx.execute(
-                "DELETE FROM legal_unit_refs
-                 WHERE from_unit_id IN (SELECT unit_id FROM legal_units WHERE doc_node_id = ?1)",
+                "DELETE FROM doc_unit_refs
+                 WHERE from_unit_id IN (SELECT unit_id FROM doc_units WHERE doc_node_id = ?1)",
                 rusqlite::params![doc_id],
             )
             .map_err(|e| AxonMindError::Database(e.to_string()))?;
             tx.execute(
-                "DELETE FROM legal_units WHERE doc_node_id = ?1",
+                "DELETE FROM doc_unit_locators
+                 WHERE doc_node_id = ?1",
+                rusqlite::params![doc_id],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            tx.execute(
+                "DELETE FROM doc_units WHERE doc_node_id = ?1",
                 rusqlite::params![doc_id],
             )
             .map_err(|e| AxonMindError::Database(e.to_string()))?;
             for unit in &units {
                 tx.execute(
-                    "INSERT INTO legal_units
-                        (unit_id, doc_node_id, parent_unit_id, section_id, unit_type, label, label_norm,
-                         article, recital, section_label, paragraph, title, ordinal, level, text,
-                         span_start, span_end, page_start, page_end, path, parser_profile, confidence)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
+                    "INSERT INTO doc_units
+                        (unit_id, doc_node_id, parent_unit_id, section_id, unit_kind, label, label_norm,
+                         title, ordinal, level, text, span_start, span_end, page_start, page_end, path,
+                         citation, package_name, profile_name, profile_version, confidence)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
                     rusqlite::params![
                         unit.unit_id,
                         unit.doc_node_id,
                         unit.parent_unit_id,
                         unit.section_id,
-                        unit.unit_type,
+                        unit.unit_kind,
                         unit.label,
                         unit.label_norm,
-                        unit.article,
-                        unit.recital,
-                        unit.section_label,
-                        unit.paragraph,
                         unit.title,
                         unit.ordinal,
                         unit.level,
@@ -2389,15 +2467,26 @@ impl GraphStore {
                         unit.page_start,
                         unit.page_end,
                         unit.path,
-                        unit.parser_profile,
+                        unit.citation,
+                        unit.package_name,
+                        unit.profile_name,
+                        unit.profile_version,
                         unit.confidence,
                     ],
                 )
                 .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                for (key, value) in &unit.locators {
+                    tx.execute(
+                        "INSERT INTO doc_unit_locators (unit_id, doc_node_id, key, value)
+                         VALUES (?1,?2,?3,?4)",
+                        rusqlite::params![unit.unit_id, unit.doc_node_id, key, value],
+                    )
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                }
             }
             for reference in &refs {
                 tx.execute(
-                    "INSERT OR REPLACE INTO legal_unit_refs
+                    "INSERT OR REPLACE INTO doc_unit_refs
                         (from_unit_id, to_doc_node_id, target_label, target_label_norm, ref_text)
                      VALUES (?1,?2,?3,?4,?5)",
                     rusqlite::params![
@@ -2418,10 +2507,10 @@ impl GraphStore {
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
-    pub(crate) async fn fetch_legal_units_by_section_ids(
+    pub(crate) async fn fetch_doc_units_by_section_ids(
         &self,
         section_ids: &[String],
-    ) -> Result<Vec<LegalUnitRecord>, AxonMindError> {
+    ) -> Result<Vec<DocUnitRecord>, AxonMindError> {
         if section_ids.is_empty() {
             return Ok(vec![]);
         }
@@ -2432,7 +2521,7 @@ impl GraphStore {
             .get()
             .await
             .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
-        conn.interact(move |conn| -> Result<Vec<LegalUnitRecord>, AxonMindError> {
+        conn.interact(move |conn| -> Result<Vec<DocUnitRecord>, AxonMindError> {
             let placeholders = ids
                 .iter()
                 .enumerate()
@@ -2440,56 +2529,36 @@ impl GraphStore {
                 .collect::<Vec<_>>()
                 .join(", ");
             let sql = format!(
-                "SELECT unit_id, doc_node_id, parent_unit_id, section_id, unit_type, label, label_norm,
-                        article, recital, section_label, paragraph, title, ordinal, level, text,
-                        span_start, span_end, page_start, page_end, path, parser_profile, confidence
-                 FROM legal_units
-                 WHERE section_id IN ({placeholders})"
+                "SELECT {} FROM doc_units WHERE section_id IN ({placeholders})",
+                Self::DOC_UNIT_COLUMNS
             );
             let mut stmt = conn
                 .prepare(&sql)
                 .map_err(|e| AxonMindError::Database(e.to_string()))?;
             let params: Vec<&dyn rusqlite::ToSql> =
                 ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-            stmt.query_map(params.as_slice(), |row| {
-                Ok(LegalUnitRecord {
-                    unit_id: row.get(0)?,
-                    doc_node_id: row.get(1)?,
-                    parent_unit_id: row.get(2)?,
-                    section_id: row.get(3)?,
-                    unit_type: row.get(4)?,
-                    label: row.get(5)?,
-                    label_norm: row.get(6)?,
-                    article: row.get(7)?,
-                    recital: row.get(8)?,
-                    section_label: row.get(9)?,
-                    paragraph: row.get(10)?,
-                    title: row.get(11)?,
-                    ordinal: row.get(12)?,
-                    level: row.get(13)?,
-                    text: row.get(14)?,
-                    span_start: row.get(15)?,
-                    span_end: row.get(16)?,
-                    page_start: row.get(17)?,
-                    page_end: row.get(18)?,
-                    path: row.get(19)?,
-                    parser_profile: row.get(20)?,
-                    confidence: row.get::<_, f64>(21)? as f32,
-                })
-            })
-            .map_err(|e| AxonMindError::Database(e.to_string()))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| AxonMindError::Database(e.to_string()))
+            let mut units = stmt
+                .query_map(params.as_slice(), |row| Self::row_to_doc_unit(row))
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let unit_ids: Vec<String> = units.iter().map(|u| u.unit_id.clone()).collect();
+            let mut locators = Self::load_unit_locators(conn, &unit_ids)
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            for unit in &mut units {
+                unit.locators = locators.remove(&unit.unit_id).unwrap_or_default();
+            }
+            Ok(units)
         })
         .await
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
-    pub(crate) async fn fetch_legal_unit_by_section(
+    pub(crate) async fn fetch_doc_unit_by_section(
         &self,
         doc_node_id: &str,
         section_id: &str,
-    ) -> Result<Option<LegalUnitRecord>, AxonMindError> {
+    ) -> Result<Option<DocUnitRecord>, AxonMindError> {
         let doc_id = doc_node_id.to_owned();
         let section_id = section_id.to_owned();
         let conn = self
@@ -2498,144 +2567,78 @@ impl GraphStore {
             .get()
             .await
             .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
-        conn.interact(move |conn| -> Result<Option<LegalUnitRecord>, AxonMindError> {
-            conn.query_row(
-                "SELECT unit_id, doc_node_id, parent_unit_id, section_id, unit_type, label, label_norm,
-                        article, recital, section_label, paragraph, title, ordinal, level, text,
-                        span_start, span_end, page_start, page_end, path, parser_profile, confidence
-                 FROM legal_units
-                 WHERE doc_node_id = ?1 AND section_id = ?2",
-                rusqlite::params![doc_id, section_id],
-                |row| {
-                    Ok(LegalUnitRecord {
-                        unit_id: row.get(0)?,
-                        doc_node_id: row.get(1)?,
-                        parent_unit_id: row.get(2)?,
-                        section_id: row.get(3)?,
-                        unit_type: row.get(4)?,
-                        label: row.get(5)?,
-                        label_norm: row.get(6)?,
-                        article: row.get(7)?,
-                        recital: row.get(8)?,
-                        section_label: row.get(9)?,
-                        paragraph: row.get(10)?,
-                        title: row.get(11)?,
-                        ordinal: row.get(12)?,
-                        level: row.get(13)?,
-                        text: row.get(14)?,
-                        span_start: row.get(15)?,
-                        span_end: row.get(16)?,
-                        page_start: row.get(17)?,
-                        page_end: row.get(18)?,
-                        path: row.get(19)?,
-                        parser_profile: row.get(20)?,
-                        confidence: row.get::<_, f64>(21)? as f32,
-                    })
-                },
-            )
-            .optional()
-            .map_err(|e| AxonMindError::Database(e.to_string()))
+        conn.interact(move |conn| -> Result<Option<DocUnitRecord>, AxonMindError> {
+            let sql = format!(
+                "SELECT {} FROM doc_units WHERE doc_node_id = ?1 AND section_id = ?2",
+                Self::DOC_UNIT_COLUMNS
+            );
+            let mut unit = conn
+                .query_row(&sql, rusqlite::params![doc_id, section_id], |row| {
+                    Self::row_to_doc_unit(row)
+                })
+                .optional()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            if let Some(unit) = unit.as_mut() {
+                let mut locators =
+                    Self::load_unit_locators(conn, std::slice::from_ref(&unit.unit_id))
+                        .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                unit.locators = locators.remove(&unit.unit_id).unwrap_or_default();
+            }
+            Ok(unit)
         })
         .await
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
-    pub(crate) async fn fetch_legal_units_by_locator(
+    /// Fetch units for `doc_node_id` whose locator map is a superset of `constraints` (every
+    /// requested key must be present with a matching value). Filters in Rust rather than
+    /// building dynamic `json_extract`/join SQL — per-document unit counts are small (tens to
+    /// low hundreds), so this stays simple and avoids a dynamic-SQL surface entirely.
+    pub(crate) async fn fetch_doc_units_by_locator(
         &self,
         doc_node_id: &str,
-        article: Option<&str>,
-        recital: Option<&str>,
-        section_label: Option<&str>,
-        paragraph: Option<&str>,
-    ) -> Result<Vec<LegalUnitRecord>, AxonMindError> {
+        constraints: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Vec<DocUnitRecord>, AxonMindError> {
         let doc_id = doc_node_id.to_owned();
-        let article = article.map(str::to_owned);
-        let recital = recital.map(str::to_owned);
-        let section_label = section_label.map(str::to_owned);
-        let paragraph = paragraph.map(str::to_owned);
+        let constraints = constraints.clone();
         let conn = self
             .db
             .0
             .get()
             .await
             .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
-        conn.interact(move |conn| -> Result<Vec<LegalUnitRecord>, AxonMindError> {
-            let sql = if article.is_some() {
-                "SELECT unit_id, doc_node_id, parent_unit_id, section_id, unit_type, label, label_norm,
-                        article, recital, section_label, paragraph, title, ordinal, level, text,
-                        span_start, span_end, page_start, page_end, path, parser_profile, confidence
-                 FROM legal_units
-                 WHERE doc_node_id = ?1 AND article = ?2
-                   AND ((?3 IS NULL AND paragraph IS NULL) OR paragraph = ?3)"
-            } else if recital.is_some() {
-                "SELECT unit_id, doc_node_id, parent_unit_id, section_id, unit_type, label, label_norm,
-                        article, recital, section_label, paragraph, title, ordinal, level, text,
-                        span_start, span_end, page_start, page_end, path, parser_profile, confidence
-                 FROM legal_units
-                 WHERE doc_node_id = ?1 AND recital = ?2"
-            } else {
-                "SELECT unit_id, doc_node_id, parent_unit_id, section_id, unit_type, label, label_norm,
-                        article, recital, section_label, paragraph, title, ordinal, level, text,
-                        span_start, span_end, page_start, page_end, path, parser_profile, confidence
-                 FROM legal_units
-                 WHERE doc_node_id = ?1 AND section_label = ?2"
-            };
+        conn.interact(move |conn| -> Result<Vec<DocUnitRecord>, AxonMindError> {
+            let sql = format!("SELECT {} FROM doc_units WHERE doc_node_id = ?1", Self::DOC_UNIT_COLUMNS);
             let mut stmt = conn
-                .prepare(sql)
+                .prepare(&sql)
                 .map_err(|e| AxonMindError::Database(e.to_string()))?;
-            let params: Vec<&dyn rusqlite::ToSql> = if let Some(article) = article.as_ref() {
-                vec![
-                    &doc_id as &dyn rusqlite::ToSql,
-                    article as &dyn rusqlite::ToSql,
-                    &paragraph as &dyn rusqlite::ToSql,
-                ]
-            } else if let Some(recital) = recital.as_ref() {
-                vec![&doc_id as &dyn rusqlite::ToSql, recital as &dyn rusqlite::ToSql]
-            } else {
-                vec![
-                    &doc_id as &dyn rusqlite::ToSql,
-                    &section_label as &dyn rusqlite::ToSql,
-                ]
-            };
-            stmt.query_map(params.as_slice(), |row| {
-                Ok(LegalUnitRecord {
-                    unit_id: row.get(0)?,
-                    doc_node_id: row.get(1)?,
-                    parent_unit_id: row.get(2)?,
-                    section_id: row.get(3)?,
-                    unit_type: row.get(4)?,
-                    label: row.get(5)?,
-                    label_norm: row.get(6)?,
-                    article: row.get(7)?,
-                    recital: row.get(8)?,
-                    section_label: row.get(9)?,
-                    paragraph: row.get(10)?,
-                    title: row.get(11)?,
-                    ordinal: row.get(12)?,
-                    level: row.get(13)?,
-                    text: row.get(14)?,
-                    span_start: row.get(15)?,
-                    span_end: row.get(16)?,
-                    page_start: row.get(17)?,
-                    page_end: row.get(18)?,
-                    path: row.get(19)?,
-                    parser_profile: row.get(20)?,
-                    confidence: row.get::<_, f64>(21)? as f32,
-                })
-            })
-            .map_err(|e| AxonMindError::Database(e.to_string()))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| AxonMindError::Database(e.to_string()))
+            let mut units = stmt
+                .query_map(rusqlite::params![doc_id], |row| Self::row_to_doc_unit(row))
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let unit_ids: Vec<String> = units.iter().map(|u| u.unit_id.clone()).collect();
+            let mut locators = Self::load_unit_locators(conn, &unit_ids)
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            for unit in &mut units {
+                unit.locators = locators.remove(&unit.unit_id).unwrap_or_default();
+            }
+            units.retain(|unit| {
+                constraints
+                    .iter()
+                    .all(|(key, value)| unit.locators.get(key) == Some(value))
+            });
+            Ok(units)
         })
         .await
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
-    pub(crate) async fn fetch_legal_units_by_label_norm(
+    pub(crate) async fn fetch_doc_units_by_label_norm(
         &self,
         doc_node_id: &str,
         label_norm: &str,
-    ) -> Result<Vec<LegalUnitRecord>, AxonMindError> {
+    ) -> Result<Vec<DocUnitRecord>, AxonMindError> {
         let doc_id = doc_node_id.to_owned();
         let label_norm = label_norm.to_owned();
         let conn = self
@@ -2644,54 +2647,37 @@ impl GraphStore {
             .get()
             .await
             .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
-        conn.interact(move |conn| -> Result<Vec<LegalUnitRecord>, AxonMindError> {
+        conn.interact(move |conn| -> Result<Vec<DocUnitRecord>, AxonMindError> {
+            let sql = format!(
+                "SELECT {} FROM doc_units WHERE doc_node_id = ?1 AND label_norm = ?2",
+                Self::DOC_UNIT_COLUMNS
+            );
             let mut stmt = conn
-                .prepare(
-                    "SELECT unit_id, doc_node_id, parent_unit_id, section_id, unit_type, label, label_norm,
-                            article, recital, section_label, paragraph, title, ordinal, level, text,
-                            span_start, span_end, page_start, page_end, path, parser_profile, confidence
-                     FROM legal_units
-                     WHERE doc_node_id = ?1 AND label_norm = ?2",
-                )
+                .prepare(&sql)
                 .map_err(|e| AxonMindError::Database(e.to_string()))?;
-            stmt.query_map(rusqlite::params![doc_id, label_norm], |row| {
-                Ok(LegalUnitRecord {
-                    unit_id: row.get(0)?,
-                    doc_node_id: row.get(1)?,
-                    parent_unit_id: row.get(2)?,
-                    section_id: row.get(3)?,
-                    unit_type: row.get(4)?,
-                    label: row.get(5)?,
-                    label_norm: row.get(6)?,
-                    article: row.get(7)?,
-                    recital: row.get(8)?,
-                    section_label: row.get(9)?,
-                    paragraph: row.get(10)?,
-                    title: row.get(11)?,
-                    ordinal: row.get(12)?,
-                    level: row.get(13)?,
-                    text: row.get(14)?,
-                    span_start: row.get(15)?,
-                    span_end: row.get(16)?,
-                    page_start: row.get(17)?,
-                    page_end: row.get(18)?,
-                    path: row.get(19)?,
-                    parser_profile: row.get(20)?,
-                    confidence: row.get::<_, f64>(21)? as f32,
+            let mut units = stmt
+                .query_map(rusqlite::params![doc_id, label_norm], |row| {
+                    Self::row_to_doc_unit(row)
                 })
-            })
-            .map_err(|e| AxonMindError::Database(e.to_string()))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| AxonMindError::Database(e.to_string()))
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let unit_ids: Vec<String> = units.iter().map(|u| u.unit_id.clone()).collect();
+            let mut locators = Self::load_unit_locators(conn, &unit_ids)
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            for unit in &mut units {
+                unit.locators = locators.remove(&unit.unit_id).unwrap_or_default();
+            }
+            Ok(units)
         })
         .await
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
-    pub(crate) async fn fetch_child_legal_units(
+    pub(crate) async fn fetch_child_doc_units(
         &self,
         parent_unit_id: &str,
-    ) -> Result<Vec<LegalUnitRecord>, AxonMindError> {
+    ) -> Result<Vec<DocUnitRecord>, AxonMindError> {
         let parent_unit_id = parent_unit_id.to_owned();
         let conn = self
             .db
@@ -2699,52 +2685,32 @@ impl GraphStore {
             .get()
             .await
             .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
-        conn.interact(move |conn| -> Result<Vec<LegalUnitRecord>, AxonMindError> {
+        conn.interact(move |conn| -> Result<Vec<DocUnitRecord>, AxonMindError> {
+            let sql = format!(
+                "SELECT {} FROM doc_units WHERE parent_unit_id = ?1 ORDER BY ordinal",
+                Self::DOC_UNIT_COLUMNS
+            );
             let mut stmt = conn
-                .prepare(
-                    "SELECT unit_id, doc_node_id, parent_unit_id, section_id, unit_type, label, label_norm,
-                            article, recital, section_label, paragraph, title, ordinal, level, text,
-                            span_start, span_end, page_start, page_end, path, parser_profile, confidence
-                     FROM legal_units
-                     WHERE parent_unit_id = ?1
-                     ORDER BY ordinal",
-                )
+                .prepare(&sql)
                 .map_err(|e| AxonMindError::Database(e.to_string()))?;
-            stmt.query_map([&parent_unit_id], |row| {
-                Ok(LegalUnitRecord {
-                    unit_id: row.get(0)?,
-                    doc_node_id: row.get(1)?,
-                    parent_unit_id: row.get(2)?,
-                    section_id: row.get(3)?,
-                    unit_type: row.get(4)?,
-                    label: row.get(5)?,
-                    label_norm: row.get(6)?,
-                    article: row.get(7)?,
-                    recital: row.get(8)?,
-                    section_label: row.get(9)?,
-                    paragraph: row.get(10)?,
-                    title: row.get(11)?,
-                    ordinal: row.get(12)?,
-                    level: row.get(13)?,
-                    text: row.get(14)?,
-                    span_start: row.get(15)?,
-                    span_end: row.get(16)?,
-                    page_start: row.get(17)?,
-                    page_end: row.get(18)?,
-                    path: row.get(19)?,
-                    parser_profile: row.get(20)?,
-                    confidence: row.get::<_, f64>(21)? as f32,
-                })
-            })
-            .map_err(|e| AxonMindError::Database(e.to_string()))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| AxonMindError::Database(e.to_string()))
+            let mut units = stmt
+                .query_map([&parent_unit_id], |row| Self::row_to_doc_unit(row))
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let unit_ids: Vec<String> = units.iter().map(|u| u.unit_id.clone()).collect();
+            let mut locators = Self::load_unit_locators(conn, &unit_ids)
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            for unit in &mut units {
+                unit.locators = locators.remove(&unit.unit_id).unwrap_or_default();
+            }
+            Ok(units)
         })
         .await
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
-    pub(crate) async fn fetch_legal_refs(
+    pub(crate) async fn fetch_doc_unit_refs(
         &self,
         from_unit_ids: &[String],
     ) -> Result<Vec<UnitRefRecord>, AxonMindError> {
@@ -2768,7 +2734,7 @@ impl GraphStore {
                     .join(", ");
                 let sql = format!(
                     "SELECT from_unit_id, to_doc_node_id, target_label, target_label_norm, ref_text
-                 FROM legal_unit_refs
+                 FROM doc_unit_refs
                  WHERE from_unit_id IN ({placeholders})"
                 );
                 let mut stmt = conn

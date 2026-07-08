@@ -1,14 +1,16 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+/// Arbitrary locator fields for a parsed unit (e.g. `article`/`paragraph` for a legal
+/// instrument, `dosage`/`frequency` for a medical guideline) — whatever capture names a
+/// structure package's grammar declares. A single-field tuple struct ("newtype") already
+/// serializes transparently in JSON by default (no `#[serde(transparent)]` needed) — the wire
+/// shape stays a flat object (`{"article":"33"}`), matching the pre-generic locator shape.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct LegalLocator {
-    pub article: Option<String>,
-    pub recital: Option<String>,
-    pub section: Option<String>,
-    pub paragraph: Option<String>,
-}
+pub struct UnitLocator(pub BTreeMap<String, String>);
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -59,7 +61,7 @@ pub struct DocumentSearchResult {
     pub doc_id: String,
     pub section_id: String,
     pub unit_id: Option<String>,
-    pub locator: Option<LegalLocator>,
+    pub locator: Option<UnitLocator>,
     pub page: PageLocator,
     pub title: String,
     pub snippet: String,
@@ -78,7 +80,7 @@ pub struct DocumentSearchOutput {
 #[ts(export)]
 pub struct DocumentReadSectionInput {
     pub doc_id: String,
-    pub locator: Option<LegalLocator>,
+    pub locator: Option<UnitLocator>,
     pub section_id: Option<String>,
     pub label_norm: Option<String>,
     pub include_children: Option<bool>,
@@ -91,9 +93,10 @@ pub struct DocumentReadSectionOutput {
     pub unit_id: String,
     pub section_id: String,
     pub title: String,
-    pub locator: LegalLocator,
+    pub locator: UnitLocator,
     pub page: PageLocator,
     pub text: String,
+    pub citation: String,
     pub citation_safe: bool,
 }
 
@@ -101,7 +104,7 @@ pub struct DocumentReadSectionOutput {
 #[ts(export)]
 pub struct DocumentQuoteInput {
     pub doc_id: String,
-    pub locator: Option<LegalLocator>,
+    pub locator: Option<UnitLocator>,
     pub section_id: Option<String>,
     pub label_norm: Option<String>,
     pub max_chars: Option<usize>,
@@ -112,7 +115,7 @@ pub struct DocumentQuoteInput {
 pub struct DocumentQuoteOutput {
     pub quote: String,
     pub citation: String,
-    pub locator: LegalLocator,
+    pub locator: UnitLocator,
     pub page: PageLocator,
     pub truncated: bool,
     pub citation_safe: bool,

@@ -11,18 +11,18 @@
 /// - `requires_human_review` objects: included in output with flags set; never silently hidden
 /// - `is_tainted` objects: included in output with flags set
 pub mod conflicts;
+pub mod document;
 pub mod evidence;
 pub mod focus;
 pub mod impact;
-pub mod legal;
 pub mod reasoning;
 pub mod search;
 
 pub use conflicts::{ConflictPair, EdgeWithEvidence, FindConflictsInput, FindConflictsOutput};
-pub use legal::{
+pub use document::{
     DocumentQuoteInput, DocumentQuoteOutput, DocumentReadSectionInput, DocumentReadSectionOutput,
     DocumentResolveInput, DocumentResolveOutput, DocumentSearchInput, DocumentSearchOutput,
-    DocumentSearchResult, LegalLocator, PageLocator, ResolvedDocument,
+    DocumentSearchResult, PageLocator, ResolvedDocument, UnitLocator,
 };
 pub use reasoning::{ReasoningSearchInput, ReasoningSearchOutput, RetrievedSection};
 

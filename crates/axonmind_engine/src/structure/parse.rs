@@ -230,7 +230,7 @@ fn build_units(
 
 /// Guarantees `unit_id` uniqueness within one document's parse. Two markers can legitimately
 /// render the same `label_norm` (e.g. a duplicated section number left behind by an
-/// imperfectly-stripped TOC) — without this, `replace_legal_units`'s single INSERT transaction
+/// imperfectly-stripped TOC) — without this, `replace_doc_units`'s single INSERT transaction
 /// hits a PRIMARY KEY collision and the *entire* document's units are discarded (see
 /// docs/structure_packages.md's 2026-07-06 findings). Suffixing keeps every extracted unit
 /// instead of losing a whole document over one collision; the first occurrence keeps the clean
@@ -685,7 +685,7 @@ mod tests {
     /// heading left behind by an imperfectly-stripped TOC) must not collide on `unit_id` — both
     /// units are kept, the second disambiguated. Regression for the `UNIQUE constraint failed:
     /// legal_units.unit_id` finding in docs/structure_packages.md (2026-07-06), which discarded
-    /// the *entire* document's parsed units when `replace_legal_units`'s single insert
+    /// the *entire* document's parsed units when `replace_doc_units`'s single insert
     /// transaction hit the collision.
     #[test]
     fn duplicate_label_norm_gets_a_disambiguated_unit_id() {

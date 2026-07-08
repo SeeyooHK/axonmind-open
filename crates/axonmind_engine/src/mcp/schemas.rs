@@ -132,7 +132,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "document_resolve",
-            description: "Resolve legal or reference documents by title, alias, corpus, or filename metadata.",
+            description: "Resolve reference documents by title, alias, corpus, or filename metadata.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -144,7 +144,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "document_search",
-            description: "Search grounded document sections and enrich the hits with legal locators when available.",
+            description: "Search grounded document sections and enrich the hits with unit locators when available.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -158,7 +158,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                     "unit_types": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Optional unit-type filter, e.g. article, recital, section, paragraph."
+                        "description": "Optional unit-kind filter. Values are declared by the installed structure package's grammar (e.g. article/recital/section/paragraph for a legal corpus, step for a procedure)."
                     },
                     "top_k": { "type": "integer", "description": "Maximum results. Default: 8." }
                 },
@@ -167,19 +167,15 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "document_read_section",
-            description: "Fetch a legal unit or document section by locator, section id, or normalized label.",
+            description: "Fetch a document unit or section by locator, section id, or normalized label.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "doc_id": { "type": "string" },
                     "locator": {
                         "type": "object",
-                        "properties": {
-                            "article": { "type": "string" },
-                            "recital": { "type": "string" },
-                            "section": { "type": "string" },
-                            "paragraph": { "type": "string" }
-                        }
+                        "description": "Locator fields declared by the corpus's structure package (e.g. article/paragraph for a legal instrument, dosage/frequency for a medical guideline). Prefer label_norm when it is already known.",
+                        "additionalProperties": { "type": "string" }
                     },
                     "section_id": { "type": "string" },
                     "label_norm": { "type": "string" },
@@ -190,19 +186,15 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "document_quote",
-            description: "Return a citation-ready quote from a grounded legal unit.",
+            description: "Return a citation-ready quote from a grounded document unit.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "doc_id": { "type": "string" },
                     "locator": {
                         "type": "object",
-                        "properties": {
-                            "article": { "type": "string" },
-                            "recital": { "type": "string" },
-                            "section": { "type": "string" },
-                            "paragraph": { "type": "string" }
-                        }
+                        "description": "Locator fields declared by the corpus's structure package (e.g. article/paragraph for a legal instrument, dosage/frequency for a medical guideline). Prefer label_norm when it is already known.",
+                        "additionalProperties": { "type": "string" }
                     },
                     "section_id": { "type": "string" },
                     "label_norm": { "type": "string" },

@@ -3,7 +3,6 @@ pub mod config;
 pub mod events;
 pub mod extract;
 pub mod ingest;
-pub mod legal;
 pub mod mcp;
 pub mod pageindex;
 pub mod query;
@@ -36,13 +35,13 @@ use crate::query::{
     DocumentSearchResult, ExplainKpiInput, ExplainKpiOutput, FindConflictsInput,
     FindConflictsOutput, FocusKpiInput, FocusKpiOutput, GetEvidenceInput, GetEvidenceOutput,
     GraphDiff, GraphSearchInput, GraphSearchOutput, GraphStatsOutput, ImpactRadiusInput,
-    ImpactRadiusOutput, LegalLocator, NodeKindCount, ReasoningSearchInput, ReasoningSearchOutput,
+    ImpactRadiusOutput, NodeKindCount, ReasoningSearchInput, ReasoningSearchOutput,
     ResolvedDocument, SuggestActionsInput, SuggestActionsOutput, TraceDecisionInput,
-    TraceDecisionOutput,
+    TraceDecisionOutput, UnitLocator,
 };
 use crate::store::{
-    DocumentSummary, GraphCache, GraphMutation, GraphStore, IngestPhase, IngestStatusKind,
-    IngestStatusRow, LegalUnitRecord, TrashRow,
+    DocUnitRecord, DocumentSummary, GraphCache, GraphMutation, GraphStore, IngestPhase,
+    IngestStatusKind, IngestStatusRow, TrashRow,
     generations::{GenerationId, GenerationSummary},
 };
 use crate::structure::{InstallReport, PackageInfo, StructurePackage};
@@ -141,36 +140,18 @@ fn summarize_mutations(mutations: &[GraphMutation]) -> IngestSummary {
     summary
 }
 
-fn structure_legacy_units(index: &crate::structure::ParsedDocumentIndex) -> Vec<LegalUnitRecord> {
+fn doc_units_from_parsed(index: &crate::structure::ParsedDocumentIndex) -> Vec<DocUnitRecord> {
     index
         .units
         .iter()
-        .map(|unit| LegalUnitRecord {
+        .map(|unit| DocUnitRecord {
             unit_id: unit.unit_id.clone(),
             doc_node_id: unit.doc_node_id.clone(),
             parent_unit_id: unit.parent_unit_id.clone(),
             section_id: unit.section_id.clone(),
-            unit_type: unit.unit_kind.clone(),
+            unit_kind: unit.unit_kind.clone(),
             label: unit.label.clone(),
             label_norm: unit.label_norm.clone(),
-            article: unit
-                .locators
-                .get("article")
-                .cloned()
-                .or_else(|| unit.locators.get("number").cloned()),
-            recital: unit.locators.get("recital").cloned(),
-            section_label: unit
-                .locators
-                .get("section")
-                .cloned()
-                .or_else(|| unit.locators.get("number").cloned()),
-            paragraph: unit.locators.get("paragraph").cloned().or_else(|| {
-                if unit.unit_kind == "paragraph" {
-                    unit.locators.get("number").cloned()
-                } else {
-                    None
-                }
-            }),
             title: unit.title.clone(),
             ordinal: unit.ordinal,
             level: unit.level,
@@ -180,8 +161,12 @@ fn structure_legacy_units(index: &crate::structure::ParsedDocumentIndex) -> Vec<
             page_start: unit.page_start,
             page_end: unit.page_end,
             path: unit.path.clone(),
-            parser_profile: format!("{}/{}", unit.package_name, unit.profile_name),
+            citation: unit.citation.clone(),
+            package_name: unit.package_name.clone(),
+            profile_name: unit.profile_name.clone(),
+            profile_version: unit.profile_version,
             confidence: unit.confidence,
+            locators: unit.locators.clone(),
         })
         .collect()
 }
@@ -198,42 +183,21 @@ fn is_image_path(path: &std::path::Path) -> bool {
         })
 }
 
-fn locator_from_unit(unit: &crate::store::LegalUnitRecord) -> LegalLocator {
-    LegalLocator {
-        article: unit.article.clone(),
-        recital: unit.recital.clone(),
-        section: unit.section_label.clone(),
-        paragraph: unit.paragraph.clone(),
-    }
+fn locator_from_unit(unit: &crate::store::DocUnitRecord) -> UnitLocator {
+    UnitLocator(unit.locators.clone())
 }
 
-fn page_from_unit(unit: &crate::store::LegalUnitRecord) -> crate::query::PageLocator {
+fn page_from_unit(unit: &crate::store::DocUnitRecord) -> crate::query::PageLocator {
     crate::query::PageLocator {
         start: unit.page_start,
         end: unit.page_end,
     }
 }
 
-fn unit_display_title(unit: &crate::store::LegalUnitRecord) -> String {
+fn unit_display_title(unit: &crate::store::DocUnitRecord) -> String {
     match unit.title.as_deref() {
         Some(title) if !title.is_empty() => format!("{} - {}", unit.label, title),
         _ => unit.label.clone(),
-    }
-}
-
-fn build_citation(canonical_title: &str, locator: &LegalLocator) -> String {
-    if let Some(article) = locator.article.as_deref() {
-        if let Some(paragraph) = locator.paragraph.as_deref() {
-            format!("{canonical_title}, Article {article}({paragraph})")
-        } else {
-            format!("{canonical_title}, Article {article}")
-        }
-    } else if let Some(recital) = locator.recital.as_deref() {
-        format!("{canonical_title}, Recital {recital}")
-    } else if let Some(section) = locator.section.as_deref() {
-        format!("{canonical_title}, Section {section}")
-    } else {
-        canonical_title.to_string()
     }
 }
 
@@ -1394,15 +1358,7 @@ impl AxonMindEngine {
             Some(&markdown),
             &installed_packages,
         );
-        let identity = if installed_packages.is_empty() {
-            legal::infer_document_identity(
-                &doc_node_id.0,
-                doc.title.as_deref(),
-                doc.source_path.as_ref().and_then(|p| p.to_str()),
-            )
-        } else {
-            derived.identity.clone()
-        };
+        let identity = derived.identity.clone();
         if let Err(e) = self.store.upsert_document_identity(&identity).await {
             summary.errors.push(format!("document_identity: {e}"));
         }
@@ -1429,14 +1385,14 @@ impl AxonMindEngine {
                             parsed.tree.sha256 = sha256.to_string();
                             if let Err(e) = self
                                 .store
-                                .replace_legal_units(
+                                .replace_doc_units(
                                     &doc_node_id.0,
-                                    &structure_legacy_units(&parsed),
+                                    &doc_units_from_parsed(&parsed),
                                     &parsed.refs,
                                 )
                                 .await
                             {
-                                summary.errors.push(format!("legal_units: {e}"));
+                                summary.errors.push(format!("doc_units: {e}"));
                             }
                             if let Err(e) = page_store.upsert_document(&parsed.tree).await {
                                 summary.errors.push(format!("pageindex: {e}"));
@@ -1452,25 +1408,6 @@ impl AxonMindEngine {
                     }
                 }
             }
-        }
-        if let Some(mut legal_index) = legal::build_legal_index(
-            &doc_node_id.0,
-            doc.title.as_deref(),
-            doc.source_path.as_ref().and_then(|p| p.to_str()),
-            &markdown,
-        ) {
-            legal_index.tree.sha256 = sha256.to_string();
-            if let Err(e) = self
-                .store
-                .replace_legal_units(&doc_node_id.0, &legal_index.units, &legal_index.refs)
-                .await
-            {
-                summary.errors.push(format!("legal_units: {e}"));
-            }
-            if let Err(e) = page_store.upsert_document(&legal_index.tree).await {
-                summary.errors.push(format!("pageindex: {e}"));
-            }
-            return;
         }
         let llm = self.llm_provider.read().await.clone();
         if let Err(e) = pageindex::index_document(
@@ -1763,7 +1700,7 @@ impl AxonMindEngine {
             // would silently downgrade that identity back to the untyped fallback, wiping
             // `corpus`/`instrument_type` on every `document_search` call. Skip, matching the
             // "don't redo settled work" gate `ensure_document_grounding` already uses for
-            // `legal_units`.
+            // `doc_units`.
             if let Some(existing) = self.store.fetch_document_identity(&node.id.0).await?
                 && existing.instrument_type.is_some()
             {
@@ -1773,18 +1710,14 @@ impl AxonMindEngine {
                 .attrs
                 .get("source_path")
                 .and_then(|value| value.as_str());
-            let identity = if packages.is_empty() {
-                legal::infer_document_identity(&node.id.0, Some(&node.name), source_path)
-            } else {
-                crate::structure::derive_identity(
-                    &node.id.0,
-                    Some(&node.name),
-                    source_path,
-                    None,
-                    &packages,
-                )
-                .identity
-            };
+            let identity = crate::structure::derive_identity(
+                &node.id.0,
+                Some(&node.name),
+                source_path,
+                None,
+                &packages,
+            )
+            .identity;
             self.store.upsert_document_identity(&identity).await?;
         }
         Ok(())
@@ -1817,14 +1750,10 @@ impl AxonMindEngine {
             Some(&markdown),
             &packages,
         );
-        let identity = if packages.is_empty() {
-            legal::infer_document_identity(&node.id.0, Some(&node.name), source_path)
-        } else {
-            derived.identity.clone()
-        };
+        let identity = derived.identity.clone();
         self.store.upsert_document_identity(&identity).await?;
 
-        if self.store.count_legal_units_for_doc(&node.id.0).await? > 0 {
+        if self.store.count_doc_units_for_doc(&node.id.0).await? > 0 {
             return Ok(());
         }
 
@@ -1853,9 +1782,9 @@ impl AxonMindEngine {
                             .unwrap_or_default()
                             .to_string();
                         self.store
-                            .replace_legal_units(
+                            .replace_doc_units(
                                 &node.id.0,
-                                &structure_legacy_units(&parsed),
+                                &doc_units_from_parsed(&parsed),
                                 &parsed.refs,
                             )
                             .await?;
@@ -1867,23 +1796,6 @@ impl AxonMindEngine {
                 }
             }
         }
-        let Some(mut legal_index) =
-            legal::build_legal_index(&node.id.0, Some(&node.name), source_path, &markdown)
-        else {
-            return Ok(());
-        };
-        legal_index.tree.sha256 = node
-            .attrs
-            .get("sha256")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_string();
-        self.store
-            .replace_legal_units(&node.id.0, &legal_index.units, &legal_index.refs)
-            .await?;
-        PageIndexStore::new(self.store.db.0.clone())
-            .upsert_document(&legal_index.tree)
-            .await?;
         Ok(())
     }
 
@@ -2454,9 +2366,9 @@ impl AxonMindEngine {
             })
             .await?;
 
-        let legal_units = self
+        let doc_units = self
             .store
-            .fetch_legal_units_by_section_ids(
+            .fetch_doc_units_by_section_ids(
                 &reasoning
                     .sections
                     .iter()
@@ -2464,18 +2376,17 @@ impl AxonMindEngine {
                     .collect::<Vec<_>>(),
             )
             .await?;
-        let unit_by_section: std::collections::HashMap<String, crate::store::LegalUnitRecord> =
-            legal_units
+        let unit_by_section: std::collections::HashMap<String, crate::store::DocUnitRecord> =
+            doc_units
                 .iter()
                 .cloned()
                 .map(|unit| (unit.section_id.clone(), unit))
                 .collect();
-        let unit_by_id: std::collections::HashMap<String, crate::store::LegalUnitRecord> =
-            legal_units
-                .iter()
-                .cloned()
-                .map(|unit| (unit.unit_id.clone(), unit))
-                .collect();
+        let unit_by_id: std::collections::HashMap<String, crate::store::DocUnitRecord> = doc_units
+            .iter()
+            .cloned()
+            .map(|unit| (unit.unit_id.clone(), unit))
+            .collect();
 
         let allowed_types = input
             .unit_types
@@ -2486,7 +2397,7 @@ impl AxonMindEngine {
             let maybe_unit = unit_by_section.get(&section.section_id);
             if let Some(unit) = maybe_unit {
                 if let Some(allowed) = allowed_types.as_ref() {
-                    if !allowed.contains(&unit.unit_type) {
+                    if !allowed.contains(&unit.unit_kind) {
                         continue;
                     }
                 }
@@ -2544,7 +2455,7 @@ impl AxonMindEngine {
                 .iter()
                 .filter_map(|result| result.unit_id.clone())
                 .collect::<Vec<_>>();
-            let refs = self.store.fetch_legal_refs(&seed_unit_ids).await?;
+            let refs = self.store.fetch_doc_unit_refs(&seed_unit_ids).await?;
             let gdpr_doc_id = if corpus.as_deref() == Some("gdpr") || scope.is_empty() {
                 self.document_resolve(DocumentResolveInput {
                     query: Some("GDPR".to_string()),
@@ -2566,7 +2477,7 @@ impl AxonMindEngine {
                 };
                 let target_doc_id = if let Some(doc_id) = reference.to_doc_node_id.clone() {
                     doc_id
-                } else if source_unit.parser_profile == "edpb_guidance_en"
+                } else if source_unit.profile_name == "edpb-guidance-en"
                     && (reference.target_label_norm.starts_with("art.")
                         || reference.target_label_norm.starts_with("recital."))
                 {
@@ -2580,11 +2491,11 @@ impl AxonMindEngine {
                     .await?;
                 let matches = self
                     .store
-                    .fetch_legal_units_by_label_norm(&target_doc_id, &reference.target_label_norm)
+                    .fetch_doc_units_by_label_norm(&target_doc_id, &reference.target_label_norm)
                     .await?;
                 for unit in matches {
                     if let Some(allowed) = allowed_types.as_ref() {
-                        if !allowed.contains(&unit.unit_type) {
+                        if !allowed.contains(&unit.unit_kind) {
                             continue;
                         }
                     }
@@ -2625,7 +2536,7 @@ impl AxonMindEngine {
         let doc_id = NodeId(input.doc_id.clone());
         self.ensure_document_grounding(&doc_id).await?;
         let matches = self
-            .resolve_legal_units(
+            .resolve_doc_units(
                 &input.doc_id,
                 input.section_id.as_deref(),
                 input.locator.as_ref(),
@@ -2634,18 +2545,18 @@ impl AxonMindEngine {
             .await?;
         if matches.is_empty() {
             return Err(AxonMindError::ValidationFailed {
-                message: "no legal unit matched the requested locator".to_string(),
+                message: "no document unit matched the requested locator".to_string(),
             });
         }
         if matches.len() > 1 {
             return Err(AxonMindError::ValidationFailed {
-                message: "multiple legal units matched the requested locator".to_string(),
+                message: "multiple document units matched the requested locator".to_string(),
             });
         }
         let unit = matches.into_iter().next().expect("single match");
         let mut text = unit.text.clone();
         if input.include_children.unwrap_or(false) && text.trim().is_empty() {
-            let children = self.store.fetch_child_legal_units(&unit.unit_id).await?;
+            let children = self.store.fetch_child_doc_units(&unit.unit_id).await?;
             text = children
                 .into_iter()
                 .map(|child| child.text)
@@ -2660,6 +2571,7 @@ impl AxonMindEngine {
             locator: locator_from_unit(&unit),
             page: page_from_unit(&unit),
             text,
+            citation: unit.citation.clone(),
             citation_safe: true,
         })
     }
@@ -2677,13 +2589,6 @@ impl AxonMindEngine {
                 include_children: Some(false),
             })
             .await?;
-        let identity = self
-            .store
-            .fetch_document_identity(&input.doc_id)
-            .await?
-            .ok_or_else(|| AxonMindError::ValidationFailed {
-                message: "document identity missing for quoted document".to_string(),
-            })?;
         let max_chars = input.max_chars.unwrap_or(1200);
         let truncated = section.text.chars().count() > max_chars;
         let quote = if truncated {
@@ -2693,7 +2598,7 @@ impl AxonMindEngine {
         };
         Ok(DocumentQuoteOutput {
             quote,
-            citation: build_citation(&identity.canonical_title, &section.locator),
+            citation: section.citation,
             locator: section.locator,
             page: section.page,
             truncated,
@@ -2701,37 +2606,28 @@ impl AxonMindEngine {
         })
     }
 
-    async fn resolve_legal_units(
+    async fn resolve_doc_units(
         &self,
         doc_id: &str,
         section_id: Option<&str>,
-        locator: Option<&LegalLocator>,
+        locator: Option<&UnitLocator>,
         label_norm: Option<&str>,
-    ) -> Result<Vec<crate::store::LegalUnitRecord>, AxonMindError> {
+    ) -> Result<Vec<crate::store::DocUnitRecord>, AxonMindError> {
         if let Some(section_id) = section_id {
             return Ok(self
                 .store
-                .fetch_legal_unit_by_section(doc_id, section_id)
+                .fetch_doc_unit_by_section(doc_id, section_id)
                 .await?
                 .into_iter()
                 .collect());
         }
         if let Some(locator) = locator {
-            return self
-                .store
-                .fetch_legal_units_by_locator(
-                    doc_id,
-                    locator.article.as_deref(),
-                    locator.recital.as_deref(),
-                    locator.section.as_deref(),
-                    locator.paragraph.as_deref(),
-                )
-                .await;
+            return self.store.fetch_doc_units_by_locator(doc_id, &locator.0).await;
         }
         if let Some(label_norm) = label_norm {
             return self
                 .store
-                .fetch_legal_units_by_label_norm(doc_id, label_norm)
+                .fetch_doc_units_by_label_norm(doc_id, label_norm)
                 .await;
         }
         Err(AxonMindError::ValidationFailed {
