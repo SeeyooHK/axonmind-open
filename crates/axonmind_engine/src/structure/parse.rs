@@ -296,8 +296,7 @@ fn find_markers(
             continue;
         }
         let target = strip_heading_prefix(trimmed);
-        for (candidate, (gate, regex)) in candidates.iter().zip(gates.iter().zip(compiled.iter()))
-        {
+        for (candidate, (gate, regex)) in candidates.iter().zip(gates.iter().zip(compiled.iter())) {
             if !gate.allows(idx) {
                 continue;
             }
@@ -669,13 +668,23 @@ mod tests {
             std::slice::from_ref(&pkg),
         )
         .identity;
-        let parsed = parse_document(&pkg.manifest.package.name, profile, "doc.handbook", &identity, markdown)
-            .expect("parse")
-            .expect("units");
+        let parsed = parse_document(
+            &pkg.manifest.package.name,
+            profile,
+            "doc.handbook",
+            &identity,
+            markdown,
+        )
+        .expect("parse")
+        .expect("units");
         assert!(
             parsed.units.iter().any(|unit| unit.label_norm == "note.1"),
             "expected note.1 before the Chapter 3 boundary, got: {:?}",
-            parsed.units.iter().map(|u| &u.label_norm).collect::<Vec<_>>()
+            parsed
+                .units
+                .iter()
+                .map(|u| &u.label_norm)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -701,13 +710,26 @@ mod tests {
             std::slice::from_ref(&pkg),
         )
         .identity;
-        let parsed = parse_document(&pkg.manifest.package.name, profile, "doc.handbook", &identity, markdown)
-            .expect("parse")
-            .expect("units");
+        let parsed = parse_document(
+            &pkg.manifest.package.name,
+            profile,
+            "doc.handbook",
+            &identity,
+            markdown,
+        )
+        .expect("parse")
+        .expect("units");
         assert!(
-            parsed.units.iter().any(|unit| unit.label_norm == "chapter.3"),
+            parsed
+                .units
+                .iter()
+                .any(|unit| unit.label_norm == "chapter.3"),
             "expected chapter.3 despite the '## ' heading prefix, got: {:?}",
-            parsed.units.iter().map(|u| &u.label_norm).collect::<Vec<_>>()
+            parsed
+                .units
+                .iter()
+                .map(|u| &u.label_norm)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -734,15 +756,25 @@ mod tests {
             std::slice::from_ref(&pkg),
         )
         .identity;
-        let parsed = parse_document(&pkg.manifest.package.name, profile, "doc.handbook", &identity, markdown)
-            .expect("parse")
-            .expect("units");
+        let parsed = parse_document(
+            &pkg.manifest.package.name,
+            profile,
+            "doc.handbook",
+            &identity,
+            markdown,
+        )
+        .expect("parse")
+        .expect("units");
         let chapter_5s: Vec<_> = parsed
             .units
             .iter()
             .filter(|unit| unit.label_norm == "chapter.5")
             .collect();
-        assert_eq!(chapter_5s.len(), 2, "both occurrences must be kept, not just the first");
+        assert_eq!(
+            chapter_5s.len(),
+            2,
+            "both occurrences must be kept, not just the first"
+        );
         assert_ne!(
             chapter_5s[0].unit_id, chapter_5s[1].unit_id,
             "duplicate label_norm must not produce duplicate unit_id"

@@ -1,0 +1,4 @@
+[package]
+name = "dosage-test"
+version = 1
+description = "Synthetic package used to prove an arbitrary, package-specific locator capture (e.g. dosage) surfaces end-to-end through document_search (no real-world domain)"

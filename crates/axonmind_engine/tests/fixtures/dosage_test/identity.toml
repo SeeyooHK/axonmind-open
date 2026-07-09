@@ -1,0 +1,8 @@
+[[rule]]
+sources = ["filename", "raw_title", "first_chars:12000"]
+match = '(?i)dosage\s+guide\s+(\d+)'
+canonical_title = "Dosage Guide {1}"
+aliases = ["Guide {1}"]
+profile = "dosage-en"
+confidence = 0.9
+set = { instrument_type = "guideline", jurisdiction = [], language = "en" }

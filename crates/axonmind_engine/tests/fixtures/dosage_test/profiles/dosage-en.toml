@@ -1,0 +1,14 @@
+[profile]
+name = "dosage-en"
+version = 1
+description = "Synthetic profile with a package-specific 'dosage' capture (no real-world domain)"
+language = ["en"]
+
+[[unit]]
+kind = "entry"
+marker = '(?m)^(\w[\w ]*)\s+dosage:\s*(\S+)'
+captures = { medication = 1, dosage = 2 }
+label = "{medication}"
+label_norm = "dose.{medication}"
+citation = "{doc}, {medication} dosage: {dosage}"
+level = 1

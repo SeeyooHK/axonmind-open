@@ -299,9 +299,21 @@ impl AxonMindEngine {
         &self,
         doc_node_id: &str,
     ) -> Result<Vec<pageindex::SectionRow>, AxonMindError> {
-        PageIndexStore::new(self.store.db.0.clone())
+        PageIndexStore::new(self.db_pool())
             .fetch_document_sections(doc_node_id)
             .await
+    }
+
+    /// The engine's underlying connection pool. Exists so callers that need a `PageIndexStore`
+    /// or a one-off raw connection (tests, CLI maintenance commands) reuse the engine's own pool
+    /// instead of opening an independent second pool against the same database file — two pools
+    /// to one SQLite file, in one process, is a real deadlock risk (see
+    /// docs/retrieve_guarantee.md, 2026-07-09: closing one WAL connection while another to the
+    /// same file is mid-operation hung forever inside SQLite's own `sqlite3_mutex_enter`, in
+    /// `tests/pageindex.rs`'s `test_store`/`test_rebuild_page_index_restores_searchability`
+    /// helpers, which built a redundant second pool instead of reusing this one).
+    pub fn db_pool(&self) -> deadpool_sqlite::Pool {
+        self.store.db.0.clone()
     }
 
     /// Spawn background workers if enabled in config. Called automatically by `open`.
@@ -1685,7 +1697,10 @@ impl AxonMindEngine {
     pub async fn retro_apply_structure_packages(&self) -> Result<(), AxonMindError> {
         for node in self.store.fetch_nodes_by_kind(NodeKind::Document).await? {
             if let Err(e) = self.ensure_document_grounding(&node.id).await {
-                tracing::warn!("structure retro-apply: doc {} grounding failed: {e}", node.id.0);
+                tracing::warn!(
+                    "structure retro-apply: doc {} grounding failed: {e}",
+                    node.id.0
+                );
             }
         }
         Ok(())
@@ -2622,7 +2637,10 @@ impl AxonMindEngine {
                 .collect());
         }
         if let Some(locator) = locator {
-            return self.store.fetch_doc_units_by_locator(doc_id, &locator.0).await;
+            return self
+                .store
+                .fetch_doc_units_by_locator(doc_id, &locator.0)
+                .await;
         }
         if let Some(label_norm) = label_norm {
             return self

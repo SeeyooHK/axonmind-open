@@ -2314,8 +2314,9 @@ impl GraphStore {
     fn load_unit_locators(
         conn: &rusqlite::Connection,
         unit_ids: &[String],
-    ) -> rusqlite::Result<std::collections::HashMap<String, std::collections::BTreeMap<String, String>>>
-    {
+    ) -> rusqlite::Result<
+        std::collections::HashMap<String, std::collections::BTreeMap<String, String>>,
+    > {
         if unit_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
@@ -2349,9 +2350,7 @@ impl GraphStore {
         Ok(out)
     }
 
-    fn row_to_doc_unit(
-        row: &rusqlite::Row<'_>,
-    ) -> rusqlite::Result<DocUnitRecord> {
+    fn row_to_doc_unit(row: &rusqlite::Row<'_>) -> rusqlite::Result<DocUnitRecord> {
         Ok(DocUnitRecord {
             unit_id: row.get(0)?,
             doc_node_id: row.get(1)?,
@@ -2567,25 +2566,27 @@ impl GraphStore {
             .get()
             .await
             .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
-        conn.interact(move |conn| -> Result<Option<DocUnitRecord>, AxonMindError> {
-            let sql = format!(
-                "SELECT {} FROM doc_units WHERE doc_node_id = ?1 AND section_id = ?2",
-                Self::DOC_UNIT_COLUMNS
-            );
-            let mut unit = conn
-                .query_row(&sql, rusqlite::params![doc_id, section_id], |row| {
-                    Self::row_to_doc_unit(row)
-                })
-                .optional()
-                .map_err(|e| AxonMindError::Database(e.to_string()))?;
-            if let Some(unit) = unit.as_mut() {
-                let mut locators =
-                    Self::load_unit_locators(conn, std::slice::from_ref(&unit.unit_id))
-                        .map_err(|e| AxonMindError::Database(e.to_string()))?;
-                unit.locators = locators.remove(&unit.unit_id).unwrap_or_default();
-            }
-            Ok(unit)
-        })
+        conn.interact(
+            move |conn| -> Result<Option<DocUnitRecord>, AxonMindError> {
+                let sql = format!(
+                    "SELECT {} FROM doc_units WHERE doc_node_id = ?1 AND section_id = ?2",
+                    Self::DOC_UNIT_COLUMNS
+                );
+                let mut unit = conn
+                    .query_row(&sql, rusqlite::params![doc_id, section_id], |row| {
+                        Self::row_to_doc_unit(row)
+                    })
+                    .optional()
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                if let Some(unit) = unit.as_mut() {
+                    let mut locators =
+                        Self::load_unit_locators(conn, std::slice::from_ref(&unit.unit_id))
+                            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                    unit.locators = locators.remove(&unit.unit_id).unwrap_or_default();
+                }
+                Ok(unit)
+            },
+        )
         .await
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
@@ -2608,7 +2609,10 @@ impl GraphStore {
             .await
             .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
         conn.interact(move |conn| -> Result<Vec<DocUnitRecord>, AxonMindError> {
-            let sql = format!("SELECT {} FROM doc_units WHERE doc_node_id = ?1", Self::DOC_UNIT_COLUMNS);
+            let sql = format!(
+                "SELECT {} FROM doc_units WHERE doc_node_id = ?1",
+                Self::DOC_UNIT_COLUMNS
+            );
             let mut stmt = conn
                 .prepare(&sql)
                 .map_err(|e| AxonMindError::Database(e.to_string()))?;
@@ -2724,38 +2728,36 @@ impl GraphStore {
             .get()
             .await
             .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
-        conn.interact(
-            move |conn| -> Result<Vec<UnitRefRecord>, AxonMindError> {
-                let placeholders = ids
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, _)| format!("?{}", idx + 1))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let sql = format!(
-                    "SELECT from_unit_id, to_doc_node_id, target_label, target_label_norm, ref_text
+        conn.interact(move |conn| -> Result<Vec<UnitRefRecord>, AxonMindError> {
+            let placeholders = ids
+                .iter()
+                .enumerate()
+                .map(|(idx, _)| format!("?{}", idx + 1))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT from_unit_id, to_doc_node_id, target_label, target_label_norm, ref_text
                  FROM doc_unit_refs
                  WHERE from_unit_id IN ({placeholders})"
-                );
-                let mut stmt = conn
-                    .prepare(&sql)
-                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
-                let params: Vec<&dyn rusqlite::ToSql> =
-                    ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-                stmt.query_map(params.as_slice(), |row| {
-                    Ok(UnitRefRecord {
-                        from_unit_id: row.get(0)?,
-                        to_doc_node_id: row.get(1)?,
-                        target_label: row.get(2)?,
-                        target_label_norm: row.get(3)?,
-                        ref_text: row.get(4)?,
-                    })
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let params: Vec<&dyn rusqlite::ToSql> =
+                ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+            stmt.query_map(params.as_slice(), |row| {
+                Ok(UnitRefRecord {
+                    from_unit_id: row.get(0)?,
+                    to_doc_node_id: row.get(1)?,
+                    target_label: row.get(2)?,
+                    target_label_norm: row.get(3)?,
+                    ref_text: row.get(4)?,
                 })
-                .map_err(|e| AxonMindError::Database(e.to_string()))?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(|e| AxonMindError::Database(e.to_string()))
-            },
-        )
+            })
+            .map_err(|e| AxonMindError::Database(e.to_string()))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| AxonMindError::Database(e.to_string()))
+        })
         .await
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }

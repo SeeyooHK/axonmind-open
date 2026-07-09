@@ -31,16 +31,18 @@ async fn open_engine(dir: &TempDir) -> AxonMindEngine {
 
 async fn test_store(dir: &TempDir) -> PageIndexStore {
     let cfg = engine_config(dir);
-    // Open engine to run migrations (creates the DB with all tables, including page_*).
-    AxonMindEngine::open(cfg.clone())
+    // Open engine to run migrations (creates the DB with all tables, including page_*), then
+    // reuse its own pool (`db_pool`) rather than opening a second, independent pool against the
+    // same file. Two separate pools to one WAL-mode SQLite file in a single process is a real
+    // deadlock risk, not a hypothetical one: this helper used to build a fresh ad-hoc pool here,
+    // and whenever a test elsewhere in this same binary panicked mid-operation, the panicking
+    // test's Tokio runtime teardown could race the still-alive second pool's connection and hang
+    // forever inside SQLite's own `sqlite3_mutex_enter` during close (see
+    // docs/retrieve_guarantee.md, 2026-07-09 — this is the `tests/pageindex.rs` hang).
+    let engine = AxonMindEngine::open(cfg.clone())
         .await
         .expect("engine open for store test failed");
-    let pool = deadpool_sqlite::Config::new(&cfg.database_path)
-        .builder(deadpool_sqlite::Runtime::Tokio1)
-        .expect("pool builder")
-        .build()
-        .expect("pool build");
-    PageIndexStore::new(pool)
+    PageIndexStore::new(engine.db_pool())
 }
 
 fn sample_persist_tree(doc_node_id: &str) -> PersistTree {
@@ -579,11 +581,9 @@ async fn test_rebuild_page_index_restores_searchability() {
 
     // Simulate pre-pageindex state: delete page_tree and page_sections rows.
     // After this, page_tree_sha returns None, which causes index_document to rebuild.
-    let pool = deadpool_sqlite::Config::new(&cfg.database_path)
-        .builder(deadpool_sqlite::Runtime::Tokio1)
-        .expect("pool builder")
-        .build()
-        .expect("pool build");
+    // Reuse the still-alive `engine`'s own pool rather than opening a second one against the
+    // same file (see `test_store`'s comment above and AxonMindEngine::db_pool for why).
+    let pool = engine.db_pool();
     let conn = pool.get().await.expect("get conn");
     conn.interact(|conn| {
         conn.execute_batch(

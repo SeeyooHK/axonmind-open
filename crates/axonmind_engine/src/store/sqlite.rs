@@ -47,10 +47,17 @@ impl GraphDb {
             .map_err(|e| AxonMindError::Database(format!("pool builder: {e}")))?
             .post_create(deadpool_sqlite::Hook::async_fn(|conn, _| {
                 Box::pin(async move {
-                    conn.interact(|c| c.execute_batch("PRAGMA foreign_keys = ON;"))
-                        .await
-                        .map_err(|e| deadpool_sqlite::HookError::Message(e.to_string().into()))?
-                        .map_err(|e| deadpool_sqlite::HookError::Message(e.to_string().into()))?;
+                    // journal_mode=WAL is already set once, permanently, by migration 001 (it's
+                    // stored in the file header, not per-connection). busy_timeout is per-connection
+                    // and wasn't set anywhere: without it, a genuine writer/writer conflict between
+                    // two connections to this file fails immediately with "database is locked"
+                    // (SQLITE_BUSY, default busy_timeout is 0) instead of retrying.
+                    conn.interact(|c| {
+                        c.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
+                    })
+                    .await
+                    .map_err(|e| deadpool_sqlite::HookError::Message(e.to_string().into()))?
+                    .map_err(|e| deadpool_sqlite::HookError::Message(e.to_string().into()))?;
                     Ok(())
                 })
             }))
