@@ -302,3 +302,100 @@ async fn installs_structure_package_from_in_memory_files() {
     assert_eq!(packages.len(), 1);
     assert_eq!(packages[0].sources, vec!["skill:acme-ops".to_string()]);
 }
+
+/// Cleanup for the "document_search GDPR special-case" gap flagged in docs/retrieve_guarantee.md:
+/// `document_search`'s ambiguous-cross-reference resolution used to hardcode
+/// `source_unit.profile_name == "edpb-guidance-en"` plus a `corpus == "gdpr"` /
+/// `canonical_title.contains("2016/679")` text search — domain vocabulary baked into axonmind's
+/// "generic" code, the same category of issue item 1 removed elsewhere. The real
+/// `docs/legal_agent/structure/corpus.toml` already declares this exact rule generically via
+/// `[[xref]] from = { corpus = "gdpr", instrument_type = "guidelines" } to = { corpus = "gdpr",
+/// canonical_title = 'Regulation \(EU\) 2016/679' } kinds = ["article", "recital"]` — it was
+/// parsed and stored but never consulted by any retrieval code path (the same "write-only xref
+/// graph" gap named in the doc's Enhancement #6). This test ingests a real regulation doc and a
+/// real guidance doc side by side, searches only the guidance doc for text that cites "Article
+/// 33" (present in the regulation, absent from the guidance doc itself), and confirms
+/// `document_search` follows the cross-reference to the regulation doc — driven entirely by the
+/// corpus.toml declaration, with no profile name or corpus string hardcoded in the resolution
+/// path anymore.
+#[tokio::test]
+async fn ambiguous_xref_resolves_via_declared_corpus_rule_not_hardcoded_profile() {
+    let temp = TempDir::new().expect("tempdir");
+    let cfg = test_engine_config(&temp);
+    let engine = AxonMindEngine::open(cfg).await.expect("engine");
+    let package_dir = std::path::Path::new(
+        "/Users/xuejingzhoum3/GitHub/soverex/soverex-open/docs/legal_agent/structure",
+    );
+    engine
+        .install_structure_package_from_dir(package_dir, "standalone")
+        .await
+        .expect("install real legal-eu-privacy package");
+
+    let doc_dir = TempDir::new().expect("doc tempdir");
+
+    let regulation_path = doc_dir.path().join("regulation.md");
+    std::fs::write(
+        &regulation_path,
+        "Regulation (EU) 2016/679 of the European Parliament and of the Council\n\n\
+Article 33\n\nNotification of a personal data breach to the supervisory authority\n\n\
+1. In the case of a personal data breach, the controller shall without undue delay notify the \
+supervisory authority.\n",
+    )
+    .expect("write regulation doc");
+    let regulation = engine
+        .ingest_file_with_content(&regulation_path)
+        .await
+        .expect("ingest regulation");
+
+    let guidance_path = doc_dir.path().join("guidance.md");
+    std::fs::write(
+        &guidance_path,
+        "Guidelines 99/2099 on data breach notification\n\n\
+1.1 Scope\n\nThis guidance discusses the reporting obligations under Article 33 of the \
+Regulation.\n",
+    )
+    .expect("write guidance doc");
+    let guidance = engine
+        .ingest_file_with_content(&guidance_path)
+        .await
+        .expect("ingest guidance");
+
+    let output = engine
+        .document_search(DocumentSearchInput {
+            query: "reporting obligations".to_string(),
+            doc_ids: Some(vec![guidance.doc_id.clone()]),
+            corpus: None,
+            unit_types: None,
+            top_k: Some(5),
+        })
+        .await
+        .expect("document_search failed");
+
+    let direct_hit = output
+        .results
+        .iter()
+        .find(|r| r.doc_id == guidance.doc_id)
+        .expect("expected a direct hit in the guidance document itself");
+    assert_eq!(direct_hit.score_source, "bm25");
+
+    let cross_ref_hit = output
+        .results
+        .iter()
+        .find(|r| r.score_source == "cross_reference")
+        .expect(
+            "expected the Article 33 reference in the guidance doc to resolve via the \
+             corpus.toml [[xref]] rule",
+        );
+    assert_eq!(
+        cross_ref_hit.doc_id, regulation.doc_id,
+        "the ambiguous 'Article 33' reference must resolve to the regulation doc, not stay \
+         self-referential to the guidance doc — this is exactly what the old hardcoded \
+         profile-name check did"
+    );
+    let locator = cross_ref_hit
+        .locator
+        .as_ref()
+        .expect("cross-reference hit must carry a locator");
+    assert_eq!(locator.0.get("article").map(String::as_str), Some("33"));
+    assert!(cross_ref_hit.citation_safe);
+}

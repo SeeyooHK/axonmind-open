@@ -3,7 +3,7 @@ use std::path::Path;
 use regex::Regex;
 
 use crate::store::{DocumentAliasRecord, DocumentIdentityRecord};
-use crate::structure::model::{CorpusBinding, IdentityRule, StructurePackage};
+use crate::structure::model::{CorpusBinding, IdentityMatch, IdentityRule, StructurePackage};
 
 #[derive(Debug, Clone)]
 pub struct DerivedIdentity {
@@ -196,7 +196,7 @@ fn source_text(
 
 fn apply_corpus_bindings(identity: &mut DocumentIdentityRecord, bindings: &[CorpusBinding]) {
     for binding in bindings {
-        if !matches_identity(identity, binding) {
+        if !identity_matches(identity, &binding.matcher) {
             continue;
         }
         for alias in &binding.aliases {
@@ -220,8 +220,11 @@ fn apply_corpus_bindings(identity: &mut DocumentIdentityRecord, bindings: &[Corp
     }
 }
 
-fn matches_identity(identity: &DocumentIdentityRecord, binding: &CorpusBinding) -> bool {
-    let matcher = &binding.matcher;
+/// Whether a document's identity satisfies a package-declared `IdentityMatch` — the same
+/// match shape `corpus.toml` uses for both `[[bind]]` (identity → corpus/domain) and `[[xref]]`
+/// (ambiguous cross-reference → target document), so both consult one generic matcher instead of
+/// each hardcoding its own field checks.
+pub fn identity_matches(identity: &DocumentIdentityRecord, matcher: &IdentityMatch) -> bool {
     if let Some(title) = matcher.canonical_title.as_ref() {
         let Ok(regex) = Regex::new(title) else {
             return false;

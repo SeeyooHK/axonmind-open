@@ -301,6 +301,10 @@ pub struct UnitRefRecord {
     pub target_label: String,
     pub target_label_norm: String,
     pub ref_text: String,
+    /// The package-declared `[[ref]] target_kind` (e.g. "article", "recital") this reference
+    /// resolves to. Lets ambiguous cross-reference resolution filter by kind generically instead
+    /// of guessing it back from `target_label_norm`'s string prefix.
+    pub target_kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2486,14 +2490,15 @@ impl GraphStore {
             for reference in &refs {
                 tx.execute(
                     "INSERT OR REPLACE INTO doc_unit_refs
-                        (from_unit_id, to_doc_node_id, target_label, target_label_norm, ref_text)
-                     VALUES (?1,?2,?3,?4,?5)",
+                        (from_unit_id, to_doc_node_id, target_label, target_label_norm, ref_text, target_kind)
+                     VALUES (?1,?2,?3,?4,?5,?6)",
                     rusqlite::params![
                         reference.from_unit_id,
                         reference.to_doc_node_id,
                         reference.target_label,
                         reference.target_label_norm,
                         reference.ref_text,
+                        reference.target_kind,
                     ],
                 )
                 .map_err(|e| AxonMindError::Database(e.to_string()))?;
@@ -2736,7 +2741,7 @@ impl GraphStore {
                 .collect::<Vec<_>>()
                 .join(", ");
             let sql = format!(
-                "SELECT from_unit_id, to_doc_node_id, target_label, target_label_norm, ref_text
+                "SELECT from_unit_id, to_doc_node_id, target_label, target_label_norm, ref_text, target_kind
                  FROM doc_unit_refs
                  WHERE from_unit_id IN ({placeholders})"
             );
@@ -2752,6 +2757,7 @@ impl GraphStore {
                     target_label: row.get(2)?,
                     target_label_norm: row.get(3)?,
                     ref_text: row.get(4)?,
+                    target_kind: row.get(5)?,
                 })
             })
             .map_err(|e| AxonMindError::Database(e.to_string()))?

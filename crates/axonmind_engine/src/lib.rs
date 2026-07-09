@@ -40,11 +40,13 @@ use crate::query::{
     TraceDecisionOutput, UnitLocator,
 };
 use crate::store::{
-    DocUnitRecord, DocumentSummary, GraphCache, GraphMutation, GraphStore, IngestPhase,
-    IngestStatusKind, IngestStatusRow, TrashRow,
+    DocUnitRecord, DocumentIdentityRecord, DocumentSummary, GraphCache, GraphMutation, GraphStore,
+    IngestPhase, IngestStatusKind, IngestStatusRow, TrashRow,
     generations::{GenerationId, GenerationSummary},
 };
-use crate::structure::{InstallReport, PackageInfo, StructurePackage};
+use crate::structure::{
+    IdentityMatch, InstallReport, PackageInfo, StructurePackage, identity_matches,
+};
 
 /// Max number of existing concept-node names passed to the LLM entity extractor as the
 /// cross-document "avoid duplicating" hint. Bounds prompt size as the graph grows.
@@ -2331,6 +2333,87 @@ impl AxonMindEngine {
         })
     }
 
+    /// Resolves the target document for an ambiguous cross-reference (one whose `to_doc_node_id`
+    /// wasn't set at parse time — the referenced instrument isn't the document itself) by
+    /// consulting the installed packages' package-declared `corpus.toml` `[[xref]]` rules, e.g.
+    /// "this domain's guidance documents' article/recital refs default to the regulation."
+    /// Replaces a prior hardcoded `source profile == "edpb-guidance-en"` + `corpus == "gdpr"` +
+    /// `canonical_title.contains("2016/679")` special case (docs/retrieve_guarantee.md,
+    /// 2026-07-09) — domain vocabulary that belonged in a package, not in axonmind's code.
+    /// Returns `None` (caller falls back to the source's own document) when no installed
+    /// package declares an applicable rule, or no installed document matches its `to` side.
+    async fn resolve_xref_target_doc(
+        &self,
+        installed_packages: &[StructurePackage],
+        identity_cache: &mut HashMap<String, DocumentIdentityRecord>,
+        source_doc_id: &str,
+        target_kind: &str,
+    ) -> Result<Option<String>, AxonMindError> {
+        let source_identity = match identity_cache.get(source_doc_id) {
+            Some(identity) => identity.clone(),
+            None => {
+                let Some(identity) = self.store.fetch_document_identity(source_doc_id).await?
+                else {
+                    return Ok(None);
+                };
+                identity_cache.insert(source_doc_id.to_string(), identity.clone());
+                identity
+            }
+        };
+
+        for pkg in installed_packages {
+            let Some(corpus) = pkg.corpus.as_ref() else {
+                continue;
+            };
+            for xref in &corpus.xrefs {
+                if !xref.kinds.is_empty() && !xref.kinds.iter().any(|kind| kind == target_kind) {
+                    continue;
+                }
+                if !identity_matches(&source_identity, &xref.from) {
+                    continue;
+                }
+                if let Some(target_doc_id) = self
+                    .resolve_identity_match(&xref.to, identity_cache)
+                    .await?
+                {
+                    return Ok(Some(target_doc_id));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Finds the highest-confidence installed document matching an `IdentityMatch`. Requires
+    /// `matcher.corpus` — there's no cheap way to enumerate every installed document otherwise —
+    /// then narrows the corpus-matched candidates by `canonical_title`/`instrument_type` via
+    /// `identity_matches`, same as `[[bind]]` resolution.
+    async fn resolve_identity_match(
+        &self,
+        matcher: &IdentityMatch,
+        identity_cache: &mut HashMap<String, DocumentIdentityRecord>,
+    ) -> Result<Option<String>, AxonMindError> {
+        let Some(corpus) = matcher.corpus.as_ref() else {
+            return Ok(None);
+        };
+        let candidate_ids = self.store.list_document_ids_by_corpus(corpus).await?;
+        for doc_id in candidate_ids {
+            let identity = match identity_cache.get(&doc_id) {
+                Some(identity) => identity.clone(),
+                None => {
+                    let Some(identity) = self.store.fetch_document_identity(&doc_id).await? else {
+                        continue;
+                    };
+                    identity_cache.insert(doc_id.clone(), identity.clone());
+                    identity
+                }
+            };
+            if identity_matches(&identity, matcher) {
+                return Ok(Some(doc_id));
+            }
+        }
+        Ok(None)
+    }
+
     pub async fn document_search(
         &self,
         input: DocumentSearchInput,
@@ -2471,20 +2554,8 @@ impl AxonMindEngine {
                 .filter_map(|result| result.unit_id.clone())
                 .collect::<Vec<_>>();
             let refs = self.store.fetch_doc_unit_refs(&seed_unit_ids).await?;
-            let gdpr_doc_id = if corpus.as_deref() == Some("gdpr") || scope.is_empty() {
-                self.document_resolve(DocumentResolveInput {
-                    query: Some("GDPR".to_string()),
-                    corpus: Some("gdpr".to_string()),
-                    limit: Some(5),
-                })
-                .await?
-                .documents
-                .into_iter()
-                .find(|doc| doc.canonical_title.contains("2016/679"))
-                .map(|doc| doc.doc_id)
-            } else {
-                None
-            };
+            let installed_packages = self.store.load_structure_packages().await?;
+            let mut identity_cache: HashMap<String, DocumentIdentityRecord> = HashMap::new();
 
             for reference in refs {
                 let Some(source_unit) = unit_by_id.get(&reference.from_unit_id) else {
@@ -2492,15 +2563,15 @@ impl AxonMindEngine {
                 };
                 let target_doc_id = if let Some(doc_id) = reference.to_doc_node_id.clone() {
                     doc_id
-                } else if source_unit.profile_name == "edpb-guidance-en"
-                    && (reference.target_label_norm.starts_with("art.")
-                        || reference.target_label_norm.starts_with("recital."))
-                {
-                    gdpr_doc_id
-                        .clone()
-                        .unwrap_or_else(|| source_unit.doc_node_id.clone())
                 } else {
-                    source_unit.doc_node_id.clone()
+                    self.resolve_xref_target_doc(
+                        &installed_packages,
+                        &mut identity_cache,
+                        &source_unit.doc_node_id,
+                        &reference.target_kind,
+                    )
+                    .await?
+                    .unwrap_or_else(|| source_unit.doc_node_id.clone())
                 };
                 self.ensure_document_grounding(&NodeId(target_doc_id.clone()))
                     .await?;

@@ -486,6 +486,7 @@ fn extract_refs(profile: &ProfileDefinition, unit: &ParsedUnit) -> Vec<UnitRefRe
                     .get(0)
                     .map(|value| value.as_str().to_string())
                     .unwrap_or_default(),
+                target_kind: reference.target_kind.clone(),
             });
         }
     }
