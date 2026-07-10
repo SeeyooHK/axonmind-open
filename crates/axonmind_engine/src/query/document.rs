@@ -88,6 +88,16 @@ pub struct DocumentSearchResult {
     pub snippet: String,
     pub score_source: String,
     pub citation_safe: bool,
+    /// Content sha256 of the document at the time this unit was parsed (empty when the hit has
+    /// no backing `doc_units` row, e.g. a generic PageIndex section match with no structure
+    /// package involved). Content-addressed, so it alone identifies the exact document version
+    /// this citation came from — see `retrieve_guarantee.md` item 5.
+    pub doc_sha256: String,
+    /// Structure package that claimed the unit, and the package version *in effect when this
+    /// unit was parsed* (not necessarily the package's current version) — empty/0 when there is
+    /// no backing `doc_units` row.
+    pub package_name: String,
+    pub package_version: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

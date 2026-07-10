@@ -2,4 +2,17 @@
 import type { PageLocator } from "./PageLocator";
 import type { UnitLocator } from "./UnitLocator";
 
-export type DocumentSearchResult = { doc_id: string, section_id: string, unit_id: string | null, locator: UnitLocator | null, page: PageLocator, title: string, snippet: string, score_source: string, citation_safe: boolean, };
+export type DocumentSearchResult = { doc_id: string, section_id: string, unit_id: string | null, locator: UnitLocator | null, page: PageLocator, title: string, snippet: string, score_source: string, citation_safe: boolean, 
+/**
+ * Content sha256 of the document at the time this unit was parsed (empty when the hit has
+ * no backing `doc_units` row, e.g. a generic PageIndex section match with no structure
+ * package involved). Content-addressed, so it alone identifies the exact document version
+ * this citation came from — see `retrieve_guarantee.md` item 5.
+ */
+doc_sha256: string, 
+/**
+ * Structure package that claimed the unit, and the package version *in effect when this
+ * unit was parsed* (not necessarily the package's current version) — empty/0 when there is
+ * no backing `doc_units` row.
+ */
+package_name: string, package_version: bigint, };

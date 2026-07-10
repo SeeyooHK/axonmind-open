@@ -264,6 +264,21 @@ async fn dosage_capture_surfaces_in_document_search_locator() {
         hit.citation_safe,
         "a unit-backed hit from an installed package must be citation_safe"
     );
+
+    // retrieve_guarantee.md item 5: a unit-backed hit must carry the content sha256 of the
+    // document it was parsed from, plus the claiming package name/version, so evidence records
+    // can reconstruct exactly which document version and package rule produced a citation.
+    assert_eq!(
+        hit.doc_sha256, ingested.sha256,
+        "doc_sha256 must be the content sha256 of the exact document version this unit was \
+         parsed from"
+    );
+    assert_eq!(hit.package_name, "dosage-test");
+    assert!(
+        hit.package_version >= 1,
+        "package_version must reflect the profile version in effect at parse time, not be left \
+         at the zero-value default"
+    );
 }
 
 /// Acceptance check for item 3 in docs/retrieve_guarantee.md: the old gate in

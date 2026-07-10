@@ -2583,6 +2583,9 @@ impl AxonMindEngine {
                         "bm25".to_string()
                     },
                     citation_safe: true,
+                    doc_sha256: unit.doc_sha256.clone(),
+                    package_name: unit.package_name.clone(),
+                    package_version: unit.profile_version,
                 }
             } else {
                 if !seen.insert((section.doc_node_id.clone(), section.section_id.clone())) {
@@ -2605,6 +2608,9 @@ impl AxonMindEngine {
                         "bm25".to_string()
                     },
                     citation_safe: false,
+                    doc_sha256: String::new(),
+                    package_name: String::new(),
+                    package_version: 0,
                 }
             };
             results.push(result);
@@ -2663,6 +2669,9 @@ impl AxonMindEngine {
                         snippet: snippet(&unit.text, 320),
                         score_source: "cross_reference".to_string(),
                         citation_safe: true,
+                        doc_sha256: unit.doc_sha256.clone(),
+                        package_name: unit.package_name.clone(),
+                        package_version: unit.profile_version,
                     });
                     if results.len() >= top_k {
                         break;
