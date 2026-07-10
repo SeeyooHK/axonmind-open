@@ -289,6 +289,10 @@ pub struct DocUnitRecord {
     pub profile_name: String,
     pub profile_version: i64,
     pub confidence: f32,
+    /// Content sha256 of the document this unit was parsed from — the other half (with
+    /// package_name/profile_name/profile_version above) of the staleness key that decides
+    /// whether a re-parse is needed (see `AxonMindEngine::ensure_document_grounding`).
+    pub doc_sha256: String,
     /// Arbitrary capture names -> values (e.g. `article`/`paragraph`, or a medical package's
     /// `dosage`/`frequency`). Stored normalized in `doc_unit_locators`, not a column here.
     pub locators: std::collections::BTreeMap<String, String>,
@@ -2377,18 +2381,23 @@ impl GraphStore {
             profile_name: row.get(18)?,
             profile_version: row.get(19)?,
             confidence: row.get::<_, f64>(20)? as f32,
+            doc_sha256: row.get(21)?,
             locators: std::collections::BTreeMap::new(),
         })
     }
 
     const DOC_UNIT_COLUMNS: &'static str = "unit_id, doc_node_id, parent_unit_id, section_id, unit_kind, label, label_norm, \
          title, ordinal, level, text, span_start, span_end, page_start, page_end, path, \
-         citation, package_name, profile_name, profile_version, confidence";
+         citation, package_name, profile_name, profile_version, confidence, doc_sha256";
 
-    pub(crate) async fn count_doc_units_for_doc(
+    /// The staleness key `(doc_sha256, package_name, profile_name, profile_version)` for a
+    /// document's existing parse, read from any one of its units (they are always written as a
+    /// single homogeneous batch by `replace_doc_units`, so any row carries the same key).
+    /// `None` means the document has never been parsed (equivalent to the old "count == 0" gate).
+    pub(crate) async fn doc_unit_staleness_key(
         &self,
         doc_node_id: &str,
-    ) -> Result<usize, AxonMindError> {
+    ) -> Result<Option<(String, String, String, i64)>, AxonMindError> {
         let doc_id = doc_node_id.to_owned();
         let conn = self
             .db
@@ -2396,16 +2405,18 @@ impl GraphStore {
             .get()
             .await
             .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
-        conn.interact(move |conn| -> Result<usize, AxonMindError> {
-            let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM doc_units WHERE doc_node_id = ?1",
+        conn.interact(
+            move |conn| -> Result<Option<(String, String, String, i64)>, AxonMindError> {
+                conn.query_row(
+                    "SELECT doc_sha256, package_name, profile_name, profile_version \
+                     FROM doc_units WHERE doc_node_id = ?1 LIMIT 1",
                     [&doc_id],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
-                .map_err(|e| AxonMindError::Database(e.to_string()))?;
-            Ok(count as usize)
-        })
+                .optional()
+                .map_err(|e| AxonMindError::Database(e.to_string()))
+            },
+        )
         .await
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
@@ -2451,8 +2462,8 @@ impl GraphStore {
                     "INSERT INTO doc_units
                         (unit_id, doc_node_id, parent_unit_id, section_id, unit_kind, label, label_norm,
                          title, ordinal, level, text, span_start, span_end, page_start, page_end, path,
-                         citation, package_name, profile_name, profile_version, confidence)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+                         citation, package_name, profile_name, profile_version, confidence, doc_sha256)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
                     rusqlite::params![
                         unit.unit_id,
                         unit.doc_node_id,
@@ -2475,6 +2486,7 @@ impl GraphStore {
                         unit.profile_name,
                         unit.profile_version,
                         unit.confidence,
+                        unit.doc_sha256,
                     ],
                 )
                 .map_err(|e| AxonMindError::Database(e.to_string()))?;

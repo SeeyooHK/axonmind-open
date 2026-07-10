@@ -142,7 +142,10 @@ fn summarize_mutations(mutations: &[GraphMutation]) -> IngestSummary {
     summary
 }
 
-fn doc_units_from_parsed(index: &crate::structure::ParsedDocumentIndex) -> Vec<DocUnitRecord> {
+fn doc_units_from_parsed(
+    index: &crate::structure::ParsedDocumentIndex,
+    doc_sha256: &str,
+) -> Vec<DocUnitRecord> {
     index
         .units
         .iter()
@@ -168,6 +171,7 @@ fn doc_units_from_parsed(index: &crate::structure::ParsedDocumentIndex) -> Vec<D
             profile_name: unit.profile_name.clone(),
             profile_version: unit.profile_version,
             confidence: unit.confidence,
+            doc_sha256: doc_sha256.to_string(),
             locators: unit.locators.clone(),
         })
         .collect()
@@ -1401,7 +1405,7 @@ impl AxonMindEngine {
                                 .store
                                 .replace_doc_units(
                                     &doc_node_id.0,
-                                    &doc_units_from_parsed(&parsed),
+                                    &doc_units_from_parsed(&parsed, sha256),
                                     &parsed.refs,
                                 )
                                 .await
@@ -1770,9 +1774,12 @@ impl AxonMindEngine {
         let identity = derived.identity.clone();
         self.store.upsert_document_identity(&identity).await?;
 
-        if self.store.count_doc_units_for_doc(&node.id.0).await? > 0 {
-            return Ok(());
-        }
+        let current_sha256 = node
+            .attrs
+            .get("sha256")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
 
         if let Some(profile_name) = derived.profile_name.as_deref() {
             if let Some(pkg) = packages.iter().find(|pkg| {
@@ -1785,6 +1792,24 @@ impl AxonMindEngine {
                     .iter()
                     .find(|profile| profile.profile.name == profile_name)
                 {
+                    // Staleness key: re-parse unless the existing units already match this exact
+                    // (content sha256, package, profile, profile version) — otherwise a stale
+                    // parse (edited profile, bumped package version, or changed document content)
+                    // would sit forever behind a plain "units already exist" gate. See
+                    // docs/retrieve_guarantee.md item 3.
+                    let stale = match self.store.doc_unit_staleness_key(&node.id.0).await? {
+                        Some((doc_sha256, package_name, existing_profile_name, profile_version)) => {
+                            doc_sha256 != current_sha256
+                                || package_name != pkg.manifest.package.name
+                                || existing_profile_name != profile.profile.name
+                                || profile_version != profile.profile.version
+                        }
+                        None => true,
+                    };
+                    if !stale {
+                        return Ok(());
+                    }
+
                     if let Some(mut parsed) = crate::structure::parse_document(
                         &pkg.manifest.package.name,
                         profile,
@@ -1792,16 +1817,11 @@ impl AxonMindEngine {
                         &identity,
                         &markdown,
                     )? {
-                        parsed.tree.sha256 = node
-                            .attrs
-                            .get("sha256")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or_default()
-                            .to_string();
+                        parsed.tree.sha256 = current_sha256.clone();
                         self.store
                             .replace_doc_units(
                                 &node.id.0,
-                                &doc_units_from_parsed(&parsed),
+                                &doc_units_from_parsed(&parsed, &current_sha256),
                                 &parsed.refs,
                             )
                             .await?;

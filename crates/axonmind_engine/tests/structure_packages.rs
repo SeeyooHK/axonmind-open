@@ -265,6 +265,125 @@ async fn dosage_capture_surfaces_in_document_search_locator() {
     );
 }
 
+/// Acceptance check for item 3 in docs/retrieve_guarantee.md: the old gate in
+/// `ensure_document_grounding` was `count_doc_units_for_doc > 0 -> skip`, so any document that
+/// already had a parse never re-parsed again, even after its claiming profile changed. This bit
+/// the live GDPR corpus (the stale-2-unit incident) and needed manual `doc_units` row-clearing to
+/// force a re-parse. This test proves the staleness key `(doc_sha256, package_name, profile_name,
+/// profile_version)` makes that self-correcting: installing a version-bumped profile with a
+/// changed grammar and calling `retro_apply_structure_packages` re-parses the already-ingested
+/// document with the *new* grammar, producing different locator captures, with zero manual DB
+/// surgery.
+#[tokio::test]
+async fn bumped_profile_version_forces_reparse_without_manual_clearing() {
+    let temp = TempDir::new().expect("tempdir");
+    let cfg = test_engine_config(&temp);
+    let engine = AxonMindEngine::open(cfg).await.expect("engine");
+    let package_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dosage_test");
+
+    engine
+        .install_structure_package_from_dir(&package_dir, "standalone")
+        .await
+        .expect("install dosage-test package v1");
+
+    let doc_dir = TempDir::new().expect("doc tempdir");
+    let doc_path = doc_dir.path().join("dosage_guide_1.md");
+    std::fs::write(&doc_path, "Dosage Guide 1\n\nAmoxicillin dosage: 500mg\n").expect("write doc");
+
+    let ingested = engine
+        .ingest_file_with_content(&doc_path)
+        .await
+        .expect("ingest failed");
+
+    let output_v1 = engine
+        .document_search(DocumentSearchInput {
+            query: "Amoxicillin".to_string(),
+            doc_ids: Some(vec![ingested.doc_id.clone()]),
+            corpus: None,
+            unit_types: None,
+            top_k: Some(5),
+        })
+        .await
+        .expect("document_search failed (v1)");
+    let locator_v1 = output_v1
+        .results
+        .iter()
+        .find(|r| r.doc_id == ingested.doc_id)
+        .expect("expected a hit for the ingested dosage document (v1)")
+        .locator
+        .clone()
+        .expect("hit must carry a locator (v1)");
+    assert_eq!(locator_v1.0.get("dosage").map(String::as_str), Some("500mg"));
+    assert_eq!(locator_v1.0.get("unit"), None, "v1 grammar has no 'unit' capture");
+
+    // Bump the package + profile version and change the grammar: the new marker splits the
+    // dosage magnitude and unit into two captures instead of one combined token.
+    let package_v2 = std::fs::read_to_string(package_dir.join("package.toml"))
+        .expect("read package.toml")
+        .replace("version = 1", "version = 2");
+    let identity_v2 =
+        std::fs::read_to_string(package_dir.join("identity.toml")).expect("read identity.toml");
+    let profile_v2 = std::fs::read_to_string(package_dir.join("profiles/dosage-en.toml"))
+        .expect("read profile")
+        .replace("version = 1", "version = 2")
+        .replace(
+            r"marker = '(?m)^(\w[\w ]*)\s+dosage:\s*(\S+)'",
+            r"marker = '(?m)^(\w[\w ]*)\s+dosage:\s*(\d+)(mg|g|mcg)'",
+        )
+        .replace(
+            "captures = { medication = 1, dosage = 2 }",
+            "captures = { medication = 1, dosage = 2, unit = 3 }",
+        );
+
+    let mut files_v2 = std::collections::BTreeMap::new();
+    files_v2.insert("package.toml".to_string(), package_v2);
+    files_v2.insert("identity.toml".to_string(), identity_v2);
+    files_v2.insert("profiles/dosage-en.toml".to_string(), profile_v2);
+
+    engine
+        .install_structure_package_from_files(&files_v2, "standalone")
+        .await
+        .expect("install dosage-test package v2");
+
+    engine
+        .retro_apply_structure_packages()
+        .await
+        .expect("retro_apply after version bump");
+
+    let output_v2 = engine
+        .document_search(DocumentSearchInput {
+            query: "Amoxicillin".to_string(),
+            doc_ids: Some(vec![ingested.doc_id.clone()]),
+            corpus: None,
+            unit_types: None,
+            top_k: Some(5),
+        })
+        .await
+        .expect("document_search failed (v2)");
+    let locator_v2 = output_v2
+        .results
+        .iter()
+        .find(|r| r.doc_id == ingested.doc_id)
+        .expect("expected a hit for the ingested dosage document (v2)")
+        .locator
+        .clone()
+        .expect("hit must carry a locator (v2)");
+    assert_eq!(
+        locator_v2.0.get("dosage").map(String::as_str),
+        Some("500"),
+        "re-parse under the v2 grammar must split the dosage magnitude out of the combined \
+         '500mg' token the v1 grammar produced — proves the document was actually re-parsed, \
+         not served from the stale v1 units"
+    );
+    assert_eq!(
+        locator_v2.0.get("unit").map(String::as_str),
+        Some("mg"),
+        "the 'unit' capture only exists in the v2 grammar; its presence proves retro_apply ran \
+         the new profile against this already-ingested document without any manual row-clearing"
+    );
+}
+
 #[tokio::test]
 async fn installs_structure_package_from_in_memory_files() {
     // Mirrors how a production caller (e.g. Soverex skill_files) installs a

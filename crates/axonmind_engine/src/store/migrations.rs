@@ -23,6 +23,8 @@ const MIGRATION_011: &str = include_str!("../../../../migrations/011_structure_p
 const MIGRATION_012: &str = include_str!("../../../../migrations/012_drop_legal_units.sql");
 const MIGRATION_013: &str =
     include_str!("../../../../migrations/013_doc_unit_refs_target_kind.sql");
+const MIGRATION_014: &str =
+    include_str!("../../../../migrations/014_doc_units_staleness_key.sql");
 
 pub fn run_migrations(conn: &Connection) -> Result<(), AxonMindError> {
     conn.execute_batch(MIGRATION_001)
@@ -93,6 +95,11 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AxonMindError> {
     if max_version < 13 {
         conn.execute_batch(MIGRATION_013)
             .map_err(|e| AxonMindError::Database(format!("migration 013 failed: {e}")))?;
+    }
+
+    if max_version < 14 {
+        conn.execute_batch(MIGRATION_014)
+            .map_err(|e| AxonMindError::Database(format!("migration 014 failed: {e}")))?;
     }
 
     Ok(())
