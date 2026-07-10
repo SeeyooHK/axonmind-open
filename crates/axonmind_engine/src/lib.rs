@@ -30,14 +30,14 @@ use crate::ingest::{
 };
 use crate::pageindex::{PageIndexSearchCfg, PageIndexStore};
 use crate::query::{
-    DocumentQuoteInput, DocumentQuoteOutput, DocumentReadSectionInput, DocumentReadSectionOutput,
-    DocumentResolveInput, DocumentResolveOutput, DocumentSearchInput, DocumentSearchOutput,
-    DocumentSearchResult, ExplainKpiInput, ExplainKpiOutput, FindConflictsInput,
-    FindConflictsOutput, FocusKpiInput, FocusKpiOutput, GetEvidenceInput, GetEvidenceOutput,
-    GraphDiff, GraphSearchInput, GraphSearchOutput, GraphStatsOutput, ImpactRadiusInput,
-    ImpactRadiusOutput, NodeKindCount, ReasoningSearchInput, ReasoningSearchOutput,
-    ResolvedDocument, SuggestActionsInput, SuggestActionsOutput, TraceDecisionInput,
-    TraceDecisionOutput, UnitLocator,
+    DocumentIdentityReport, DocumentQuoteInput, DocumentQuoteOutput, DocumentReadSectionInput,
+    DocumentReadSectionOutput, DocumentResolveInput, DocumentResolveOutput, DocumentSearchInput,
+    DocumentSearchOutput, DocumentSearchResult, ExplainKpiInput, ExplainKpiOutput,
+    FindConflictsInput, FindConflictsOutput, FocusKpiInput, FocusKpiOutput, GetEvidenceInput,
+    GetEvidenceOutput, GraphDiff, GraphSearchInput, GraphSearchOutput, GraphStatsOutput,
+    ImpactRadiusInput, ImpactRadiusOutput, NodeKindCount, ReasoningSearchInput,
+    ReasoningSearchOutput, ResolvedDocument, SuggestActionsInput, SuggestActionsOutput,
+    TraceDecisionInput, TraceDecisionOutput, UnitLocator,
 };
 use crate::store::{
     DocUnitRecord, DocumentIdentityRecord, DocumentSummary, GraphCache, GraphMutation, GraphStore,
@@ -1447,6 +1447,16 @@ impl AxonMindEngine {
     /// logical document (HEAD only; superseded versions excluded), each with its `version_count`.
     pub async fn list_documents(&self) -> Result<Vec<DocumentSummary>, AxonMindError> {
         self.store.list_document_summaries().await
+    }
+
+    /// Per-document derived identity, claiming package/profile, and parsed-unit count. Powers
+    /// the Library review UI (`retrieve_guarantee.md` item 4a: unclaimed / low-confidence
+    /// filters, which the caller applies client-side over this full list).
+    pub async fn list_document_identities(
+        &self,
+    ) -> Result<Vec<DocumentIdentityReport>, AxonMindError> {
+        self.ensure_document_identity_catalog().await?;
+        self.store.list_document_identity_reports().await
     }
 
     /// All versions of a logical document, newest→oldest. Powers the Library version timeline.

@@ -26,6 +26,7 @@ pub mod graph_cache;
 pub mod migrations;
 pub mod sqlite;
 
+use crate::query::document::DocumentIdentityReport;
 use axonmind_core::{
     AxonMindError, Confidence, Edge, EdgeId, EdgeKind, Evidence, EvidenceId, ExtractorKind, Node,
     NodeId, NodeKind, SourceType,
@@ -1818,6 +1819,77 @@ impl GraphStore {
                         aliases,
                     });
                 }
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
+    /// One row per `document_identity` row, joined against `doc_units` for the parsed-unit
+    /// count and the profile that produced them (`MAX()` picks an arbitrary row's binding since
+    /// every unit for one doc shares the same `package_name`/`profile_name`/`profile_version` —
+    /// the same invariant `doc_unit_staleness_key` already relies on). Powers the Library review
+    /// UI's identity list (`retrieve_guarantee.md` item 4a); no filtering here, the caller
+    /// filters client-side (unclaimed / low-confidence).
+    pub(crate) async fn list_document_identity_reports(
+        &self,
+    ) -> Result<Vec<DocumentIdentityReport>, AxonMindError> {
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<Vec<DocumentIdentityReport>, AxonMindError> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT di.doc_node_id, di.source_filename, di.source_path, di.canonical_title,
+                            di.instrument_type, di.corpus, di.confidence, di.pinned_profile, di.updated_at,
+                            MAX(du.profile_name), MAX(du.profile_version), COUNT(du.doc_node_id)
+                     FROM document_identity di
+                     LEFT JOIN doc_units du ON du.doc_node_id = di.doc_node_id
+                     GROUP BY di.doc_node_id
+                     ORDER BY di.confidence ASC, di.updated_at DESC",
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, f64>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, Option<i64>>(10)?,
+                        row.get::<_, i64>(11)?,
+                    ))
+                })
+                .map_err(|e| AxonMindError::Database(e.to_string()))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+
+            let mut out = Vec::with_capacity(rows.len());
+            for row in rows {
+                out.push(DocumentIdentityReport {
+                    doc_node_id: row.0,
+                    source_filename: row.1,
+                    source_path: row.2,
+                    canonical_title: row.3,
+                    instrument_type: row.4,
+                    corpus: vec_from_json(&row.5)?,
+                    confidence: row.6 as f32,
+                    pinned_profile: row.7,
+                    updated_at: row.8,
+                    profile_name: row.9,
+                    profile_version: row.10,
+                    unit_count: row.11,
+                });
             }
             Ok(out)
         })

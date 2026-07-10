@@ -20,9 +20,9 @@ pub mod search;
 
 pub use conflicts::{ConflictPair, EdgeWithEvidence, FindConflictsInput, FindConflictsOutput};
 pub use document::{
-    DocumentQuoteInput, DocumentQuoteOutput, DocumentReadSectionInput, DocumentReadSectionOutput,
-    DocumentResolveInput, DocumentResolveOutput, DocumentSearchInput, DocumentSearchOutput,
-    DocumentSearchResult, PageLocator, ResolvedDocument, UnitLocator,
+    DocumentIdentityReport, DocumentQuoteInput, DocumentQuoteOutput, DocumentReadSectionInput,
+    DocumentReadSectionOutput, DocumentResolveInput, DocumentResolveOutput, DocumentSearchInput,
+    DocumentSearchOutput, DocumentSearchResult, PageLocator, ResolvedDocument, UnitLocator,
 };
 pub use reasoning::{ReasoningSearchInput, ReasoningSearchOutput, RetrievedSection};
 

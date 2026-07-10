@@ -31,6 +31,27 @@ pub struct ResolvedDocument {
     pub confidence: f32,
 }
 
+/// One row per document for the Library review UI (`retrieve_guarantee.md` item 4a): derived
+/// identity plus which package/profile parsed it and how many units it produced. `profile_name`/
+/// `profile_version`/`unit_count` are `None`/`0` for a document with no `doc_units` rows (no
+/// structure package ever matched it, or it was never parsed past PageIndex).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DocumentIdentityReport {
+    pub doc_node_id: String,
+    pub source_filename: String,
+    pub source_path: Option<String>,
+    pub canonical_title: String,
+    pub instrument_type: Option<String>,
+    pub corpus: Vec<String>,
+    pub confidence: f32,
+    pub profile_name: Option<String>,
+    pub profile_version: Option<i64>,
+    pub unit_count: i64,
+    pub pinned_profile: Option<String>,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct DocumentResolveInput {
