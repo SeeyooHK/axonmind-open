@@ -1582,6 +1582,41 @@ impl GraphStore {
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
+    /// Sets (or clears, with `None`) the explicit user pin on an existing `document_identity`
+    /// row. Does not create a row — a document must already have been derived at least once
+    /// (fresh ingest or the identity catalog pass) before it can be pinned.
+    pub(crate) async fn set_pinned_profile(
+        &self,
+        doc_node_id: &str,
+        profile_name: Option<&str>,
+    ) -> Result<(), AxonMindError> {
+        let doc_id = doc_node_id.to_owned();
+        let profile_name = profile_name.map(str::to_owned);
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<(), AxonMindError> {
+            let updated = conn
+                .execute(
+                    "UPDATE document_identity SET pinned_profile = ?1 WHERE doc_node_id = ?2",
+                    rusqlite::params![profile_name, doc_id],
+                )
+                .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            if updated == 0 {
+                return Err(AxonMindError::Preview {
+                    message: "Document identity not found; ingest the document before pinning."
+                        .to_string(),
+                });
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
     pub(crate) async fn fetch_document_identity(
         &self,
         doc_node_id: &str,

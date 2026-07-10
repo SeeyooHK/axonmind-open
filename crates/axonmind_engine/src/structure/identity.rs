@@ -11,12 +11,16 @@ pub struct DerivedIdentity {
     pub profile_name: Option<String>,
 }
 
+/// `pinned_profile`, when `Some`, restricts rule matching to rules whose `rule.profile` equals
+/// the pin — an explicit user override (`document_identity.pinned_profile`) always wins over
+/// best-match-by-confidence across all installed packages.
 pub fn derive_identity(
     doc_node_id: &str,
     raw_title: Option<&str>,
     source_path: Option<&str>,
     markdown: Option<&str>,
     packages: &[StructurePackage],
+    pinned_profile: Option<&str>,
 ) -> DerivedIdentity {
     let source_filename = source_path
         .and_then(|p| Path::new(p).file_name())
@@ -56,6 +60,9 @@ pub fn derive_identity(
 
     for pkg in packages {
         for rule in &pkg.identity.rules {
+            if pinned_profile.is_some_and(|pin| rule.profile != pin) {
+                continue;
+            }
             if let Some((identity, specificity)) = apply_rule(
                 doc_node_id,
                 raw_title,
@@ -297,6 +304,7 @@ mod tests {
             Some("Acme_Operations_Handbook_Ed3.pdf"),
             Some("ACME OPERATIONS HANDBOOK, EDITION 3"),
             &[pkg],
+            None,
         );
         assert_eq!(
             derived.identity.instrument_type.as_deref(),
@@ -337,6 +345,7 @@ mod tests {
             None,
             Some(markdown),
             &[pkg],
+            None,
         );
         assert_eq!(
             derived.identity.instrument_type.as_deref(),
@@ -344,5 +353,67 @@ mod tests {
             "expected the document's own title to win, got: {:?}",
             derived.identity.canonical_title
         );
+    }
+
+    /// An explicit `pinned_profile` must override best-match-by-confidence, not just tiebreak it.
+    /// The title deliberately matches two same-tier (raw_title) rules at once — "Acme Policy 3"
+    /// (handbook-en, confidence 0.9) and "Acme Field Procedure 9" (procedure-en, confidence
+    /// 0.85) — so without a pin the higher-confidence handbook-en match wins (mirrors the
+    /// Guidelines 9/2022 misidentification this feature exists to let a human correct). With
+    /// `pinned_profile = Some("procedure-en")`, the lower-confidence rule must win instead,
+    /// because rules belonging to any other profile are excluded from matching entirely.
+    #[test]
+    fn pinned_profile_overrides_higher_confidence_match() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic_manual");
+        let pkg = crate::structure::model::StructurePackage::from_dir(&dir).expect("package");
+        let raw_title = "Acme Policy 3 Acme Field Procedure 9";
+
+        let unpinned = derive_identity(
+            "doc.ambiguous",
+            Some(raw_title),
+            None,
+            None,
+            std::slice::from_ref(&pkg),
+            None,
+        );
+        assert_eq!(
+            unpinned.identity.instrument_type.as_deref(),
+            Some("policy"),
+            "sanity check: without a pin, the higher-confidence rule should win"
+        );
+
+        let pinned = derive_identity(
+            "doc.ambiguous",
+            Some(raw_title),
+            None,
+            None,
+            std::slice::from_ref(&pkg),
+            Some("procedure-en"),
+        );
+        assert_eq!(
+            pinned.identity.instrument_type.as_deref(),
+            Some("procedure"),
+            "pinned profile must win over a higher-confidence match in another profile"
+        );
+        assert_eq!(pinned.profile_name.as_deref(), Some("procedure-en"));
+    }
+
+    /// A pin naming a profile whose rules don't match this document's content must not panic
+    /// or silently pick a wrong profile — it degrades to the same generic fallback an unclaimed
+    /// document gets, exactly like today's "no rule matched" case.
+    #[test]
+    fn pinned_profile_with_no_matching_rule_falls_back_to_generic() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic_manual");
+        let pkg = crate::structure::model::StructurePackage::from_dir(&dir).expect("package");
+        let derived = derive_identity(
+            "doc.nomatch",
+            Some("Completely Unrelated Title"),
+            None,
+            None,
+            &[pkg],
+            Some("procedure-en"),
+        );
+        assert_eq!(derived.identity.instrument_type, None);
+        assert_eq!(derived.profile_name, None);
     }
 }

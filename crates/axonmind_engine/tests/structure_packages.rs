@@ -160,6 +160,7 @@ Article 4\n\nDefinitions\n\n\
         None,
         Some(markdown),
         std::slice::from_ref(&pkg),
+        None,
     )
     .identity;
 
@@ -381,6 +382,95 @@ async fn bumped_profile_version_forces_reparse_without_manual_clearing() {
         Some("mg"),
         "the 'unit' capture only exists in the v2 grammar; its presence proves retro_apply ran \
          the new profile against this already-ingested document without any manual row-clearing"
+    );
+}
+
+/// Acceptance check for item 4c (`retrieve_guarantee.md`): a document misidentified by
+/// best-match-by-confidence (mirroring the real Guidelines 9/2022 incident — a lower-confidence
+/// rule matching the document's actual profile lost to a higher-confidence rule matching an
+/// incidental mention of a different profile) can be corrected entirely via `pin_document_profile`,
+/// the correction is visible immediately (no waiting for the next reconcile pass), and it
+/// survives a full `retro_apply_structure_packages` re-derivation — proving `pinned_profile`
+/// is no longer dead data.
+#[tokio::test]
+async fn pinned_profile_corrects_misidentification_and_survives_reingestion() {
+    let temp = TempDir::new().expect("tempdir");
+    let cfg = test_engine_config(&temp);
+    let engine = AxonMindEngine::open(cfg).await.expect("engine");
+    let package_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic_manual");
+    engine
+        .install_structure_package_from_dir(&package_dir, "standalone")
+        .await
+        .expect("install generic-manual package");
+
+    let doc_dir = TempDir::new().expect("doc tempdir");
+    let doc_path = doc_dir.path().join("ambiguous_doc.md");
+    // Title matches two same-tier (first_chars) identity rules at once: "Acme Policy 3"
+    // (handbook-en, confidence 0.9) and "Acme Field Procedure 9" (procedure-en, confidence
+    // 0.85) — the document is actually a field procedure, but best-match-by-confidence picks
+    // "policy". The body's "1.3.6 Escalation steps" marker (same shape as the procedure-en
+    // parse fixture) gives the pin something real to re-parse into a unit once forced.
+    std::fs::write(
+        &doc_path,
+        "Acme Policy 3 Acme Field Procedure 9\n\n1.3.6 Escalation steps\n\
+         The operator must escalate to the supervisor per Chapter 3.\n",
+    )
+    .expect("write doc");
+
+    let ingested = engine
+        .ingest_file_with_content(&doc_path)
+        .await
+        .expect("ingest failed");
+
+    let before = engine
+        .list_document_identities()
+        .await
+        .expect("list identities")
+        .into_iter()
+        .find(|d| d.doc_node_id == ingested.doc_id)
+        .expect("identity row exists");
+    assert_eq!(
+        before.instrument_type.as_deref(),
+        Some("policy"),
+        "sanity check: without a pin, the higher-confidence rule wins, misidentifying the doc"
+    );
+
+    engine
+        .pin_document_profile(&ingested.doc_id, Some("procedure-en"))
+        .await
+        .expect("pin profile");
+
+    let pinned = engine
+        .list_document_identities()
+        .await
+        .expect("list identities")
+        .into_iter()
+        .find(|d| d.doc_node_id == ingested.doc_id)
+        .expect("identity row exists");
+    assert_eq!(
+        pinned.instrument_type.as_deref(),
+        Some("procedure"),
+        "pin must force the correct profile's rule to win, visible immediately"
+    );
+    assert_eq!(pinned.profile_name.as_deref(), Some("procedure-en"));
+
+    engine
+        .retro_apply_structure_packages()
+        .await
+        .expect("retro_apply after pinning");
+
+    let after_reingest = engine
+        .list_document_identities()
+        .await
+        .expect("list identities")
+        .into_iter()
+        .find(|d| d.doc_node_id == ingested.doc_id)
+        .expect("identity row exists");
+    assert_eq!(
+        after_reingest.instrument_type.as_deref(),
+        Some("procedure"),
+        "the pin must survive a full re-derivation pass, not just the immediate pin call"
     );
 }
 

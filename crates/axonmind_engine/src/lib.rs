@@ -1375,6 +1375,7 @@ impl AxonMindEngine {
             doc.source_path.as_ref().and_then(|p| p.to_str()),
             Some(&markdown),
             &installed_packages,
+            None,
         );
         let identity = derived.identity.clone();
         if let Err(e) = self.store.upsert_document_identity(&identity).await {
@@ -1457,6 +1458,33 @@ impl AxonMindEngine {
     ) -> Result<Vec<DocumentIdentityReport>, AxonMindError> {
         self.ensure_document_identity_catalog().await?;
         self.store.list_document_identity_reports().await
+    }
+
+    /// Sets (or clears, with `None`) an explicit profile pin for a document
+    /// (`retrieve_guarantee.md` item 4c) and immediately re-derives its identity so the
+    /// override is visible right away instead of waiting for the next
+    /// `retro_apply_structure_packages` pass. The pin itself survives re-ingestion — it is
+    /// preserved by `upsert_document_identity`'s `ON CONFLICT` clause, not written by
+    /// `derive_identity`.
+    pub async fn pin_document_profile(
+        &self,
+        doc_node_id: &str,
+        profile_name: Option<&str>,
+    ) -> Result<(), AxonMindError> {
+        self.store
+            .set_pinned_profile(doc_node_id, profile_name)
+            .await?;
+        self.ensure_document_grounding(&NodeId(doc_node_id.to_string()))
+            .await
+    }
+
+    /// Forces one document's identity/units to re-derive right now (item 4d's manual re-run
+    /// escape hatch) — the same re-derivation `retro_apply_structure_packages` performs for
+    /// every document, scoped to a single one, for immediate feedback without a full reconcile
+    /// pass.
+    pub async fn reparse_document_identity(&self, doc_node_id: &str) -> Result<(), AxonMindError> {
+        self.ensure_document_grounding(&NodeId(doc_node_id.to_string()))
+            .await
     }
 
     /// All versions of a logical document, newest→oldest. Powers the Library version timeline.
@@ -1732,8 +1760,10 @@ impl AxonMindEngine {
             // `corpus`/`instrument_type` on every `document_search` call. Skip, matching the
             // "don't redo settled work" gate `ensure_document_grounding` already uses for
             // `doc_units`.
-            if let Some(existing) = self.store.fetch_document_identity(&node.id.0).await?
-                && existing.instrument_type.is_some()
+            let existing = self.store.fetch_document_identity(&node.id.0).await?;
+            if existing
+                .as_ref()
+                .is_some_and(|e| e.instrument_type.is_some())
             {
                 continue;
             }
@@ -1741,12 +1771,14 @@ impl AxonMindEngine {
                 .attrs
                 .get("source_path")
                 .and_then(|value| value.as_str());
+            let pinned_profile = existing.as_ref().and_then(|e| e.pinned_profile.as_deref());
             let identity = crate::structure::derive_identity(
                 &node.id.0,
                 Some(&node.name),
                 source_path,
                 None,
                 &packages,
+                pinned_profile,
             )
             .identity;
             self.store.upsert_document_identity(&identity).await?;
@@ -1774,12 +1806,15 @@ impl AxonMindEngine {
             .and_then(|value| value.as_str());
         let packages = self.store.load_structure_packages().await?;
         let markdown = self.get_document_content(&node.id).await?;
+        let existing = self.store.fetch_document_identity(&node.id.0).await?;
+        let pinned_profile = existing.as_ref().and_then(|e| e.pinned_profile.as_deref());
         let derived = crate::structure::derive_identity(
             &node.id.0,
             Some(&node.name),
             source_path,
             Some(&markdown),
             &packages,
+            pinned_profile,
         );
         let identity = derived.identity.clone();
         self.store.upsert_document_identity(&identity).await?;

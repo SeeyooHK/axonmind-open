@@ -571,6 +571,7 @@ mod tests {
             Some("acme_operations_handbook_ed3.pdf"),
             Some(&markdown),
             std::slice::from_ref(&pkg),
+            None,
         )
         .identity;
         let parsed = parse_document(
@@ -614,6 +615,7 @@ mod tests {
             Some("acme_field_procedure_9.pdf"),
             Some(&markdown),
             std::slice::from_ref(&pkg),
+            None,
         )
         .identity;
         let parsed = parse_document(
@@ -667,6 +669,7 @@ mod tests {
             None,
             Some(markdown),
             std::slice::from_ref(&pkg),
+            None,
         )
         .identity;
         let parsed = parse_document(
@@ -709,6 +712,7 @@ mod tests {
             None,
             Some(markdown),
             std::slice::from_ref(&pkg),
+            None,
         )
         .identity;
         let parsed = parse_document(
@@ -755,6 +759,7 @@ mod tests {
             None,
             Some(markdown),
             std::slice::from_ref(&pkg),
+            None,
         )
         .identity;
         let parsed = parse_document(
