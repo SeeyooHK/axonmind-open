@@ -1717,6 +1717,15 @@ impl AxonMindEngine {
             .collect())
     }
 
+    /// Full parsed installed packages (profiles, refs, corpus bindings included), unlike
+    /// `list_structure_packages` above which returns the lightweight `PackageInfo` view. Callers
+    /// that need a package's `[[ref]]` grammar (e.g. `retrieve_guarantee.md` item 9's answer-side
+    /// citation matching) use this; retrieval itself already loads the same data internally via
+    /// `store.load_structure_packages()` (see `document_search`'s xref resolution).
+    pub async fn installed_structure_packages(&self) -> Result<Vec<StructurePackage>, AxonMindError> {
+        self.store.load_structure_packages().await
+    }
+
     /// Distinct corpus names a package's `[[bind]]` rules resolve documents into. See
     /// `GraphStore::structure_package_corpora` for why this reads `corpus_bindings` directly
     /// rather than the package's `[corpus] name` (never persisted).

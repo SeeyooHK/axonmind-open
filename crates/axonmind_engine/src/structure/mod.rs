@@ -11,5 +11,5 @@ pub use model::{
     IdentityRulesFile, PackageManifest, ProfileDefinition, StructurePackage, StructureUnit,
     StructureUnitRef, XrefBinding,
 };
-pub use parse::{ParsedDocumentIndex, ParsedUnit, parse_document};
+pub use parse::{ParsedDocumentIndex, ParsedUnit, RefMention, extract_ref_mentions, parse_document};
 pub use registry::{InstallReport, PackageInfo};

@@ -4,7 +4,9 @@ use axonmind_core::AxonMindError;
 
 use crate::pageindex::tree::{PersistTree, SectionRow};
 use crate::store::{DocumentIdentityRecord, UnitRefRecord};
-use crate::structure::model::{CaptureSelector, LevelSpec, ProfileDefinition, StructureUnit};
+use crate::structure::model::{
+    CaptureSelector, LevelSpec, ProfileDefinition, StructureUnit, StructureUnitRef,
+};
 
 const PATH_SEP: &str = " \u{203a} ";
 
@@ -493,6 +495,44 @@ fn extract_refs(profile: &ProfileDefinition, unit: &ParsedUnit) -> Vec<UnitRefRe
     refs
 }
 
+/// A single `[[ref]]`-grammar match against arbitrary text, e.g. a locator mention found in an
+/// LLM's answer rather than inside a parsed document unit (`retrieve_guarantee.md` item 9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefMention {
+    pub target_kind: String,
+    pub target_label_norm: String,
+    pub ref_text: String,
+}
+
+/// Run a profile's (or several profiles' combined) `[[ref]]` regex/template rules against
+/// arbitrary text and return every match. Deliberately does not reuse `extract_refs` above: that
+/// function needs a `ParsedUnit`'s `label_norm`/`unit_id` for self-reference filtering and
+/// `UnitRefRecord` bookkeeping that only make sense while walking a document's own structure —
+/// this is the same three-line regex/template loop applied to a bare string, with no ties to any
+/// particular document.
+pub fn extract_ref_mentions(refs: &[StructureUnitRef], text: &str) -> Vec<RefMention> {
+    let mut mentions = Vec::new();
+    for reference in refs {
+        let Ok(regex) = regex::Regex::new(&reference.pattern) else {
+            continue;
+        };
+        for captures in regex.captures_iter(text) {
+            mentions.push(RefMention {
+                target_kind: reference.target_kind.clone(),
+                target_label_norm: render_numeric_ref_template(
+                    &reference.target_label_norm,
+                    &captures,
+                ),
+                ref_text: captures
+                    .get(0)
+                    .map(|value| value.as_str().to_string())
+                    .unwrap_or_default(),
+            });
+        }
+    }
+    mentions
+}
+
 fn render_template(
     template: &str,
     identity: &DocumentIdentityRecord,
@@ -785,5 +825,72 @@ mod tests {
             chapter_5s[0].unit_id, chapter_5s[1].unit_id,
             "duplicate label_norm must not produce duplicate unit_id"
         );
+    }
+
+    // retrieve_guarantee.md item 9: extract_ref_mentions applies a profile's [[ref]] grammar to
+    // arbitrary text (an LLM's answer), not a ParsedUnit — these rules mirror a real
+    // eu-regulation-en-shaped profile so the test proves the same grammar package authors
+    // already write for document parsing is directly reusable here, unmodified.
+    fn eu_regulation_style_refs() -> Vec<StructureUnitRef> {
+        vec![
+            StructureUnitRef {
+                target_kind: "paragraph".to_string(),
+                pattern: r"\bArticle\s+(\d+[a-z]?)\((\d+)\)".to_string(),
+                target_label_norm: "art.{1}.p{2}".to_string(),
+            },
+            StructureUnitRef {
+                target_kind: "article".to_string(),
+                pattern: r"\bArticle\s+(\d+[a-z]?)\b".to_string(),
+                target_label_norm: "art.{1}".to_string(),
+            },
+            StructureUnitRef {
+                target_kind: "recital".to_string(),
+                pattern: r"(?i)\brecital\s+(\d+)\b".to_string(),
+                target_label_norm: "recital.{1}".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn extract_ref_mentions_finds_article_paragraph_and_recital_in_prose() {
+        let text = "As Article 33(1) requires, and per Recital 85, notification is mandatory.";
+        let mentions = extract_ref_mentions(&eu_regulation_style_refs(), text);
+
+        assert!(
+            mentions
+                .iter()
+                .any(|m| m.target_kind == "paragraph" && m.target_label_norm == "art.33.p1")
+        );
+        assert!(
+            mentions
+                .iter()
+                .any(|m| m.target_kind == "recital" && m.target_label_norm == "recital.85")
+        );
+    }
+
+    // Article 33(1) also matches the bare "article" rule ("Article 33") in addition to the
+    // paragraph rule — both fire, same as extract_refs' own overlapping-rule behavior. This
+    // pins that extract_ref_mentions doesn't silently dedupe across rules; callers decide
+    // what to do with overlapping matches.
+    #[test]
+    fn extract_ref_mentions_does_not_dedupe_overlapping_rules() {
+        let text = "Article 33(1) applies.";
+        let mentions = extract_ref_mentions(&eu_regulation_style_refs(), text);
+        assert!(
+            mentions
+                .iter()
+                .any(|m| m.target_kind == "article" && m.target_label_norm == "art.33")
+        );
+        assert!(
+            mentions
+                .iter()
+                .any(|m| m.target_kind == "paragraph" && m.target_label_norm == "art.33.p1")
+        );
+    }
+
+    #[test]
+    fn extract_ref_mentions_returns_empty_for_no_match_or_no_rules() {
+        assert!(extract_ref_mentions(&eu_regulation_style_refs(), "Nothing to cite here.").is_empty());
+        assert!(extract_ref_mentions(&[], "Article 33(1) applies.").is_empty());
     }
 }
