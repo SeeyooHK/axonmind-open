@@ -16,6 +16,12 @@ pub struct PackageMeta {
     pub name: String,
     pub version: i64,
     pub description: Option<String>,
+    /// `"strict"` blocks install/retro-apply on eval failure; anything else (absent, typo,
+    /// unrecognized value) is `"warn"` — same absent-is-safe-default convention as
+    /// `grounding_mode` (retrieve_guarantee.md item 6). Enforcement of the strict path is
+    /// deferred (item 7); this session parses the key and reports results either way.
+    #[serde(default)]
+    pub eval_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,6 +196,29 @@ pub struct EnrichmentBinding {
     pub prompt: String,
 }
 
+/// One `evals/*.toml` file: `query -> expected locator(s)` retrieval regression cases
+/// (retrieve_guarantee.md item 7 / Enhancement #9).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalsFile {
+    #[serde(default, rename = "eval")]
+    pub evals: Vec<EvalCase>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalCase {
+    pub name: String,
+    pub query: String,
+    pub corpus: String,
+    #[serde(default)]
+    pub top_k: Option<usize>,
+    /// Any-of: the eval passes if any top-k hit's locator is a superset match against any one
+    /// of these maps (every key in the expect map must equal the hit's locator value; extra
+    /// keys on the hit are ignored). Subset matching so a grammar can add new capture keys
+    /// without invalidating existing evals.
+    #[serde(default, rename = "expect")]
+    pub expect: Vec<BTreeMap<String, String>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StructurePackage {
     pub root_dir: PathBuf,
@@ -197,6 +226,8 @@ pub struct StructurePackage {
     pub profiles: Vec<ProfileDefinition>,
     pub identity: IdentityRulesFile,
     pub corpus: Option<CorpusFile>,
+    #[serde(default)]
+    pub evals: Vec<EvalCase>,
 }
 
 impl StructurePackage {
@@ -235,12 +266,33 @@ impl StructurePackage {
         }
         profiles.sort_by(|a, b| a.profile.name.cmp(&b.profile.name));
 
+        let evals_dir = path.join("evals");
+        let mut evals: Vec<EvalCase> = Vec::new();
+        if evals_dir.exists() {
+            let entries =
+                std::fs::read_dir(&evals_dir).map_err(|e| AxonMindError::ValidationFailed {
+                    message: format!("read {}: {e}", evals_dir.display()),
+                })?;
+            for entry in entries {
+                let entry = entry.map_err(|e| AxonMindError::ValidationFailed {
+                    message: format!("read eval entry: {e}"),
+                })?;
+                if entry.path().extension().and_then(|ext| ext.to_str()) != Some("toml") {
+                    continue;
+                }
+                let file: EvalsFile = parse_toml_file(&entry.path())?;
+                evals.extend(file.evals);
+            }
+            evals.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+
         Ok(Self {
             root_dir: path.to_path_buf(),
             manifest,
             profiles,
             identity,
             corpus,
+            evals,
         })
     }
 
@@ -296,6 +348,26 @@ impl StructurePackage {
             )?;
         }
 
+        let mut eval_names = Vec::new();
+        for eval in &self.evals {
+            if eval.name.is_empty() {
+                return Err(AxonMindError::ValidationFailed {
+                    message: "eval case is missing a name".to_string(),
+                });
+            }
+            if eval_names.iter().any(|existing| existing == &eval.name) {
+                return Err(AxonMindError::ValidationFailed {
+                    message: format!("duplicate eval name {}", eval.name),
+                });
+            }
+            eval_names.push(eval.name.clone());
+            if eval.expect.is_empty() {
+                return Err(AxonMindError::ValidationFailed {
+                    message: format!("eval {} has no expect entries", eval.name),
+                });
+            }
+        }
+
         Ok(())
     }
 
@@ -305,6 +377,7 @@ impl StructurePackage {
         hasher.update(serde_json::to_vec(&self.profiles).map_err(json_error)?);
         hasher.update(serde_json::to_vec(&self.identity).map_err(json_error)?);
         hasher.update(serde_json::to_vec(&self.corpus).map_err(json_error)?);
+        hasher.update(serde_json::to_vec(&self.evals).map_err(json_error)?);
         Ok(format!("{:x}", hasher.finalize()))
     }
 
@@ -334,12 +407,26 @@ impl StructurePackage {
         }
         profiles.sort_by(|a, b| a.profile.name.cmp(&b.profile.name));
 
+        let mut evals: Vec<EvalCase> = Vec::new();
+        for (path, text) in files {
+            let Some(rest) = path.strip_prefix("evals/") else {
+                continue;
+            };
+            if rest.contains('/') || !rest.ends_with(".toml") {
+                continue;
+            }
+            let file: EvalsFile = parse_toml_str(text)?;
+            evals.extend(file.evals);
+        }
+        evals.sort_by(|a, b| a.name.cmp(&b.name));
+
         Ok(Self {
             root_dir: PathBuf::new(),
             manifest,
             profiles,
             identity,
             corpus,
+            evals,
         })
     }
 }

@@ -1,0 +1,7 @@
+[corpus]
+name = "dosage"
+
+[[bind]]
+match = { instrument_type = "guideline" }
+corpus = ["dosage"]
+domain = ["dosage-test"]

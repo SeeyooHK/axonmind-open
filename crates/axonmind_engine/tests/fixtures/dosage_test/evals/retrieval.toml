@@ -1,0 +1,16 @@
+[[eval]]
+name = "amoxicillin-dosage-entry"
+query = "Amoxicillin"
+corpus = "dosage"
+top_k = 5
+
+[[eval.expect]]
+dosage = "500mg"
+
+[[eval]]
+name = "corpus-with-no-documents-skips"
+query = "irrelevant"
+corpus = "no-such-corpus-ever-bound"
+
+[[eval.expect]]
+foo = "bar"

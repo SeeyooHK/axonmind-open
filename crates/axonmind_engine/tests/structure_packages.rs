@@ -3,7 +3,7 @@ use axonmind_engine::{
     config::EngineConfig,
     ingest::{IngestOptions, IngestSource},
     query::DocumentSearchInput,
-    structure::{StructurePackage, derive_identity, parse_document},
+    structure::{EvalOutcome, StructurePackage, derive_identity, parse_document},
 };
 use tempfile::TempDir;
 
@@ -278,6 +278,62 @@ async fn dosage_capture_surfaces_in_document_search_locator() {
         hit.package_version >= 1,
         "package_version must reflect the profile version in effect at parse time, not be left \
          at the zero-value default"
+    );
+}
+
+/// Acceptance check for item 7 in docs/retrieve_guarantee.md: `run_structure_evals` must pass an
+/// eval whose expect map matches a real ingested hit's locator, and — decision 3(a), the
+/// strict-block scope call — must SKIP (not fail) an eval scoped to a corpus that currently
+/// claims zero documents, since a package installed on a clean DB (before any doc is ingested)
+/// must not read as an eval failure.
+#[tokio::test]
+async fn run_structure_evals_passes_on_match_and_skips_empty_corpus() {
+    let temp = TempDir::new().expect("tempdir");
+    let cfg = test_engine_config(&temp);
+    let engine = AxonMindEngine::open(cfg).await.expect("engine");
+    let package_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dosage_test");
+    let pkg = StructurePackage::from_dir(&package_dir).expect("load dosage-test package");
+
+    engine
+        .install_structure_package(pkg.clone(), "standalone")
+        .await
+        .expect("install dosage-test package");
+
+    let doc_dir = TempDir::new().expect("doc tempdir");
+    let doc_path = doc_dir.path().join("dosage_guide_1.md");
+    std::fs::write(&doc_path, "Dosage Guide 1\n\nAmoxicillin dosage: 500mg\n").expect("write doc");
+    engine
+        .ingest_file_with_content(&doc_path)
+        .await
+        .expect("ingest failed");
+
+    let report = engine
+        .run_structure_evals(&pkg)
+        .await
+        .expect("run_structure_evals");
+
+    let passed = report
+        .results
+        .iter()
+        .find(|r| r.name == "amoxicillin-dosage-entry")
+        .expect("amoxicillin-dosage-entry eval present in report");
+    assert_eq!(
+        passed.outcome,
+        EvalOutcome::Passed,
+        "expected a match against the ingested dosage entry, got reason: {:?}",
+        passed.reason
+    );
+
+    let skipped = report
+        .results
+        .iter()
+        .find(|r| r.name == "corpus-with-no-documents-skips")
+        .expect("corpus-with-no-documents-skips eval present in report");
+    assert_eq!(
+        skipped.outcome,
+        EvalOutcome::Skipped,
+        "a corpus with zero claimed documents must skip, not fail, even under a strict eval_policy"
     );
 }
 

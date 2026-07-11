@@ -45,7 +45,8 @@ use crate::store::{
     generations::{GenerationId, GenerationSummary},
 };
 use crate::structure::{
-    IdentityMatch, InstallReport, PackageInfo, StructurePackage, identity_matches,
+    EvalCaseResult, EvalOutcome, IdentityMatch, InstallReport, PackageEvalReport, PackageInfo,
+    StructurePackage, eval_case_result, identity_matches,
 };
 
 /// Max number of existing concept-node names passed to the LLM entity extractor as the
@@ -1748,6 +1749,42 @@ impl AxonMindEngine {
             }
         }
         Ok(())
+    }
+
+    /// Runs a package's `evals/*.toml` retrieval regression cases against the live corpus
+    /// (retrieve_guarantee.md item 7). A corpus that currently claims zero documents skips
+    /// (not fails) every eval scoped to it — importing a package on a clean DB, before any
+    /// document is ingested, must not read as an eval failure.
+    pub async fn run_structure_evals(
+        &self,
+        pkg: &StructurePackage,
+    ) -> Result<PackageEvalReport, AxonMindError> {
+        let mut report = PackageEvalReport {
+            package_name: pkg.manifest.package.name.clone(),
+            results: Vec::new(),
+        };
+        for eval in &pkg.evals {
+            let doc_ids = self.store.list_document_ids_by_corpus(&eval.corpus).await?;
+            if doc_ids.is_empty() {
+                report.results.push(EvalCaseResult {
+                    name: eval.name.clone(),
+                    outcome: EvalOutcome::Skipped,
+                    reason: Some(format!("corpus '{}' has no documents yet", eval.corpus)),
+                });
+                continue;
+            }
+            let output = self
+                .document_search(DocumentSearchInput {
+                    query: eval.query.clone(),
+                    doc_ids: None,
+                    corpus: Some(eval.corpus.clone()),
+                    unit_types: None,
+                    top_k: eval.top_k,
+                })
+                .await?;
+            report.results.push(eval_case_result(eval, &output.results));
+        }
+        Ok(report)
     }
 
     async fn ensure_document_identity_catalog(&self) -> Result<(), AxonMindError> {

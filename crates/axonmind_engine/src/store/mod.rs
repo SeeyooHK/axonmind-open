@@ -2402,6 +2402,7 @@ impl GraphStore {
                             name: package_name,
                             version,
                             description,
+                            eval_policy: None,
                         },
                     },
                     profiles,
@@ -2415,6 +2416,10 @@ impl GraphStore {
                     } else {
                         Some(corpus)
                     },
+                    // Evals aren't persisted to the DB (retrieve_guarantee.md item 7 keeps them
+                    // file-only, re-parsed from skill_files on every reconcile) — a package
+                    // reconstructed from these tables is never the input to run_structure_evals.
+                    evals: Vec::new(),
                 });
             }
             Ok(out)
