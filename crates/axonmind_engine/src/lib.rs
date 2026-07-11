@@ -46,7 +46,7 @@ use crate::store::{
 };
 use crate::structure::{
     EvalCaseResult, EvalOutcome, IdentityMatch, InstallReport, PackageEvalReport, PackageInfo,
-    StructurePackage, eval_case_result, identity_matches,
+    StructurePackage, StructureUnitRef, eval_case_result, extract_ref_mentions, identity_matches,
 };
 
 /// Max number of existing concept-node names passed to the LLM entity extractor as the
@@ -214,6 +214,57 @@ fn snippet(text: &str, max_chars: usize) -> String {
         snippet.push_str("...");
     }
     snippet
+}
+
+/// Builds a citation-safe `DocumentSearchResult` for a unit found by one of `document_search`'s
+/// three lookup paths (BM25/rerank, cross-reference expansion, locator fast-path) — same fields,
+/// only `score_source` differs by caller.
+fn document_search_result(
+    unit: &crate::store::DocUnitRecord,
+    score_source: &str,
+) -> DocumentSearchResult {
+    DocumentSearchResult {
+        doc_id: unit.doc_node_id.clone(),
+        section_id: unit.section_id.clone(),
+        unit_id: Some(unit.unit_id.clone()),
+        locator: Some(locator_from_unit(unit)),
+        page: page_from_unit(unit),
+        title: unit_display_title(unit),
+        snippet: snippet(&unit.text, 320),
+        score_source: score_source.to_string(),
+        citation_safe: true,
+        doc_sha256: unit.doc_sha256.clone(),
+        package_name: unit.package_name.clone(),
+        package_version: unit.profile_version,
+    }
+}
+
+/// Union of `[[ref]]` rules from installed packages whose `corpus.toml` binds documents into any
+/// of `scoped_identities`' corpus tags — the packages whose citation grammar plausibly applies to
+/// this search's scope (docs/retrieve_guarantee.md, Enhancement #5).
+fn ref_rules_for_scope(
+    installed_packages: &[StructurePackage],
+    scoped_identities: &[DocumentIdentityRecord],
+) -> Vec<StructureUnitRef> {
+    let corpora: std::collections::HashSet<&str> = scoped_identities
+        .iter()
+        .flat_map(|identity| identity.corpus.iter().map(String::as_str))
+        .collect();
+    if corpora.is_empty() {
+        return Vec::new();
+    }
+    installed_packages
+        .iter()
+        .filter(|pkg| {
+            pkg.corpus.as_ref().is_some_and(|corpus| {
+                corpus
+                    .binds
+                    .iter()
+                    .any(|bind| bind.corpus.iter().any(|tag| corpora.contains(tag.as_str())))
+            })
+        })
+        .flat_map(|pkg| pkg.profiles.iter().flat_map(|profile| profile.refs.clone()))
+        .collect()
 }
 
 fn italian_query_expansions(query: &str) -> Vec<&'static str> {
@@ -2494,6 +2545,27 @@ impl AxonMindEngine {
         Ok(None)
     }
 
+    /// Public wrapper around `resolve_xref_target_doc` for callers outside this crate that only
+    /// have a source doc id and a target kind, not this crate's internal identity cache
+    /// (`retrieve_guarantee.md` item 16: soverex-open's `verify_answer` resolves a bare-mention
+    /// citation's target document the same way `document_search`'s own ref-expansion already
+    /// does, via the package-declared `[[xref]]` rule — no new resolution logic, just exposure).
+    pub async fn resolve_xref_for_source_doc(
+        &self,
+        source_doc_id: &str,
+        target_kind: &str,
+    ) -> Result<Option<String>, AxonMindError> {
+        let installed_packages = self.store.load_structure_packages().await?;
+        let mut identity_cache: HashMap<String, DocumentIdentityRecord> = HashMap::new();
+        self.resolve_xref_target_doc(
+            &installed_packages,
+            &mut identity_cache,
+            source_doc_id,
+            target_kind,
+        )
+        .await
+    }
+
     /// Finds the highest-confidence installed document matching an `IdentityMatch`. Requires
     /// `matcher.corpus` — there's no cheap way to enumerate every installed document otherwise —
     /// then narrows the corpus-matched candidates by `canonical_title`/`instrument_type` via
@@ -2544,12 +2616,72 @@ impl AxonMindEngine {
         }
 
         let top_k = input.top_k.unwrap_or(8);
+        let allowed_types = input
+            .unit_types
+            .map(|types| types.into_iter().collect::<std::collections::HashSet<_>>());
         let mut scoped_identities = Vec::new();
         for doc_id in &scope {
             if let Some(identity) = self.store.fetch_document_identity(doc_id).await? {
                 scoped_identities.push(identity);
             }
         }
+
+        let installed_packages = self.store.load_structure_packages().await?;
+
+        // Enhancement #5 (docs/retrieve_guarantee.md, item 8 backlog): a citation-shaped question
+        // ("What does Article 33 GDPR require?") names a locator directly. Resolving it via the
+        // package's own `[[ref]]` grammar and fetching the unit deterministically is both faster
+        // and immune to BM25/rerank surfacing the wrong unit for a correctly-locatored citation
+        // (item 7's 6 real eval failures were exactly this: the unit existed and was correctly
+        // locatored, ranking just didn't surface it). Only runs when a doc/corpus scope is
+        // established — with no scope there's no principled way to pick which packages' ref
+        // grammar even applies. A miss here (e.g. a paragraph-level locator like `art.33.p5` that
+        // isn't a real queryable unit, see item 16's live replay) falls through to the normal
+        // search path unchanged, not an error.
+        if !scope.is_empty() {
+            let refs = ref_rules_for_scope(&installed_packages, &scoped_identities);
+            if !refs.is_empty() {
+                let mut fast_path_results = Vec::new();
+                let mut seen_targets = std::collections::HashSet::new();
+                let mut seen_units = std::collections::HashSet::new();
+                for mention in extract_ref_mentions(&refs, &query) {
+                    if !seen_targets.insert((
+                        mention.target_kind.clone(),
+                        mention.target_label_norm.clone(),
+                    )) {
+                        continue;
+                    }
+                    for doc_id in &scope {
+                        let matches = self
+                            .store
+                            .fetch_doc_units_by_label_norm(doc_id, &mention.target_label_norm)
+                            .await?;
+                        for unit in matches {
+                            if let Some(allowed) = allowed_types.as_ref() {
+                                if !allowed.contains(&unit.unit_kind) {
+                                    continue;
+                                }
+                            }
+                            if !seen_units
+                                .insert((unit.doc_node_id.clone(), unit.label_norm.clone()))
+                            {
+                                continue;
+                            }
+                            fast_path_results
+                                .push(document_search_result(&unit, "locator_fast_path"));
+                        }
+                    }
+                }
+                if !fast_path_results.is_empty() {
+                    fast_path_results.truncate(top_k);
+                    return Ok(DocumentSearchOutput {
+                        results: fast_path_results,
+                        reasoning_applied: false,
+                    });
+                }
+            }
+        }
+
         let expanded_query = if scoped_identities
             .iter()
             .any(|identity| identity.language.as_deref() == Some("it"))
@@ -2597,9 +2729,6 @@ impl AxonMindEngine {
             .map(|unit| (unit.unit_id.clone(), unit))
             .collect();
 
-        let allowed_types = input
-            .unit_types
-            .map(|types| types.into_iter().collect::<std::collections::HashSet<_>>());
         let mut results = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for section in reasoning.sections {
@@ -2615,24 +2744,14 @@ impl AxonMindEngine {
                 if !seen.insert((section.doc_node_id.clone(), unit.label_norm.clone())) {
                     continue;
                 }
-                DocumentSearchResult {
-                    doc_id: section.doc_node_id.clone(),
-                    section_id: section.section_id.clone(),
-                    unit_id: Some(unit.unit_id.clone()),
-                    locator: Some(locator_from_unit(unit)),
-                    page: page_from_unit(unit),
-                    title: unit_display_title(unit),
-                    snippet: snippet(&unit.text, 320),
-                    score_source: if reasoning.reasoning_applied {
-                        "bm25_llm_rerank".to_string()
+                document_search_result(
+                    unit,
+                    if reasoning.reasoning_applied {
+                        "bm25_llm_rerank"
                     } else {
-                        "bm25".to_string()
+                        "bm25"
                     },
-                    citation_safe: true,
-                    doc_sha256: unit.doc_sha256.clone(),
-                    package_name: unit.package_name.clone(),
-                    package_version: unit.profile_version,
-                }
+                )
             } else {
                 if !seen.insert((section.doc_node_id.clone(), section.section_id.clone())) {
                     continue;
@@ -2671,7 +2790,6 @@ impl AxonMindEngine {
                 .filter_map(|result| result.unit_id.clone())
                 .collect::<Vec<_>>();
             let refs = self.store.fetch_doc_unit_refs(&seed_unit_ids).await?;
-            let installed_packages = self.store.load_structure_packages().await?;
             let mut identity_cache: HashMap<String, DocumentIdentityRecord> = HashMap::new();
 
             for reference in refs {
@@ -2705,20 +2823,7 @@ impl AxonMindEngine {
                     if !seen.insert((unit.doc_node_id.clone(), unit.label_norm.clone())) {
                         continue;
                     }
-                    results.push(DocumentSearchResult {
-                        doc_id: unit.doc_node_id.clone(),
-                        section_id: unit.section_id.clone(),
-                        unit_id: Some(unit.unit_id.clone()),
-                        locator: Some(locator_from_unit(&unit)),
-                        page: page_from_unit(&unit),
-                        title: unit_display_title(&unit),
-                        snippet: snippet(&unit.text, 320),
-                        score_source: "cross_reference".to_string(),
-                        citation_safe: true,
-                        doc_sha256: unit.doc_sha256.clone(),
-                        package_name: unit.package_name.clone(),
-                        package_version: unit.profile_version,
-                    });
+                    results.push(document_search_result(&unit, "cross_reference"));
                     if results.len() >= top_k {
                         break;
                     }

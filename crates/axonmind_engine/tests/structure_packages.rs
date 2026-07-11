@@ -679,3 +679,122 @@ Regulation.\n",
     assert_eq!(locator.0.get("article").map(String::as_str), Some("33"));
     assert!(cross_ref_hit.citation_safe);
 }
+
+/// Enhancement #5 (docs/retrieve_guarantee.md, item 8 backlog): a citation-shaped question
+/// ("What does Article 33 require?") must resolve straight to the named unit via the package's
+/// `[[ref]]` grammar, bypassing BM25/rerank entirely — this is the fix for item 7's 6 real eval
+/// failures, where a correctly-locatored unit existed but ranking didn't surface it.
+#[tokio::test]
+async fn locator_fast_path_resolves_citation_shaped_query_without_ranking() {
+    let temp = TempDir::new().expect("tempdir");
+    let cfg = test_engine_config(&temp);
+    let engine = AxonMindEngine::open(cfg).await.expect("engine");
+    let package_dir = std::path::Path::new(
+        "/Users/xuejingzhoum3/GitHub/soverex/soverex-open/docs/legal_agent/structure",
+    );
+    engine
+        .install_structure_package_from_dir(package_dir, "standalone")
+        .await
+        .expect("install real legal-eu-privacy package");
+
+    let doc_dir = TempDir::new().expect("doc tempdir");
+    let regulation_path = doc_dir.path().join("regulation.md");
+    std::fs::write(
+        &regulation_path,
+        "Regulation (EU) 2016/679 of the European Parliament and of the Council\n\n\
+Article 33\n\nNotification of a personal data breach to the supervisory authority\n\n\
+1. In the case of a personal data breach, the controller shall without undue delay notify the \
+supervisory authority.\n\n\
+Article 34\n\nCommunication of a personal data breach to the data subject\n\n\
+1. When the personal data breach is likely to result in a high risk, the controller shall \
+communicate the breach to the data subject.\n",
+    )
+    .expect("write regulation doc");
+    let regulation = engine
+        .ingest_file_with_content(&regulation_path)
+        .await
+        .expect("ingest regulation");
+
+    let output = engine
+        .document_search(DocumentSearchInput {
+            query: "What does Article 33 require?".to_string(),
+            doc_ids: Some(vec![regulation.doc_id.clone()]),
+            corpus: None,
+            unit_types: None,
+            top_k: Some(5),
+        })
+        .await
+        .expect("document_search failed");
+
+    assert!(
+        !output.reasoning_applied,
+        "locator fast-path must bypass BM25/rerank entirely, not just outrank it"
+    );
+    assert_eq!(
+        output.results.len(),
+        1,
+        "fast path returns exactly the named locator, not neighboring units"
+    );
+    let hit = &output.results[0];
+    assert_eq!(hit.score_source, "locator_fast_path");
+    assert_eq!(hit.doc_id, regulation.doc_id);
+    let locator = hit.locator.as_ref().expect("locator");
+    assert_eq!(locator.0.get("article").map(String::as_str), Some("33"));
+    assert!(hit.citation_safe);
+}
+
+/// A locator mention with no matching unit in scope (e.g. `art.99`, naming a provision this
+/// corpus doesn't contain) must fall through to the normal search path unchanged, not return an
+/// empty result or error — this is the graceful-degradation contract the enhancement requires.
+#[tokio::test]
+async fn locator_fast_path_falls_through_to_normal_search_when_locator_not_found_in_scope() {
+    let temp = TempDir::new().expect("tempdir");
+    let cfg = test_engine_config(&temp);
+    let engine = AxonMindEngine::open(cfg).await.expect("engine");
+    let package_dir = std::path::Path::new(
+        "/Users/xuejingzhoum3/GitHub/soverex/soverex-open/docs/legal_agent/structure",
+    );
+    engine
+        .install_structure_package_from_dir(package_dir, "standalone")
+        .await
+        .expect("install real legal-eu-privacy package");
+
+    let doc_dir = TempDir::new().expect("doc tempdir");
+    let regulation_path = doc_dir.path().join("regulation.md");
+    std::fs::write(
+        &regulation_path,
+        "Regulation (EU) 2016/679 of the European Parliament and of the Council\n\n\
+Article 33\n\nNotification of a personal data breach to the supervisory authority\n\n\
+1. In the case of a personal data breach, the controller shall without undue delay notify the \
+supervisory authority.\n",
+    )
+    .expect("write regulation doc");
+    let regulation = engine
+        .ingest_file_with_content(&regulation_path)
+        .await
+        .expect("ingest regulation");
+
+    let output = engine
+        .document_search(DocumentSearchInput {
+            query: "Article 99 supervisory authority breach notification".to_string(),
+            doc_ids: Some(vec![regulation.doc_id.clone()]),
+            corpus: None,
+            unit_types: None,
+            top_k: Some(5),
+        })
+        .await
+        .expect("document_search failed");
+
+    let hit = output
+        .results
+        .iter()
+        .find(|r| r.doc_id == regulation.doc_id)
+        .expect(
+            "a nonexistent locator mention (Article 99) must not suppress the normal keyword \
+             match on the real Article 33 unit",
+        );
+    assert_ne!(
+        hit.score_source, "locator_fast_path",
+        "no unit matched art.99 in scope, so this hit must have come from the normal search path"
+    );
+}

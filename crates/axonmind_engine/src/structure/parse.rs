@@ -502,6 +502,10 @@ pub struct RefMention {
     pub target_kind: String,
     pub target_label_norm: String,
     pub ref_text: String,
+    /// Byte offset of the match's start in the searched text — lets a caller (item 16's
+    /// co-location dedup) test proximity to another citation without re-searching for `ref_text`,
+    /// which may recur verbatim elsewhere in the same text.
+    pub start: usize,
 }
 
 /// Run a profile's (or several profiles' combined) `[[ref]]` regex/template rules against
@@ -517,16 +521,17 @@ pub fn extract_ref_mentions(refs: &[StructureUnitRef], text: &str) -> Vec<RefMen
             continue;
         };
         for captures in regex.captures_iter(text) {
+            let whole = captures.get(0);
             mentions.push(RefMention {
                 target_kind: reference.target_kind.clone(),
                 target_label_norm: render_numeric_ref_template(
                     &reference.target_label_norm,
                     &captures,
                 ),
-                ref_text: captures
-                    .get(0)
+                ref_text: whole
                     .map(|value| value.as_str().to_string())
                     .unwrap_or_default(),
+                start: whole.map(|value| value.start()).unwrap_or(0),
             });
         }
     }
