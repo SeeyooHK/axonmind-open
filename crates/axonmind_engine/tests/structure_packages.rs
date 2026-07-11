@@ -198,6 +198,82 @@ Article 4\n\nDefinitions\n\n\
     );
 }
 
+/// Regression test for the docs/retrieve_guarantee.md "Next pickup" locator-inheritance bug
+/// (found while accepting item 7's eval pack, fixed 2026-07-12): a paragraph unit's rendered
+/// `citation` string already threaded its parent article's number correctly (proven by the test
+/// above), but `ParsedUnit.locators` — the map that lands in `doc_unit_locators` and is what
+/// `document_search`'s `UnitLocator` and the `[[ref]]`-driven locator fast path (item 8 backlog
+/// #5) actually query against — never got the same inheritance. It only ever held the paragraph's
+/// own captures (`paragraph`, `number`), never the parent's `article` key. That's what made a
+/// citation-shaped mention naming a paragraph-level locator like `art.4.p7` (or `art.33.p5`) fall
+/// through the fast path's "not found in scope" branch instead of resolving directly. This proves
+/// the fix: the parsed unit's own `locators` map now inherits the parent's keys, with the
+/// paragraph's own `number`/`paragraph` captures intact and NOT overwritten by the parent's
+/// same-named `number` capture (Article 4's own `number` is "4", the paragraph's own `number` is
+/// "7" — the merge must let the child's own capture win on a name collision).
+#[tokio::test]
+async fn paragraph_unit_locator_inherits_parent_article_locator_key() {
+    let pkg_dir = std::path::Path::new(
+        "/Users/xuejingzhoum3/GitHub/soverex/soverex-open/docs/legal_agent/structure",
+    );
+    let pkg = StructurePackage::from_dir(pkg_dir).expect("load real legal-eu-privacy package");
+    let profile = pkg
+        .profiles
+        .iter()
+        .find(|p| p.profile.name == "eu-regulation-en")
+        .expect("eu-regulation-en profile");
+
+    let markdown = "Article 4\n\nDefinitions\n\n\
+7. For the purposes of this Regulation, the following applies.\n";
+
+    let identity = derive_identity(
+        "doc.test",
+        Some("Regulation (EU) 9999/9999"),
+        None,
+        Some(markdown),
+        std::slice::from_ref(&pkg),
+        None,
+    )
+    .identity;
+
+    let parsed = parse_document(
+        &pkg.manifest.package.name,
+        profile,
+        "doc.test",
+        &identity,
+        markdown,
+    )
+    .expect("parse")
+    .expect("units");
+
+    let paragraph = parsed
+        .units
+        .iter()
+        .find(|u| u.label_norm == "art.4.p7")
+        .expect("art.4.p7 unit");
+
+    assert_eq!(
+        paragraph.locators.get("article").map(String::as_str),
+        Some("4"),
+        "a paragraph's own locator map must inherit its parent article's `article` key so a \
+         citation-shaped query naming this paragraph can resolve it via \
+         fetch_doc_units_by_label_norm / the [[ref]] fast path, not just render a correct \
+         citation string"
+    );
+    assert_eq!(
+        paragraph.locators.get("number").map(String::as_str),
+        Some("7"),
+        "the paragraph's own `number` capture (7) must win over the parent article's own \
+         `number` capture (4) for the same key name — inheriting the parent must not clobber the \
+         unit's own captures"
+    );
+    assert_eq!(
+        paragraph.locators.get("paragraph").map(String::as_str),
+        Some("7"),
+        "the paragraph's own captures must still be present alongside the inherited parent keys"
+    );
+}
+
 /// Acceptance check for the step-5 cutover (docs/retrieve_guarantee.md item 1): "a test package
 /// with a dosage capture surfaces dosage in the locator label end-to-end." The pre-cutover
 /// `LegalLocator` (`query/legal.rs`) hardcoded exactly four fields (article/recital/section/

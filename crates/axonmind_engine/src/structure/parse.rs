@@ -155,7 +155,16 @@ fn build_units(
         };
         let unit_id = dedupe_unit_id(format!("{doc_node_id}:{label_norm}"), seen_unit_ids);
         let section_id = format!("{doc_node_id}#{:04}", sections.len() + 1);
-        let locators = marker.captures.clone();
+        // Inherit the parent's own locator keys (e.g. a paragraph inherits its article's
+        // `article` key) so a citation-shaped mention like "Article 4(1)" resolves to a real
+        // queryable unit's locator, not just its rendered `citation` string (retrieve_guarantee.md
+        // item 8 backlog #5's paragraph-granularity gap). Own captures are applied second so a
+        // same-named key (e.g. `number`) still means "this unit's own number", not the parent's.
+        let mut locators = match parent {
+            Some(parent) => parent.locators.clone(),
+            None => BTreeMap::new(),
+        };
+        locators.extend(marker.captures.clone());
         let level = resolve_level(&marker.unit.level, &locators);
         let unit = ParsedUnit {
             unit_id: unit_id.clone(),
