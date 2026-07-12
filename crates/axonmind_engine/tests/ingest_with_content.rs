@@ -81,6 +81,7 @@ fn render_markdown_list_and_code() {
             DocumentBlock::ListItem {
                 text: "item one".into(),
                 ordinal: None,
+                depth: 0,
                 span: SourceSpan { start: 0, end: 8 },
             },
             DocumentBlock::CodeBlock {

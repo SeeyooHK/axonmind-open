@@ -956,3 +956,73 @@ async fn ordered_paragraph_list_survives_render_and_parses_into_separate_paragra
         .expect("art.33 unit");
     assert_eq!(article.citation, "Regulation (EU) 9999/9999, Article 33");
 }
+
+/// Regression test for the duplicate-paragraph bug found live while verifying the fix above
+/// (`d.lgs. 101 del 2018.pdf`, `doc.e6773b0d`, re-ingested 2026-07-12): an Italian amending-decree
+/// article's paragraph 1 introduces a *nested* numbered sub-list of amendment clauses (also using
+/// `1.`/`2.` markers, one nesting level deeper). Emitting `"N. "` for every ordered list
+/// regardless of nesting depth (the first version of this fix) rendered the nested clauses
+/// flush-left too, so each one independently line-start-matched the same top-level
+/// `^(?:(\d+)\.|\((\d+)\))\s+` paragraph marker and minted spurious sibling `art.11.p1` duplicate
+/// units instead of staying inside paragraph 1's own text (5 duplicates observed live). Fixed by
+/// threading a `depth` field through `push_list_items` and indenting nested items in
+/// `render_markdown` so only a genuine top-level item can line-start-match. This proves the fix:
+/// the real `it-statute` profile (identical paragraph marker shape to eu-regulation-en) parses
+/// this structure into exactly one `art.11.p1` unit, not five.
+#[tokio::test]
+async fn nested_ordered_amendment_clauses_do_not_mint_duplicate_paragraph_units() {
+    let pkg_dir = std::path::Path::new(
+        "/Users/xuejingzhoum3/GitHub/soverex/soverex-open/docs/legal_agent/structure",
+    );
+    let pkg = StructurePackage::from_dir(pkg_dir).expect("load real legal-eu-privacy package");
+    let profile = pkg
+        .profiles
+        .iter()
+        .find(|p| p.profile.name == "it-statute")
+        .expect("it-statute profile");
+
+    // Mirrors the real live shape: Articolo 11, paragraph 1 introduces a nested numbered list
+    // of amendment clauses.
+    let source = "Articolo 11\n\n\
+1. Alla parte II sono apportate le seguenti modificazioni:\n\
+\n   1. la rubrica è sostituita dalla seguente;\n\
+\n   2. al comma 4, le parole sono sostituite;\n\
+\n   3. al comma 1 è aggiunto un periodo;\n";
+
+    let doc = markdown::parse(std::path::Path::new("statute.md"), source.as_bytes())
+        .expect("markdown parse");
+    let rendered = render_markdown(&doc);
+
+    let identity = derive_identity(
+        "doc.test",
+        Some("Decreto legislativo n. 999"),
+        None,
+        Some(&rendered),
+        std::slice::from_ref(&pkg),
+        None,
+    )
+    .identity;
+
+    let parsed = parse_document(
+        &pkg.manifest.package.name,
+        profile,
+        "doc.test",
+        &identity,
+        &rendered,
+    )
+    .expect("parse")
+    .expect("units");
+
+    let p1_units: Vec<_> = parsed
+        .units
+        .iter()
+        .filter(|u| u.label_norm == "art.11.p1")
+        .collect();
+    assert_eq!(
+        p1_units.len(),
+        1,
+        "nested amendment clauses must not mint duplicate sibling paragraph units; got: {:?}\n\
+         rendered markdown:\n{rendered}",
+        p1_units
+    );
+}

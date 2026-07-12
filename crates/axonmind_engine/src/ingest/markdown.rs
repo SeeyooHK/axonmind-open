@@ -67,7 +67,7 @@ pub(crate) fn parse_text(
                 }
             }
             NodeValue::List(_) => {
-                push_list_items(node, &mut blocks);
+                push_list_items(node, 0, &mut blocks);
             }
             NodeValue::CodeBlock(cb) => {
                 let language = if cb.info.is_empty() {
@@ -147,19 +147,34 @@ fn node_text<'a>(node: &'a AstNode<'a>) -> String {
     collect_text(node)
 }
 
-/// Push one `DocumentBlock::ListItem` per item in `list_node` (a `NodeValue::List`).
-/// A nested list inside an item (e.g. lettered sub-items under a numbered paragraph)
-/// becomes its own sibling `ListItem` blocks, recursed after the parent item, instead
-/// of being flattened into the parent item's text with no line separation.
-fn push_list_items<'a>(list_node: &'a AstNode<'a>, blocks: &mut Vec<DocumentBlock>) {
+/// Push one `DocumentBlock::ListItem` per item in `list_node` (a `NodeValue::List`), at the
+/// given nesting `depth` (0 for a top-level list). A nested list inside an item (e.g. lettered
+/// sub-items under a numbered paragraph, or numbered amendment clauses inside a paragraph)
+/// becomes its own sibling `ListItem` blocks at `depth + 1`, recursed after the parent item,
+/// instead of being flattened into the parent item's text with no line separation.
+///
+/// Only a depth-0 item ever gets `ordinal: Some(_)` (and so only a depth-0 item can ever render
+/// with a digit-leading `"N. "` marker). This is load-bearing, not cosmetic: a structure
+/// package's unit marker regexes (e.g. `^(?:(\d+)\.|\((\d+)\))\s+`) match against each line
+/// *trimmed* of leading whitespace (`structure/parse.rs::find_markers`), so indentation alone
+/// cannot stop a nested numbered sub-item (e.g. an amendment clause inside a paragraph) from
+/// line-start-matching the same marker as a true top-level paragraph and minting a spurious
+/// duplicate unit — the only reliable fix is to never emit a digit-leading marker for anything
+/// but a genuine top-level item. Nested items still render indented (`depth` is still threaded
+/// through) for display fidelity, but that indentation is not what prevents the collision.
+fn push_list_items<'a>(list_node: &'a AstNode<'a>, depth: usize, blocks: &mut Vec<DocumentBlock>) {
     for item in list_node.children() {
-        let ordinal = match &item.data.borrow().value {
-            NodeValue::Item(item_list)
-                if item_list.list_type == comrak::nodes::ListType::Ordered =>
-            {
-                Some(item_list.start)
+        let ordinal = if depth == 0 {
+            match &item.data.borrow().value {
+                NodeValue::Item(item_list)
+                    if item_list.list_type == comrak::nodes::ListType::Ordered =>
+                {
+                    Some(item_list.start)
+                }
+                _ => None,
             }
-            _ => None,
+        } else {
+            None
         };
 
         let mut own_text = String::new();
@@ -176,12 +191,13 @@ fn push_list_items<'a>(list_node: &'a AstNode<'a>, blocks: &mut Vec<DocumentBloc
             blocks.push(DocumentBlock::ListItem {
                 text: own_text,
                 ordinal,
+                depth,
                 span: SourceSpan::default(),
             });
         }
 
         for nested in nested_lists {
-            push_list_items(nested, blocks);
+            push_list_items(nested, depth + 1, blocks);
         }
     }
 }
@@ -276,6 +292,76 @@ mod tests {
             !parent_text.contains("describe the nature"),
             "nested sub-item text must not be flattened into the parent item's own text, got: \
              {parent_text:?}"
+        );
+    }
+
+    #[test]
+    fn nested_ordered_sub_list_gets_a_deeper_depth_than_its_parent() {
+        // Italian amending-decree shape: paragraph 1 introduces a nested *numbered* sub-list
+        // of amendment clauses (also "1.", "2." markers, one level deeper). Before adding the
+        // `depth` field, both levels rendered flush-left and each nested clause independently
+        // matched the same top-level paragraph marker regex, minting spurious duplicate
+        // paragraph units (the live `art.11.p1` x5 collision found verifying the fix).
+        let doc = parse_text(
+            std::path::Path::new("statute.md"),
+            "1. The following amendments are made:\n\
+             \n   1. the heading is replaced;\n\
+             \n   2. paragraph 4 is amended;\n",
+            "abc123abc123abc123".to_string(),
+        )
+        .expect("valid markdown should parse");
+
+        let depths: Vec<usize> = doc
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                crate::ingest::DocumentBlock::ListItem { depth, .. } => Some(*depth),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            depths,
+            vec![0, 1, 1],
+            "the outer paragraph item must be depth 0 and both nested amendment clauses depth \
+             1, so render_markdown can indent them out of the top-level marker's reach"
+        );
+    }
+
+    #[test]
+    fn nested_ordered_items_never_render_with_a_digit_leading_marker() {
+        // Structure-package marker regexes match each line *trimmed* of leading whitespace
+        // (structure/parse.rs::find_markers), so indentation alone can't stop a nested numbered
+        // item from line-start-matching the same marker as a true top-level paragraph. The only
+        // reliable fix is: a nested item never renders with a digit-leading marker at all.
+        let doc = parse_text(
+            std::path::Path::new("statute.md"),
+            "1. The following amendments are made:\n\
+             \n   1. the heading is replaced;\n\
+             \n   2. paragraph 4 is amended;\n",
+            "abc123abc123abc123".to_string(),
+        )
+        .expect("valid markdown should parse");
+        let rendered = crate::ingest::render_markdown(&doc);
+
+        for line in rendered.lines() {
+            let trimmed = line.trim_start();
+            if trimmed != line {
+                assert!(
+                    !trimmed.starts_with(char::is_numeric),
+                    "a nested (indented) list item must never render with a digit-leading \
+                     marker — trimming still leaves a top-level-shaped marker for the grammar \
+                     to match, got line: {line:?}"
+                );
+            }
+        }
+        assert!(
+            rendered.contains("1. The following amendments are made:"),
+            "the genuine top-level item must still render with its digit marker, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("   - the heading is replaced;"),
+            "nested items render as indented bullets regardless of their own source ordinal, \
+             got:\n{rendered}"
         );
     }
 }

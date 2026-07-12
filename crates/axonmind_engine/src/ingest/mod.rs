@@ -113,6 +113,11 @@ pub enum DocumentBlock {
         /// `Some(n)` if this item came from an ordered list (`n.`/`n)` in the source);
         /// `None` for bullet/task-list items.
         ordinal: Option<usize>,
+        /// Nesting depth: 0 for a top-level list item, 1+ for an item inside a list nested
+        /// inside another item. Rendered as leading indentation so a nested numbered
+        /// sub-item (e.g. an amendment clause inside a paragraph) doesn't line-start-match
+        /// the same `^\d+\.` structure-package marker as a true top-level paragraph.
+        depth: usize,
         span: SourceSpan,
     },
     CodeBlock {
@@ -172,7 +177,13 @@ pub fn render_markdown(doc: &NormalizedDocument) -> String {
                 out.push_str(text);
                 out.push_str("\n\n");
             }
-            Item::Block(DocumentBlock::ListItem { text, ordinal, .. }) => {
+            Item::Block(DocumentBlock::ListItem {
+                text,
+                ordinal,
+                depth,
+                ..
+            }) => {
+                out.push_str(&"   ".repeat(*depth));
                 match ordinal {
                     Some(n) => out.push_str(&format!("{n}. ")),
                     None => out.push_str("- "),
