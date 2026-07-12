@@ -2,8 +2,8 @@
 use super::{DocumentBlock, NormalizedDocument, NormalizedTable, SourceSpan};
 use axonmind_core::AxonMindError;
 use comrak::{
-    Arena, Options,
     nodes::{AstNode, NodeValue},
+    Arena, Options,
 };
 use sha2::{Digest, Sha256};
 
@@ -67,15 +67,7 @@ pub(crate) fn parse_text(
                 }
             }
             NodeValue::List(_) => {
-                for item in node.children() {
-                    let text = collect_text(item);
-                    if !text.trim().is_empty() {
-                        blocks.push(DocumentBlock::ListItem {
-                            text,
-                            span: SourceSpan::default(),
-                        });
-                    }
-                }
+                push_list_items(node, &mut blocks);
             }
             NodeValue::CodeBlock(cb) => {
                 let language = if cb.info.is_empty() {
@@ -134,30 +126,64 @@ pub(crate) fn parse_text(
 fn collect_text<'a>(node: &'a AstNode<'a>) -> String {
     let mut text = String::new();
     for child in node.children() {
-        {
-            let data = child.data.borrow();
-            match &data.value {
-                NodeValue::Text(s) => {
-                    text.push_str(s);
-                    continue;
-                }
-                NodeValue::Code(nc) => {
-                    text.push_str(&nc.literal);
-                    continue;
-                }
-                NodeValue::SoftBreak | NodeValue::LineBreak => {
-                    text.push(' ');
-                    continue;
-                }
-                NodeValue::HtmlInline(_) => {
-                    continue;
-                }
-                _ => {}
-            }
-        }
-        text.push_str(&collect_text(child));
+        text.push_str(&node_text(child));
     }
     text
+}
+
+/// Text contributed by a single node: its own literal text if it's a leaf text-bearing
+/// node, otherwise the concatenated text of its children.
+fn node_text<'a>(node: &'a AstNode<'a>) -> String {
+    {
+        let data = node.data.borrow();
+        match &data.value {
+            NodeValue::Text(s) => return s.clone(),
+            NodeValue::Code(nc) => return nc.literal.clone(),
+            NodeValue::SoftBreak | NodeValue::LineBreak => return " ".to_string(),
+            NodeValue::HtmlInline(_) => return String::new(),
+            _ => {}
+        }
+    }
+    collect_text(node)
+}
+
+/// Push one `DocumentBlock::ListItem` per item in `list_node` (a `NodeValue::List`).
+/// A nested list inside an item (e.g. lettered sub-items under a numbered paragraph)
+/// becomes its own sibling `ListItem` blocks, recursed after the parent item, instead
+/// of being flattened into the parent item's text with no line separation.
+fn push_list_items<'a>(list_node: &'a AstNode<'a>, blocks: &mut Vec<DocumentBlock>) {
+    for item in list_node.children() {
+        let ordinal = match &item.data.borrow().value {
+            NodeValue::Item(item_list)
+                if item_list.list_type == comrak::nodes::ListType::Ordered =>
+            {
+                Some(item_list.start)
+            }
+            _ => None,
+        };
+
+        let mut own_text = String::new();
+        let mut nested_lists: Vec<&AstNode<'_>> = Vec::new();
+        for child in item.children() {
+            if matches!(child.data.borrow().value, NodeValue::List(_)) {
+                nested_lists.push(child);
+            } else {
+                own_text.push_str(&node_text(child));
+            }
+        }
+
+        if !own_text.trim().is_empty() {
+            blocks.push(DocumentBlock::ListItem {
+                text: own_text,
+                ordinal,
+                span: SourceSpan::default(),
+            });
+        }
+
+        for nested in nested_lists {
+            push_list_items(nested, blocks);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -188,5 +214,68 @@ mod tests {
             "OCR markdown list items must not be dropped before extraction"
         );
         assert_eq!(doc.tables.len(), 1, "OCR markdown tables must be retained");
+    }
+
+    #[test]
+    fn ordered_list_items_capture_their_source_ordinal() {
+        let doc = parse_text(
+            std::path::Path::new("regulation.md"),
+            "Article 33\n\nNotification of a breach\n\n\
+             1. In the case of a breach, the controller shall notify.\n\
+             2. The notification shall at least describe the nature.\n",
+            "abc123abc123abc123".to_string(),
+        )
+        .expect("valid markdown should parse");
+
+        let ordinals: Vec<Option<usize>> = doc
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                crate::ingest::DocumentBlock::ListItem { ordinal, .. } => Some(*ordinal),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ordinals,
+            vec![Some(1), Some(2)],
+            "each ordered-list item must carry its own source ordinal, not be discarded \
+             (docs/retrieve_guarantee.md: paragraph markers depend on rendering '1. '/'2. ', \
+             not a bare '- ' bullet)"
+        );
+    }
+
+    #[test]
+    fn nested_sub_list_items_become_separate_blocks_not_flattened_text() {
+        // Article 33(3)'s (a)-(d) shape: a numbered paragraph whose continuation is a nested
+        // bullet list. Before the fix, `collect_text` recursed into the nested list and
+        // concatenated every sub-item into the parent paragraph's own text with no separator.
+        let doc = parse_text(
+            std::path::Path::new("regulation.md"),
+            "3. The notification shall at least:\n\
+             \n   - describe the nature of the breach\n\
+             \n   - communicate the name of the contact point\n",
+            "abc123abc123abc123".to_string(),
+        )
+        .expect("valid markdown should parse");
+
+        let list_items: Vec<&crate::ingest::DocumentBlock> = doc
+            .blocks
+            .iter()
+            .filter(|b| matches!(b, crate::ingest::DocumentBlock::ListItem { .. }))
+            .collect();
+        assert_eq!(
+            list_items.len(),
+            3,
+            "the parent item and each nested sub-item must be their own block, got {list_items:?}"
+        );
+        let parent_text = match list_items[0] {
+            crate::ingest::DocumentBlock::ListItem { text, .. } => text.as_str(),
+            _ => unreachable!(),
+        };
+        assert!(
+            !parent_text.contains("describe the nature"),
+            "nested sub-item text must not be flattened into the parent item's own text, got: \
+             {parent_text:?}"
+        );
     }
 }

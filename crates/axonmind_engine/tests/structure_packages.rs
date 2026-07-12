@@ -1,7 +1,7 @@
 use axonmind_engine::{
     AxonMindEngine,
     config::EngineConfig,
-    ingest::{IngestOptions, IngestSource},
+    ingest::{IngestOptions, IngestSource, markdown, render_markdown},
     query::DocumentSearchInput,
     structure::{EvalOutcome, StructurePackage, derive_identity, parse_document},
 };
@@ -873,4 +873,86 @@ supervisory authority.\n",
         hit.score_source, "locator_fast_path",
         "no unit matched art.99 in scope, so this hit must have come from the normal search path"
     );
+}
+
+/// Regression test for the docs/retrieve_guarantee.md paragraph-granularity gap (found while
+/// acting on item 7's eval pack, fixed 2026-07-12): pdf-inspector's real GDPR markdown renders
+/// Article 33's numbered paragraphs as a genuine CommonMark ordered list (`1.`/`2.`/...), but
+/// `ingest/markdown.rs`'s `NodeValue::List(_)` arm discarded comrak's ordinal/list-type data
+/// entirely, so `render_markdown` had no choice but to emit a bare `- ` bullet for every item
+/// regardless of source — the eu-regulation-en paragraph marker (`^(?:(\d+)\.|\((\d+)\))\s+`)
+/// never matched, and Article 33 parsed with zero paragraph child units (98 of 99 GDPR articles
+/// hit this exact gap live). This proves the fix: routing an Article-33-shaped ordered list with
+/// a nested lettered sub-list (mirroring the real Article 33(3)(a)-(d) shape) through the full
+/// `markdown::parse` -> `render_markdown` pipeline (exactly what `pdf.rs` does with
+/// pdf-inspector's output) now produces `1. `/`2. `/... markers the real profile's grammar
+/// matches into separate `art.33.p1`..`art.33.p5` units.
+#[tokio::test]
+async fn ordered_paragraph_list_survives_render_and_parses_into_separate_paragraph_units() {
+    let pkg_dir = std::path::Path::new(
+        "/Users/xuejingzhoum3/GitHub/soverex/soverex-open/docs/legal_agent/structure",
+    );
+    let pkg = StructurePackage::from_dir(pkg_dir).expect("load real legal-eu-privacy package");
+    let profile = pkg
+        .profiles
+        .iter()
+        .find(|p| p.profile.name == "eu-regulation-en")
+        .expect("eu-regulation-en profile");
+
+    // Mirrors pdf-inspector's real output shape for Article 33: a clean ordered list of
+    // paragraphs, with paragraph 3's continuation as a nested bullet list of lettered items.
+    let source = "Article 33\n\nNotification of a personal data breach\n\n\
+1. In the case of a personal data breach, the controller shall notify.\n\
+2. The processor shall notify the controller without undue delay.\n\
+3. The notification shall at least:\n\
+   - describe the nature of the personal data breach\n\
+   - communicate the name of the data protection officer\n\
+   - describe the likely consequences\n\
+   - describe the measures taken\n\
+4. The controller shall document any personal data breaches.\n\
+5. Where the breach is likely to result in a high risk, the controller shall communicate.\n";
+
+    let doc = markdown::parse(std::path::Path::new("article33.md"), source.as_bytes())
+        .expect("markdown parse");
+    let rendered = render_markdown(&doc);
+
+    let identity = derive_identity(
+        "doc.test",
+        Some("Regulation (EU) 9999/9999"),
+        None,
+        Some(&rendered),
+        std::slice::from_ref(&pkg),
+        None,
+    )
+    .identity;
+
+    let parsed = parse_document(
+        &pkg.manifest.package.name,
+        profile,
+        "doc.test",
+        &identity,
+        &rendered,
+    )
+    .expect("parse")
+    .expect("units");
+
+    for n in 1..=5 {
+        let label = format!("art.33.p{n}");
+        assert!(
+            parsed.units.iter().any(|u| u.label_norm == label),
+            "expected a {label} unit; got labels: {:?}\nrendered markdown:\n{rendered}",
+            parsed
+                .units
+                .iter()
+                .map(|u| &u.label_norm)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    let article = parsed
+        .units
+        .iter()
+        .find(|u| u.label_norm == "art.33")
+        .expect("art.33 unit");
+    assert_eq!(article.citation, "Regulation (EU) 9999/9999, Article 33");
 }

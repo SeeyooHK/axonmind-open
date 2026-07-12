@@ -145,7 +145,8 @@ pub fn build_tree(doc: &NormalizedDocument, doc_node_id: &str) -> Vec<PageSectio
                     children: vec![],
                 });
             }
-            DocumentBlock::Paragraph { text, span } | DocumentBlock::ListItem { text, span } => {
+            DocumentBlock::Paragraph { text, span }
+            | DocumentBlock::ListItem { text, span, .. } => {
                 if let Some(top) = stack.last_mut() {
                     append_text(&mut top.text, text);
                     top.span_end = top.span_end.max(span.end);
@@ -186,7 +187,8 @@ fn build_headerless(
 
     for block in &doc.blocks {
         let block_text = match block {
-            DocumentBlock::Paragraph { text, span } | DocumentBlock::ListItem { text, span } => {
+            DocumentBlock::Paragraph { text, span }
+            | DocumentBlock::ListItem { text, span, .. } => {
                 span_start_val = span_start_val.min(span.start);
                 span_end_val = span_end_val.max(span.end);
                 text.as_str()

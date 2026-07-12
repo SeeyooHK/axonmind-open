@@ -110,6 +110,9 @@ pub enum DocumentBlock {
     },
     ListItem {
         text: String,
+        /// `Some(n)` if this item came from an ordered list (`n.`/`n)` in the source);
+        /// `None` for bullet/task-list items.
+        ordinal: Option<usize>,
         span: SourceSpan,
     },
     CodeBlock {
@@ -169,8 +172,11 @@ pub fn render_markdown(doc: &NormalizedDocument) -> String {
                 out.push_str(text);
                 out.push_str("\n\n");
             }
-            Item::Block(DocumentBlock::ListItem { text, .. }) => {
-                out.push_str("- ");
+            Item::Block(DocumentBlock::ListItem { text, ordinal, .. }) => {
+                match ordinal {
+                    Some(n) => out.push_str(&format!("{n}. ")),
+                    None => out.push_str("- "),
+                }
                 out.push_str(text);
                 out.push('\n');
             }

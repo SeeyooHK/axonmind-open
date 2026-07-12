@@ -80,6 +80,7 @@ fn render_markdown_list_and_code() {
         vec![
             DocumentBlock::ListItem {
                 text: "item one".into(),
+                ordinal: None,
                 span: SourceSpan { start: 0, end: 8 },
             },
             DocumentBlock::CodeBlock {
