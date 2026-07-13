@@ -239,6 +239,30 @@ fn document_search_result(
     }
 }
 
+fn normalized_identity_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn query_names_identity(query: &str, identity: &DocumentIdentityRecord) -> bool {
+    let query = normalized_identity_text(query);
+    std::iter::once(identity.canonical_title.as_str())
+        .chain(identity.aliases.iter().map(|alias| alias.alias.as_str()))
+        .map(normalized_identity_text)
+        .any(|name| name.len() >= 4 && query.contains(&name))
+}
+
 /// Union of `[[ref]]` rules from installed packages whose `corpus.toml` binds documents into any
 /// of `scoped_identities`' corpus tags — the packages whose citation grammar plausibly applies to
 /// this search's scope (docs/retrieve_guarantee.md, Enhancement #5).
@@ -1842,7 +1866,24 @@ impl AxonMindEngine {
                     top_k: eval.top_k,
                 })
                 .await?;
-            report.results.push(eval_case_result(eval, &output.results));
+            let expected_doc_ids = if let Some(matcher) = eval.expect_document.as_ref() {
+                let mut matches = HashSet::new();
+                for doc_id in &doc_ids {
+                    if let Some(identity) = self.store.fetch_document_identity(doc_id).await? {
+                        if identity_matches(&identity, matcher) {
+                            matches.insert(doc_id.clone());
+                        }
+                    }
+                }
+                Some(matches)
+            } else {
+                None
+            };
+            report.results.push(eval_case_result(
+                eval,
+                &output.results,
+                expected_doc_ids.as_ref(),
+            ));
         }
         Ok(report)
     }
@@ -2627,21 +2668,22 @@ impl AxonMindEngine {
         }
 
         let installed_packages = self.store.load_structure_packages().await?;
+        let preferred_doc_ids = scoped_identities
+            .iter()
+            .filter(|identity| query_names_identity(&query, identity))
+            .map(|identity| identity.doc_node_id.clone())
+            .collect::<HashSet<_>>();
 
-        // Enhancement #5 (docs/retrieve_guarantee.md, item 8 backlog): a citation-shaped question
-        // ("What does Article 33 GDPR require?") names a locator directly. Resolving it via the
-        // package's own `[[ref]]` grammar and fetching the unit deterministically is both faster
-        // and immune to BM25/rerank surfacing the wrong unit for a correctly-locatored citation
-        // (item 7's 6 real eval failures were exactly this: the unit existed and was correctly
-        // locatored, ranking just didn't surface it). Only runs when a doc/corpus scope is
-        // established — with no scope there's no principled way to pick which packages' ref
-        // grammar even applies. A miss here (e.g. a paragraph-level locator like `art.33.p5` that
-        // isn't a real queryable unit, see item 16's live replay) falls through to the normal
-        // search path unchanged, not an error.
+        // A citation-shaped question names deterministic evidence via the package's own `[[ref]]`
+        // grammar. Keep those units as guaranteed candidates, but still run semantic retrieval:
+        // the query may ask what guidance says about a cited article, in which case returning the
+        // article alone would hijack the actual informational need. A locator miss falls through
+        // unchanged. This only runs with a document/corpus scope, which determines which packages'
+        // reference grammars apply.
+        let mut locator_results = Vec::new();
         if !scope.is_empty() {
             let refs = ref_rules_for_scope(&installed_packages, &scoped_identities);
             if !refs.is_empty() {
-                let mut fast_path_results = Vec::new();
                 let mut seen_targets = std::collections::HashSet::new();
                 let mut seen_units = std::collections::HashSet::new();
                 for mention in extract_ref_mentions(&refs, &query) {
@@ -2667,17 +2709,10 @@ impl AxonMindEngine {
                             {
                                 continue;
                             }
-                            fast_path_results
+                            locator_results
                                 .push(document_search_result(&unit, "locator_fast_path"));
                         }
                     }
-                }
-                if !fast_path_results.is_empty() {
-                    fast_path_results.truncate(top_k);
-                    return Ok(DocumentSearchOutput {
-                        results: fast_path_results,
-                        reasoning_applied: false,
-                    });
                 }
             }
         }
@@ -2779,12 +2814,24 @@ impl AxonMindEngine {
                 }
             };
             results.push(result);
-            if results.len() >= top_k {
+            if results.len() >= (top_k * 4).max(top_k) {
                 break;
             }
         }
 
-        if results.len() < top_k {
+        if !preferred_doc_ids.is_empty() {
+            results.sort_by_key(|result| !preferred_doc_ids.contains(&result.doc_id));
+        }
+
+        for locator in locator_results.into_iter().rev() {
+            let key = (locator.doc_id.clone(), locator.unit_id.clone());
+            results.retain(|result| {
+                (result.doc_id.clone(), result.unit_id.clone()) != key
+            });
+            results.insert(0, locator);
+        }
+
+        {
             let seed_unit_ids = results
                 .iter()
                 .filter_map(|result| result.unit_id.clone())
@@ -2792,6 +2839,7 @@ impl AxonMindEngine {
             let refs = self.store.fetch_doc_unit_refs(&seed_unit_ids).await?;
             let mut identity_cache: HashMap<String, DocumentIdentityRecord> = HashMap::new();
 
+            let mut cross_reference_results = Vec::new();
             for reference in refs {
                 let Some(source_unit) = unit_by_id.get(&reference.from_unit_id) else {
                     continue;
@@ -2823,16 +2871,21 @@ impl AxonMindEngine {
                     if !seen.insert((unit.doc_node_id.clone(), unit.label_norm.clone())) {
                         continue;
                     }
-                    results.push(document_search_result(&unit, "cross_reference"));
-                    if results.len() >= top_k {
+                    cross_reference_results.push(document_search_result(&unit, "cross_reference"));
+                    if cross_reference_results.len() >= top_k.saturating_sub(1) {
                         break;
                     }
                 }
-                if results.len() >= top_k {
+                if cross_reference_results.len() >= top_k.saturating_sub(1) {
                     break;
                 }
             }
+            for result in cross_reference_results.into_iter().rev() {
+                results.insert(results.len().min(1), result);
+            }
         }
+
+        results.truncate(top_k);
 
         Ok(DocumentSearchOutput {
             results,

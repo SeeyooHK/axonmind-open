@@ -62,8 +62,15 @@ impl PackageEvalReport {
 /// Does any hit's locator satisfy any one of `eval.expect`'s maps? Every key in an expect map
 /// must equal the hit's locator value for that key; a hit's extra locator keys (or a missing
 /// key) don't block a match — see `EvalCase::expect`'s own doc comment for why.
-pub fn eval_case_result(eval: &EvalCase, hits: &[DocumentSearchResult]) -> EvalCaseResult {
+pub fn eval_case_result(
+    eval: &EvalCase,
+    hits: &[DocumentSearchResult],
+    expected_doc_ids: Option<&std::collections::HashSet<String>>,
+) -> EvalCaseResult {
     let matched = hits.iter().any(|hit| {
+        if expected_doc_ids.is_some_and(|ids| !ids.contains(&hit.doc_id)) {
+            return false;
+        }
         let Some(locator) = hit.locator.as_ref() else {
             return false;
         };
@@ -133,6 +140,7 @@ mod tests {
             query: "What does Article 33 require?".to_string(),
             corpus: "gdpr".to_string(),
             top_k: None,
+            expect_document: None,
             expect,
         }
     }
@@ -153,6 +161,7 @@ mod tests {
                 "33".to_string(),
             )])]),
             &hits,
+            None,
         );
         assert_eq!(result.outcome, EvalOutcome::Passed);
     }
@@ -169,6 +178,7 @@ mod tests {
                 "33".to_string(),
             )])]),
             &hits,
+            None,
         );
         assert_eq!(result.outcome, EvalOutcome::Failed);
         assert!(result.reason.unwrap().contains("recital"));
@@ -182,6 +192,7 @@ mod tests {
                 "33".to_string(),
             )])]),
             &[],
+            None,
         );
         assert_eq!(result.outcome, EvalOutcome::Failed);
         assert_eq!(result.reason.as_deref(), Some("no hits returned"));
@@ -199,7 +210,26 @@ mod tests {
                 BTreeMap::from([("recital".to_string(), "1".to_string())]),
             ]),
             &hits,
+            None,
         );
         assert_eq!(result.outcome, EvalOutcome::Passed);
+    }
+
+    #[test]
+    fn document_identity_oracle_rejects_same_locator_from_another_instrument() {
+        let hits = vec![hit(Some(BTreeMap::from([(
+            "article".to_string(),
+            "34".to_string(),
+        )])))];
+        let expected = std::collections::HashSet::from(["doc.2".to_string()]);
+        let result = eval_case_result(
+            &eval(vec![BTreeMap::from([(
+                "article".to_string(),
+                "34".to_string(),
+            )])]),
+            &hits,
+            Some(&expected),
+        );
+        assert_eq!(result.outcome, EvalOutcome::Failed);
     }
 }

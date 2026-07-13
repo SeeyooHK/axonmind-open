@@ -220,6 +220,10 @@ pub struct EvalCase {
     pub corpus: String,
     #[serde(default)]
     pub top_k: Option<usize>,
+    /// Optional document-identity oracle. Locator numbers are not globally unique across a
+    /// corpus, so instrument-scoping evals must assert both the locator and its document.
+    #[serde(default)]
+    pub expect_document: Option<IdentityMatch>,
     /// Any-of: the eval passes if any top-k hit's locator is a superset match against any one
     /// of these maps (every key in the expect map must equal the hit's locator value; extra
     /// keys on the hit are ignored). Subset matching so a grammar can add new capture keys

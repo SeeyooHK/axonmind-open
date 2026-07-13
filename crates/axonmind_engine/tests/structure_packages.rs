@@ -708,7 +708,7 @@ supervisory authority.\n",
         &guidance_path,
         "Guidelines 99/2099 on data breach notification\n\n\
 1.1 Scope\n\nThis guidance discusses the reporting obligations under Article 33 of the \
-Regulation.\n",
+Regulation.\n\n1.2 Reporting duties\n\nFurther reporting obligations apply to controllers.\n",
     )
     .expect("write guidance doc");
     let guidance = engine
@@ -722,7 +722,7 @@ Regulation.\n",
             doc_ids: Some(vec![guidance.doc_id.clone()]),
             corpus: None,
             unit_types: None,
-            top_k: Some(5),
+            top_k: Some(2),
         })
         .await
         .expect("document_search failed");
@@ -757,9 +757,9 @@ Regulation.\n",
 }
 
 /// Enhancement #5 (docs/retrieve_guarantee.md, item 8 backlog): a citation-shaped question
-/// ("What does Article 33 require?") must resolve straight to the named unit via the package's
-/// `[[ref]]` grammar, bypassing BM25/rerank entirely — this is the fix for item 7's 6 real eval
-/// failures, where a correctly-locatored unit existed but ranking didn't surface it.
+/// ("What does Article 33 require?") must guarantee the named unit via the package's `[[ref]]`
+/// grammar even when BM25 also runs — a locator is deterministic evidence, but must not suppress
+/// a distinct semantic need elsewhere in the same query.
 #[tokio::test]
 async fn locator_fast_path_resolves_citation_shaped_query_without_ranking() {
     let temp = TempDir::new().expect("tempdir");
@@ -802,21 +802,82 @@ communicate the breach to the data subject.\n",
         .await
         .expect("document_search failed");
 
-    assert!(
-        !output.reasoning_applied,
-        "locator fast-path must bypass BM25/rerank entirely, not just outrank it"
-    );
-    assert_eq!(
-        output.results.len(),
-        1,
-        "fast path returns exactly the named locator, not neighboring units"
-    );
-    let hit = &output.results[0];
+    let hit = output
+        .results
+        .iter()
+        .find(|hit| hit.score_source == "locator_fast_path")
+        .expect("the explicit locator must be guaranteed among the final candidates");
     assert_eq!(hit.score_source, "locator_fast_path");
     assert_eq!(hit.doc_id, regulation.doc_id);
     let locator = hit.locator.as_ref().expect("locator");
     assert_eq!(locator.0.get("article").map(String::as_str), Some("33"));
     assert!(hit.citation_safe);
+}
+
+/// A query may cite a regulation article while asking for an interpreting guidance section.
+/// The explicit locator remains useful evidence, but must not terminate retrieval before the
+/// semantic answer is considered.
+#[tokio::test]
+async fn locator_candidate_does_not_suppress_guidance_answer() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = AxonMindEngine::open(test_engine_config(&temp))
+        .await
+        .expect("engine");
+    let package_dir = std::path::Path::new(
+        "/Users/xuejingzhoum3/GitHub/soverex/soverex-open/docs/legal_agent/structure",
+    );
+    engine
+        .install_structure_package_from_dir(package_dir, "standalone")
+        .await
+        .expect("install real legal-eu-privacy package");
+
+    let doc_dir = TempDir::new().expect("doc tempdir");
+    let regulation_path = doc_dir.path().join("regulation.md");
+    std::fs::write(
+        &regulation_path,
+        "Regulation (EU) 2016/679\n\nArticle 33\n\nNotification of a personal data breach\n",
+    )
+    .expect("write regulation");
+    let regulation = engine
+        .ingest_file_with_content(&regulation_path)
+        .await
+        .expect("ingest regulation");
+
+    let guidance_path = doc_dir.path().join("guidance.md");
+    std::fs::write(
+        &guidance_path,
+        "Guidelines 99/2099\n\n1.3.6 Processor obligations\n\nThe processor must assist the controller under Article 33.\n",
+    )
+    .expect("write guidance");
+    let guidance = engine
+        .ingest_file_with_content(&guidance_path)
+        .await
+        .expect("ingest guidance");
+
+    let output = engine
+        .document_search(DocumentSearchInput {
+            query: "What are the processor's obligations to assist the controller, per EDPB guidance, under Article 33?".to_string(),
+            doc_ids: Some(vec![regulation.doc_id, guidance.doc_id]),
+            corpus: None,
+            unit_types: None,
+            top_k: Some(8),
+        })
+        .await
+        .expect("document_search");
+
+    assert!(output.results.iter().any(|hit| {
+        hit.locator
+            .as_ref()
+            .and_then(|locator| locator.0.get("section"))
+            .map(String::as_str)
+            == Some("1.3.6")
+    }));
+    assert!(
+        output
+            .results
+            .iter()
+            .any(|hit| hit.score_source == "locator_fast_path")
+    );
 }
 
 /// A locator mention with no matching unit in scope (e.g. `art.99`, naming a provision this
