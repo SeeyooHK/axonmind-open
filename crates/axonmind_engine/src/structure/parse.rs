@@ -65,6 +65,7 @@ pub fn parse_document(
     markdown: &str,
 ) -> Result<Option<ParsedDocumentIndex>, AxonMindError> {
     let cleaned = strip_toc(markdown, profile);
+    let cleaned = split_glued_boundaries(&cleaned, profile);
     let lines = split_lines(&cleaned);
     let top_level_units = profile
         .units
@@ -588,6 +589,42 @@ fn resolve_level(level: &LevelSpec, captures: &BTreeMap<String, String>) -> i64 
             .map(|value| value.split('.').count() as i64)
             .unwrap_or(1),
     }
+}
+
+/// Insert a line break immediately before any package-declared `split_before` match that lands
+/// mid-line (docs/retrieve_guarantee.md's Article 69/70 finding): CommonMark's lazy-paragraph-
+/// continuation rule can fold a heading with no preceding blank line into the previous block, so
+/// its marker — anchored at line start — never fires and the structure parser never closes the
+/// preceding unit's scope. Each `split_before` pattern is package-declared and expected to anchor
+/// at end-of-line, so it only matches a swallowed heading (nothing else on the line after it),
+/// not an ordinary mid-sentence cross-reference (which always has trailing text, punctuation, or
+/// an immediate `(` for a paragraph-locator reference like `Article 70(1)`) — verified against the
+/// real GDPR Regulation corpus: every line-final, unpunctuated `Article N` there is a genuine
+/// boundary (1..99, no gaps, no false positives among the ordinary cross-references sampled).
+fn split_glued_boundaries(markdown: &str, profile: &ProfileDefinition) -> String {
+    let patterns: Vec<regex::Regex> = profile
+        .units
+        .iter()
+        .filter_map(|unit| unit.split_before.as_deref())
+        .filter_map(|pattern| regex::Regex::new(pattern).ok())
+        .collect();
+    if patterns.is_empty() {
+        return markdown.to_string();
+    }
+    markdown
+        .lines()
+        .map(|line| {
+            for regex in &patterns {
+                if let Some(m) = regex.find(line)
+                    && m.start() > 0
+                {
+                    return format!("{}\n{}", &line[..m.start()], &line[m.start()..]);
+                }
+            }
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn split_lines(markdown: &str) -> Vec<LineSpan> {

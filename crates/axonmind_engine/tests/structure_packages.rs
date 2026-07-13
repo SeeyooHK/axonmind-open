@@ -1026,3 +1026,180 @@ async fn nested_ordered_amendment_clauses_do_not_mint_duplicate_paragraph_units(
         p1_units
     );
 }
+
+/// Regression test for the article-boundary bug found live re-ingesting the real GDPR Regulation
+/// 2016/679 (`doc.b515d17b`, 2026-07-12): Article 69's heading has no preceding blank line in
+/// pdf-inspector's raw markdown, so CommonMark's lazy-paragraph-continuation rule folds it onto
+/// the tail of the *previous* article's last list item instead of starting its own block —
+/// `marker`'s `^`-anchored regex never fires, the structure parser never closes Article 68's
+/// scope, and every paragraph until the next marker that *does* land cleanly (Article 71) stays
+/// misattributed to Article 68. Fixed by a package-declared `split_before` regex
+/// (`structure/parse.rs::split_glued_boundaries`) that inserts a line break before a bare,
+/// line-final `Article N` glued onto a preceding line, so `marker` can fire normally afterward.
+#[tokio::test]
+async fn glued_article_boundary_at_end_of_line_becomes_its_own_unit() {
+    let pkg_dir = std::path::Path::new(
+        "/Users/xuejingzhoum3/GitHub/soverex/soverex-open/docs/legal_agent/structure",
+    );
+    let pkg = StructurePackage::from_dir(pkg_dir).expect("load real legal-eu-privacy package");
+    let profile = pkg
+        .profiles
+        .iter()
+        .find(|p| p.profile.name == "eu-regulation-en")
+        .expect("eu-regulation-en profile");
+
+    // Mirrors the real live shape: "Article 69" has no blank line before it in the source, so
+    // comrak lazy-continues it into the preceding list item's own paragraph (joined via a
+    // softbreak-to-space, same as node_text's real behavior) instead of starting a new block.
+    let source = "### Article 68\n\n\
+European Data Protection Board\n\n\
+- The Board shall have legal personality.\n\
+- In the cases referred to in Article 65, the European Data Protection Supervisor shall have \
+voting rights only on decisions which concern principles and rules applicable to the Union \
+institutions, bodies, offices and agencies which correspond in substance to those of this \
+Regulation.\n\
+Article 69\n\
+\n\
+Independence\n\
+\n\
+- The Board shall act independently when performing its tasks or exercising its powers \
+pursuant to Articles 70 and 71.\n";
+
+    let doc = markdown::parse(std::path::Path::new("board.md"), source.as_bytes())
+        .expect("markdown parse");
+    let rendered = render_markdown(&doc);
+    assert!(
+        rendered.contains("Regulation. Article 69"),
+        "test fixture must reproduce the real glued shape before asserting the fix; \
+         rendered markdown:\n{rendered}"
+    );
+
+    let identity = derive_identity(
+        "doc.test",
+        Some("Regulation (EU) 9999/9999"),
+        None,
+        Some(&rendered),
+        std::slice::from_ref(&pkg),
+        None,
+    )
+    .identity;
+
+    let parsed = parse_document(
+        &pkg.manifest.package.name,
+        profile,
+        "doc.test",
+        &identity,
+        &rendered,
+    )
+    .expect("parse")
+    .expect("units");
+
+    let art68 = parsed
+        .units
+        .iter()
+        .find(|u| u.label_norm == "art.68")
+        .unwrap_or_else(|| panic!("expected an art.68 unit; got: {:?}", parsed.units));
+    assert!(
+        !art68.text.contains("Article 69"),
+        "Article 69's heading must not stay swallowed into art.68's own text, got: {:?}",
+        art68.text
+    );
+
+    let art69 = parsed
+        .units
+        .iter()
+        .find(|u| u.label_norm == "art.69")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a distinct art.69 unit split off from the glued boundary; got labels: {:?}",
+                parsed.units.iter().map(|u| &u.label_norm).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(art69.citation, "Regulation (EU) 9999/9999, Article 69");
+}
+
+/// Companion negative test: a genuine mid-sentence cross-reference to a *paragraph* of another
+/// article (`Article 70(1)`, `Article 70(2)`) must not be mistaken for a glued article boundary
+/// and split into a spurious unit — only the real, unpunctuated, line-final `Article 70` heading
+/// (glued the same way as Article 69 above, in the same source line as the two cross-references)
+/// should mint a new unit. This is the exact real shape from the live GDPR Regulation ingest
+/// (`doc.b515d17b`, line ending "...neither seek nor take instructions from anybody. Article 70").
+#[tokio::test]
+async fn mid_sentence_paragraph_locator_references_do_not_trigger_a_false_split() {
+    let pkg_dir = std::path::Path::new(
+        "/Users/xuejingzhoum3/GitHub/soverex/soverex-open/docs/legal_agent/structure",
+    );
+    let pkg = StructurePackage::from_dir(pkg_dir).expect("load real legal-eu-privacy package");
+    let profile = pkg
+        .profiles
+        .iter()
+        .find(|p| p.profile.name == "eu-regulation-en")
+        .expect("eu-regulation-en profile");
+
+    let source = "### Article 68\n\n\
+European Data Protection Board\n\n\
+- Without prejudice to requests by the Commission referred to in point (b) of Article 70(1) \
+and in Article 70(2), the Board shall, in the performance of its tasks or the exercise of its \
+powers, neither seek nor take instructions from anybody.\n\
+Article 70\n\
+\n\
+Tasks of the Board\n\
+\n\
+- The Board shall monitor and ensure the correct application of this Regulation.\n";
+
+    let doc = markdown::parse(std::path::Path::new("board.md"), source.as_bytes())
+        .expect("markdown parse");
+    let rendered = render_markdown(&doc);
+    assert!(
+        rendered.contains("Article 70(1)")
+            && rendered.contains("Article 70(2)")
+            && rendered.contains("anybody. Article 70"),
+        "test fixture must reproduce the real mixed cross-reference + glued-boundary shape; \
+         rendered markdown:\n{rendered}"
+    );
+
+    let identity = derive_identity(
+        "doc.test",
+        Some("Regulation (EU) 9999/9999"),
+        None,
+        Some(&rendered),
+        std::slice::from_ref(&pkg),
+        None,
+    )
+    .identity;
+
+    let parsed = parse_document(
+        &pkg.manifest.package.name,
+        profile,
+        "doc.test",
+        &identity,
+        &rendered,
+    )
+    .expect("parse")
+    .expect("units");
+
+    let art70_units: Vec<_> = parsed
+        .units
+        .iter()
+        .filter(|u| u.label_norm == "art.70")
+        .collect();
+    assert_eq!(
+        art70_units.len(),
+        1,
+        "the two mid-sentence 'Article 70(1)'/'Article 70(2)' cross-references must not each \
+         mint their own art.70 unit; only the real trailing boundary should. Got: {:?}",
+        art70_units
+    );
+
+    let art68 = parsed
+        .units
+        .iter()
+        .find(|u| u.label_norm == "art.68")
+        .unwrap_or_else(|| panic!("expected an art.68 unit; got: {:?}", parsed.units));
+    assert!(
+        art68.text.contains("Article 70(1)") && art68.text.contains("Article 70(2)"),
+        "the cross-references must remain embedded in art.68's own text, not be stripped or \
+         promoted to boundaries themselves, got: {:?}",
+        art68.text
+    );
+}

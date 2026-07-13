@@ -1439,8 +1439,13 @@ impl GraphStore {
             .await
             .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
         conn.interact(move |conn| -> Result<(), AxonMindError> {
+            // Must overwrite, not ignore: the key is the source blob's sha256, which does NOT
+            // change when converter code changes — this upsert on re-ingest is the only path a
+            // converter fix has to already-cached documents (an earlier INSERT OR IGNORE left
+            // every cache row frozen at its first-ever render; retrieve_guarantee.md 2026-07-13).
             conn.execute(
-                "INSERT OR IGNORE INTO document_markdown (sha256, markdown, built_at) VALUES (?1, ?2, ?3)",
+                "INSERT INTO document_markdown (sha256, markdown, built_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(sha256) DO UPDATE SET markdown=excluded.markdown, built_at=excluded.built_at",
                 rusqlite::params![sha, md, now],
             )
             .map_err(|e| AxonMindError::Database(e.to_string()))?;
@@ -5269,6 +5274,34 @@ mod tests {
         assert_eq!(
             fetched.pinned_profile.as_deref(),
             Some("legal-eu-privacy/eu-regulation-en")
+        );
+    }
+
+    #[tokio::test]
+    async fn reingest_replaces_a_stale_document_markdown_cache_row() {
+        // document_markdown is keyed by the source blob's sha256, which does NOT change when
+        // converter code changes — a re-ingest's upsert is the ONLY path a converter fix has
+        // to an already-cached document. An earlier INSERT OR IGNORE froze every row at its
+        // first-ever render: live, doc.b515d17b's cache stayed at its 2026-07-04 pre-fix
+        // bullet render through two remove+re-adds, which would have made retro_apply wipe
+        // the correctly-parsed paragraph units (retrieve_guarantee.md, 2026-07-13 findings).
+        let dir = TempDir::new().unwrap();
+        let (store, _cache, _tx) = open_store(&dir).await;
+
+        store
+            .upsert_document_markdown("sha-blob", "- In the case of a personal data breach")
+            .await
+            .unwrap();
+        store
+            .upsert_document_markdown("sha-blob", "1. In the case of a personal data breach")
+            .await
+            .unwrap();
+
+        let cached = store.get_document_markdown("sha-blob").await.unwrap();
+        assert_eq!(
+            cached.as_deref(),
+            Some("1. In the case of a personal data breach"),
+            "second render for the same blob sha must replace the cached row, not be ignored"
         );
     }
 }

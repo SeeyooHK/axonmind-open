@@ -77,6 +77,15 @@ pub struct StructureUnit {
     pub label_norm: String,
     pub citation: String,
     pub level: LevelSpec,
+    /// Optional regex matching this unit's marker glued onto the tail of a preceding line with
+    /// no line-start anchor available to it (docs/retrieve_guarantee.md's Article 69/70 finding:
+    /// CommonMark's lazy-paragraph-continuation rule can fold a heading with no preceding blank
+    /// line into the previous block). When it matches mid-line, a line break is inserted right
+    /// before the match so `marker`'s own `^`-anchored regex can fire normally. Authors should
+    /// anchor this at end-of-line (`\s*$`) so it only catches a swallowed heading, not an
+    /// ordinary mid-sentence cross-reference — see `split_glued_boundaries` in `structure/parse.rs`.
+    #[serde(default)]
+    pub split_before: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
