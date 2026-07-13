@@ -880,6 +880,117 @@ async fn locator_candidate_does_not_suppress_guidance_answer() {
     );
 }
 
+/// Regression test for the 2026-07-13 live eval failures (`edpb-guidance-processor-obligations-
+/// section`, `eudpr-2018-1725-breach-notification-scoping`): in a corpus whose units densely cite
+/// each other — the shape of every real legal corpus — cross-reference expansion used to claim
+/// `top_k - 1` slots at the head of the window, evicting every semantic hit, so the guidance
+/// section that actually answers the query could never surface no matter how well BM25 ranked
+/// it. The small-corpus sibling test above cannot catch this: with only one outgoing reference
+/// there is nothing to flood with. Cross-references may fill leftover slots plus one reserved
+/// slot, never more, and no unit may occupy two window slots under different score sources.
+#[tokio::test]
+async fn cross_reference_expansion_cannot_evict_the_semantic_answer_in_a_ref_dense_corpus() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = AxonMindEngine::open(test_engine_config(&temp))
+        .await
+        .expect("engine");
+    let package_dir = std::path::Path::new(
+        "/Users/xuejingzhoum3/GitHub/soverex/soverex-open/docs/legal_agent/structure",
+    );
+    engine
+        .install_structure_package_from_dir(package_dir, "standalone")
+        .await
+        .expect("install real legal-eu-privacy package");
+
+    let doc_dir = TempDir::new().expect("doc tempdir");
+    // More articles than the BM25 candidate cap (`top_k * 4`), each citing four others spread
+    // across the whole range: the flood needs cross-reference targets that are NOT in the
+    // lexical candidate pool (in a real corpus most aren't — the live one has 1,633 refs), and
+    // a corpus small enough for BM25 to retrieve wholesale can't reproduce that. Bodies
+    // deliberately share no vocabulary with the query below so the guidance section is the
+    // unambiguous semantic answer.
+    let regulation_path = doc_dir.path().join("regulation.md");
+    let mut regulation_text = String::from("Regulation (EU) 2016/679\n\n");
+    for n in 10..=45u32 {
+        let cited: Vec<String> = (1..=4u32)
+            .map(|k| format!("Article {}", 10 + ((n - 10 + 7 * k) % 36)))
+            .collect();
+        regulation_text.push_str(&format!(
+            "Article {n}\n\nCooperation duties\n\nThe supervisory authority shall cooperate \
+pursuant to {}.\n\n",
+            cited.join(", ")
+        ));
+    }
+    std::fs::write(&regulation_path, &regulation_text).expect("write regulation");
+    let regulation = engine
+        .ingest_file_with_content(&regulation_path)
+        .await
+        .expect("ingest regulation");
+
+    let guidance_path = doc_dir.path().join("guidance.md");
+    std::fs::write(
+        &guidance_path,
+        "Guidelines 99/2099\n\n1.3.6 Processor obligations\n\nThe processor must assist the \
+controller in ensuring compliance with the obligations under Article 33.\n",
+    )
+    .expect("write guidance");
+    let guidance = engine
+        .ingest_file_with_content(&guidance_path)
+        .await
+        .expect("ingest guidance");
+
+    let top_k = 5;
+    let output = engine
+        .document_search(DocumentSearchInput {
+            query: "What are the processor's obligations to assist the controller, per EDPB guidance, under Article 33?".to_string(),
+            doc_ids: Some(vec![regulation.doc_id, guidance.doc_id]),
+            corpus: None,
+            unit_types: None,
+            top_k: Some(top_k),
+        })
+        .await
+        .expect("document_search");
+
+    assert!(output.results.len() <= top_k);
+    assert!(
+        output
+            .results
+            .iter()
+            .any(|hit| hit.score_source == "locator_fast_path"),
+        "the explicit Article 33 locator must survive as deterministic evidence"
+    );
+    assert!(
+        output.results.iter().any(|hit| {
+            hit.locator
+                .as_ref()
+                .and_then(|locator| locator.0.get("section"))
+                .map(String::as_str)
+                == Some("1.3.6")
+        }),
+        "the semantic answer must survive cross-reference expansion; hits: {:?}",
+        output
+            .results
+            .iter()
+            .map(|hit| (&hit.score_source, &hit.locator))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        output
+            .results
+            .iter()
+            .any(|hit| hit.score_source == "cross_reference"),
+        "one slot stays reserved for cross-reference expansion even when the window is full"
+    );
+    let mut slots = std::collections::HashSet::new();
+    for hit in &output.results {
+        assert!(
+            slots.insert((hit.doc_id.clone(), hit.unit_id.clone())),
+            "a unit occupied two window slots: {:?}",
+            (&hit.doc_id, &hit.unit_id, &hit.score_source)
+        );
+    }
+}
+
 /// A locator mention with no matching unit in scope (e.g. `art.99`, naming a provision this
 /// corpus doesn't contain) must fall through to the normal search path unchanged, not return an
 /// empty result or error — this is the graceful-degradation contract the enhancement requires.

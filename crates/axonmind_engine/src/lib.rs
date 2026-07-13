@@ -291,25 +291,6 @@ fn ref_rules_for_scope(
         .collect()
 }
 
-fn italian_query_expansions(query: &str) -> Vec<&'static str> {
-    let lower = query.to_lowercase();
-    let mut expansions = Vec::new();
-    if lower.contains("personal data breach") {
-        expansions.push("violazione dei dati personali");
-    }
-    if lower.contains("controller") {
-        expansions.push("titolare");
-    }
-    if lower.contains("processor") {
-        expansions.push("responsabile");
-    }
-    if lower.contains("supervisory authority") {
-        expansions.push("autorita di controllo");
-        expansions.push("garante");
-    }
-    expansions
-}
-
 impl AxonMindEngine {
     /// Open (or create) a workspace. Runs migrations, rebuilds cache, starts workers.
     pub async fn open(config: EngineConfig) -> Result<Self, AxonMindError> {
@@ -1869,10 +1850,10 @@ impl AxonMindEngine {
             let expected_doc_ids = if let Some(matcher) = eval.expect_document.as_ref() {
                 let mut matches = HashSet::new();
                 for doc_id in &doc_ids {
-                    if let Some(identity) = self.store.fetch_document_identity(doc_id).await? {
-                        if identity_matches(&identity, matcher) {
-                            matches.insert(doc_id.clone());
-                        }
+                    if let Some(identity) = self.store.fetch_document_identity(doc_id).await?
+                        && identity_matches(&identity, matcher)
+                    {
+                        matches.insert(doc_id.clone());
                     }
                 }
                 Some(matches)
@@ -2680,12 +2661,17 @@ impl AxonMindEngine {
         // article alone would hijack the actual informational need. A locator miss falls through
         // unchanged. This only runs with a document/corpus scope, which determines which packages'
         // reference grammars apply.
+        // `seen` is shared between the locator and semantic tiers so the same unit can never
+        // occupy two window slots under different score sources. (The cross-reference tier
+        // dedups against the final window instead — a unit that only made the truncated-away
+        // tail of the candidate pool is absent from the results, so it must stay eligible as a
+        // cross-reference target.)
+        let mut seen = std::collections::HashSet::new();
         let mut locator_results = Vec::new();
         if !scope.is_empty() {
             let refs = ref_rules_for_scope(&installed_packages, &scoped_identities);
             if !refs.is_empty() {
                 let mut seen_targets = std::collections::HashSet::new();
-                let mut seen_units = std::collections::HashSet::new();
                 for mention in extract_ref_mentions(&refs, &query) {
                     if !seen_targets.insert((
                         mention.target_kind.clone(),
@@ -2704,9 +2690,7 @@ impl AxonMindEngine {
                                     continue;
                                 }
                             }
-                            if !seen_units
-                                .insert((unit.doc_node_id.clone(), unit.label_norm.clone()))
-                            {
+                            if !seen.insert((unit.doc_node_id.clone(), unit.label_norm.clone())) {
                                 continue;
                             }
                             locator_results
@@ -2717,22 +2701,9 @@ impl AxonMindEngine {
             }
         }
 
-        let expanded_query = if scoped_identities
-            .iter()
-            .any(|identity| identity.language.as_deref() == Some("it"))
-        {
-            let expansions = italian_query_expansions(&query);
-            if expansions.is_empty() {
-                query.clone()
-            } else {
-                format!("{query} {}", expansions.join(" "))
-            }
-        } else {
-            query.clone()
-        };
         let reasoning = self
             .reasoning_search(ReasoningSearchInput {
-                query: expanded_query,
+                query: query.clone(),
                 doc_node_ids: if scope.is_empty() {
                     None
                 } else {
@@ -2758,14 +2729,7 @@ impl AxonMindEngine {
                 .cloned()
                 .map(|unit| (unit.section_id.clone(), unit))
                 .collect();
-        let unit_by_id: std::collections::HashMap<String, crate::store::DocUnitRecord> = doc_units
-            .iter()
-            .cloned()
-            .map(|unit| (unit.unit_id.clone(), unit))
-            .collect();
-
         let mut results = Vec::new();
-        let mut seen = std::collections::HashSet::new();
         for section in reasoning.sections {
             let maybe_unit = unit_by_section.get(&section.section_id);
             if let Some(unit) = maybe_unit {
@@ -2823,25 +2787,45 @@ impl AxonMindEngine {
             results.sort_by_key(|result| !preferred_doc_ids.contains(&result.doc_id));
         }
 
-        for locator in locator_results.into_iter().rev() {
-            let key = (locator.doc_id.clone(), locator.unit_id.clone());
-            results.retain(|result| {
-                (result.doc_id.clone(), result.unit_id.clone()) != key
-            });
-            results.insert(0, locator);
-        }
+        // The final window is assembled in tiers so a lower tier can never evict a higher one:
+        // locator hits (deterministic evidence) first, semantic hits (the primary answer) after
+        // them, cross-references last — filling leftover slots plus at most one reserved slot,
+        // so a full semantic window can't starve the expansion entirely, and the expansion can't
+        // flood the window either (the 2026-07-13 eval regression: cross-references claimed
+        // `top_k - 1` slots at the head of the window and evicted every semantic hit).
+        let mut merged = locator_results;
+        let locator_count = merged.len();
+        merged.append(&mut results);
 
         {
-            let seed_unit_ids = results
-                .iter()
-                .filter_map(|result| result.unit_id.clone())
-                .collect::<Vec<_>>();
+            // Cross-references are seeded only from hits that made the window, and targets are
+            // ranked by how many distinct window hits cite them (then by their best-ranked citing
+            // hit), so the reserved slot goes to the most-corroborated target instead of
+            // whichever `doc_unit_refs` row happens to come back first.
+            let mut seed_rank: HashMap<String, usize> = HashMap::new();
+            let mut doc_by_seed_unit: HashMap<String, String> = HashMap::new();
+            let mut window_units: HashSet<(String, String)> = HashSet::new();
+            for (rank, result) in merged.iter().take(top_k).enumerate() {
+                if let Some(unit_id) = result.unit_id.clone() {
+                    seed_rank.entry(unit_id.clone()).or_insert(rank);
+                    doc_by_seed_unit
+                        .entry(unit_id.clone())
+                        .or_insert_with(|| result.doc_id.clone());
+                    window_units.insert((result.doc_id.clone(), unit_id));
+                }
+            }
+            let seed_unit_ids: Vec<String> = seed_rank.keys().cloned().collect();
             let refs = self.store.fetch_doc_unit_refs(&seed_unit_ids).await?;
             let mut identity_cache: HashMap<String, DocumentIdentityRecord> = HashMap::new();
 
-            let mut cross_reference_results = Vec::new();
+            let mut target_stats: HashMap<(String, String), (HashSet<String>, usize)> =
+                HashMap::new();
             for reference in refs {
-                let Some(source_unit) = unit_by_id.get(&reference.from_unit_id) else {
+                let Some(&rank) = seed_rank.get(&reference.from_unit_id) else {
+                    continue;
+                };
+                let Some(source_doc_id) = doc_by_seed_unit.get(&reference.from_unit_id).cloned()
+                else {
                     continue;
                 };
                 let target_doc_id = if let Some(doc_id) = reference.to_doc_node_id.clone() {
@@ -2850,45 +2834,66 @@ impl AxonMindEngine {
                     self.resolve_xref_target_doc(
                         &installed_packages,
                         &mut identity_cache,
-                        &source_unit.doc_node_id,
+                        &source_doc_id,
                         &reference.target_kind,
                     )
                     .await?
-                    .unwrap_or_else(|| source_unit.doc_node_id.clone())
+                    .unwrap_or(source_doc_id)
                 };
+                let entry = target_stats
+                    .entry((target_doc_id, reference.target_label_norm.clone()))
+                    .or_insert_with(|| (HashSet::new(), rank));
+                entry.0.insert(reference.from_unit_id.clone());
+                entry.1 = entry.1.min(rank);
+            }
+            let mut ranked_targets: Vec<((String, String), (usize, usize))> = target_stats
+                .into_iter()
+                .map(|(target, (sources, best_rank))| (target, (sources.len(), best_rank)))
+                .collect();
+            ranked_targets.sort_by(|a, b| {
+                (b.1.0.cmp(&a.1.0))
+                    .then(a.1.1.cmp(&b.1.1))
+                    .then(a.0.cmp(&b.0))
+            });
+
+            let budget = top_k.saturating_sub(merged.len()).max(1);
+            let mut cross_reference_results = Vec::new();
+            'targets: for ((target_doc_id, target_label_norm), _) in ranked_targets {
                 self.ensure_document_grounding(&NodeId(target_doc_id.clone()))
                     .await?;
                 let matches = self
                     .store
-                    .fetch_doc_units_by_label_norm(&target_doc_id, &reference.target_label_norm)
+                    .fetch_doc_units_by_label_norm(&target_doc_id, &target_label_norm)
                     .await?;
                 for unit in matches {
-                    if let Some(allowed) = allowed_types.as_ref() {
-                        if !allowed.contains(&unit.unit_kind) {
-                            continue;
-                        }
+                    if allowed_types
+                        .as_ref()
+                        .is_some_and(|allowed| !allowed.contains(&unit.unit_kind))
+                    {
+                        continue;
                     }
-                    if !seen.insert((unit.doc_node_id.clone(), unit.label_norm.clone())) {
+                    if !window_units.insert((unit.doc_node_id.clone(), unit.unit_id.clone())) {
                         continue;
                     }
                     cross_reference_results.push(document_search_result(&unit, "cross_reference"));
-                    if cross_reference_results.len() >= top_k.saturating_sub(1) {
-                        break;
+                    if cross_reference_results.len() >= budget {
+                        break 'targets;
                     }
                 }
-                if cross_reference_results.len() >= top_k.saturating_sub(1) {
-                    break;
-                }
             }
-            for result in cross_reference_results.into_iter().rev() {
-                results.insert(results.len().min(1), result);
-            }
+            // The reserved slot may evict the lowest-ranked semantic hit, never a locator hit.
+            merged.truncate(
+                top_k
+                    .saturating_sub(cross_reference_results.len())
+                    .max(locator_count.min(top_k)),
+            );
+            merged.append(&mut cross_reference_results);
         }
 
-        results.truncate(top_k);
+        merged.truncate(top_k);
 
         Ok(DocumentSearchOutput {
-            results,
+            results: merged,
             reasoning_applied: reasoning.reasoning_applied,
         })
     }
