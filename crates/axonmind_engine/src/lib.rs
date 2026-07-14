@@ -1712,6 +1712,58 @@ impl AxonMindEngine {
             .await
     }
 
+    /// Explicit provenance promotion (item 4c-style override, retrieve_guarantee.md item 10) —
+    /// e.g. `auto_captured` → `user_upload` after a human confirms a low-trust document is
+    /// actually fine to cite. Rejects anything outside the four declared tiers rather than
+    /// silently accepting a typo as if it were a real (and, since unrecognized values rank
+    /// lowest, *worse*) tier — a human explicitly promoting a document should get a clear error,
+    /// not a promotion that silently didn't take effect the way they intended.
+    pub async fn set_document_provenance(
+        &self,
+        doc_node_id: &str,
+        provenance: &str,
+    ) -> Result<(), AxonMindError> {
+        if !matches!(
+            provenance,
+            "user_upload" | "plugin_bundle" | "web_fetched" | "auto_captured"
+        ) {
+            return Err(AxonMindError::Preview {
+                message: format!(
+                    "unrecognized provenance tier: {provenance} (expected one of user_upload, plugin_bundle, web_fetched, auto_captured)"
+                ),
+            });
+        }
+        let node_id = NodeId(doc_node_id.to_string());
+        let mut node = self
+            .store
+            .fetch_node(&node_id)
+            .await?
+            .ok_or_else(|| AxonMindError::Preview {
+                message: "Document not found.".to_string(),
+            })?;
+        if node.kind != axonmind_core::NodeKind::Document {
+            return Err(AxonMindError::Preview {
+                message: "Document not found.".to_string(),
+            });
+        }
+        if let Some(obj) = node.attrs.as_object_mut() {
+            obj.insert(
+                "provenance".to_string(),
+                serde_json::Value::String(provenance.to_string()),
+            );
+        }
+        self.store
+            .apply_mutation(
+                GraphMutation::UpsertNode { node },
+                &self.graph_cache,
+                &self.event_tx,
+            )
+            .await?;
+        self.store
+            .set_doc_units_provenance(doc_node_id, provenance)
+            .await
+    }
+
     /// Forces one document's identity/units to re-derive right now (item 4d's manual re-run
     /// escape hatch) — the same re-derivation `retro_apply_structure_packages` performs for
     /// every document, scoped to a single one, for immediate feedback without a full reconcile

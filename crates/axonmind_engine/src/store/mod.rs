@@ -1627,6 +1627,37 @@ impl GraphStore {
         .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
     }
 
+    /// Sets the provenance tier on every existing `doc_units` row for `doc_node_id` (item 4c-style
+    /// override). Pure `doc_units` update — the Document node's own `attrs.provenance` (the
+    /// source of truth a future re-parse reads) is a `serde_json::Value` inside a msgpack blob,
+    /// not JSON1-addressable SQL, so that half of the write goes through the normal
+    /// `fetch_node`/`apply_mutation` path in `AxonMindEngine::set_document_provenance` instead of
+    /// here — see that method for the full two-part write.
+    pub(crate) async fn set_doc_units_provenance(
+        &self,
+        doc_node_id: &str,
+        provenance: &str,
+    ) -> Result<(), AxonMindError> {
+        let doc_id = doc_node_id.to_owned();
+        let provenance = provenance.to_owned();
+        let conn = self
+            .db
+            .0
+            .get()
+            .await
+            .map_err(|e| AxonMindError::Database(format!("get conn: {e}")))?;
+        conn.interact(move |conn| -> Result<(), AxonMindError> {
+            conn.execute(
+                "UPDATE doc_units SET provenance = ?1 WHERE doc_node_id = ?2",
+                rusqlite::params![provenance, doc_id],
+            )
+            .map_err(|e| AxonMindError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AxonMindError::Database(format!("interact: {e}")))?
+    }
+
     pub(crate) async fn fetch_document_identity(
         &self,
         doc_node_id: &str,
@@ -1891,7 +1922,8 @@ impl GraphStore {
                 .prepare(
                     "SELECT di.doc_node_id, di.source_filename, di.source_path, di.canonical_title,
                             di.instrument_type, di.corpus, di.confidence, di.pinned_profile, di.updated_at,
-                            MAX(du.profile_name), MAX(du.profile_version), COUNT(du.doc_node_id)
+                            MAX(du.profile_name), MAX(du.profile_version), COUNT(du.doc_node_id),
+                            MAX(du.provenance)
                      FROM document_identity di
                      LEFT JOIN doc_units du ON du.doc_node_id = di.doc_node_id
                      GROUP BY di.doc_node_id
@@ -1913,6 +1945,7 @@ impl GraphStore {
                         row.get::<_, Option<String>>(9)?,
                         row.get::<_, Option<i64>>(10)?,
                         row.get::<_, i64>(11)?,
+                        row.get::<_, Option<String>>(12)?,
                     ))
                 })
                 .map_err(|e| AxonMindError::Database(e.to_string()))?
@@ -1934,6 +1967,7 @@ impl GraphStore {
                     profile_name: row.9,
                     profile_version: row.10,
                     unit_count: row.11,
+                    provenance: row.12,
                 });
             }
             Ok(out)

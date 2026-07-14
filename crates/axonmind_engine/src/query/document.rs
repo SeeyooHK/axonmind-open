@@ -50,6 +50,10 @@ pub struct DocumentIdentityReport {
     pub unit_count: i64,
     pub pinned_profile: Option<String>,
     pub updated_at: i64,
+    /// Trust tier this document's `doc_units` carry (`user_upload` | `plugin_bundle` |
+    /// `web_fetched` | `auto_captured` | `unknown`) — `None` when the document has no
+    /// `doc_units` yet (retrieve_guarantee.md item 10).
+    pub provenance: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

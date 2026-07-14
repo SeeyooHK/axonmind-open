@@ -6,4 +6,10 @@
  * `profile_version`/`unit_count` are `None`/`0` for a document with no `doc_units` rows (no
  * structure package ever matched it, or it was never parsed past PageIndex).
  */
-export type DocumentIdentityReport = { doc_node_id: string, source_filename: string, source_path: string | null, canonical_title: string, instrument_type: string | null, corpus: Array<string>, confidence: number, profile_name: string | null, profile_version: bigint | null, unit_count: bigint, pinned_profile: string | null, updated_at: bigint, };
+export type DocumentIdentityReport = { doc_node_id: string, source_filename: string, source_path: string | null, canonical_title: string, instrument_type: string | null, corpus: Array<string>, confidence: number, profile_name: string | null, profile_version: bigint | null, unit_count: bigint, pinned_profile: string | null, updated_at: bigint, 
+/**
+ * Trust tier this document's `doc_units` carry (`user_upload` | `plugin_bundle` |
+ * `web_fetched` | `auto_captured` | `unknown`) — `None` when the document has no
+ * `doc_units` yet (retrieve_guarantee.md item 10).
+ */
+provenance: string | null, };

@@ -756,6 +756,84 @@ Regulation.\n\n1.2 Reporting duties\n\nFurther reporting obligations apply to co
     assert!(cross_ref_hit.citation_safe);
 }
 
+/// retrieve_guarantee.md item 10 acceptance: "a session transcript ingested as a Document can
+/// never appear as a citation-safe hit." End-to-end proof through the real engine (not just the
+/// unit-level `document_search_result` tests in `lib.rs`, which can't reach the private
+/// `ProvenanceTier`/gate wiring from an integration test): a freshly ingested document is
+/// citation_safe by default (`user_upload`), and demoting it via the exact API the review UI's
+/// promotion action calls (`set_document_provenance`) flips every hit to citation_safe:false —
+/// proving the gate is actually wired into the live `document_search` path, not just present in
+/// isolated unit tests.
+#[tokio::test]
+async fn provenance_below_the_default_bar_is_not_citation_safe() {
+    let temp = TempDir::new().expect("tempdir");
+    let cfg = test_engine_config(&temp);
+    let engine = AxonMindEngine::open(cfg).await.expect("engine");
+    let package_dir = std::path::Path::new(
+        "/Users/xuejingzhoum3/GitHub/soverex/soverex-open/docs/legal_agent/structure",
+    );
+    engine
+        .install_structure_package_from_dir(package_dir, "standalone")
+        .await
+        .expect("install real legal-eu-privacy package");
+
+    let doc_dir = TempDir::new().expect("doc tempdir");
+    let regulation_path = doc_dir.path().join("regulation.md");
+    std::fs::write(
+        &regulation_path,
+        "Regulation (EU) 2016/679 of the European Parliament and of the Council\n\n\
+Article 33\n\nNotification of a personal data breach to the supervisory authority\n\n\
+1. In the case of a personal data breach, the controller shall without undue delay notify the \
+supervisory authority.\n",
+    )
+    .expect("write regulation doc");
+    let regulation = engine
+        .ingest_file_with_content(&regulation_path)
+        .await
+        .expect("ingest regulation");
+
+    let search_input = || DocumentSearchInput {
+        query: "personal data breach".to_string(),
+        doc_ids: Some(vec![regulation.doc_id.clone()]),
+        corpus: None,
+        unit_types: None,
+        top_k: Some(5),
+    };
+
+    let before = engine
+        .document_search(search_input())
+        .await
+        .expect("document_search failed");
+    assert!(!before.results.is_empty(), "expected at least one hit before demotion");
+    assert!(
+        before.results.iter().all(|r| r.citation_safe),
+        "a freshly ingested (user_upload) document must be citation_safe by default"
+    );
+
+    engine
+        .set_document_provenance(&regulation.doc_id, "auto_captured")
+        .await
+        .expect("demote provenance");
+
+    let after = engine
+        .document_search(search_input())
+        .await
+        .expect("document_search failed");
+    assert!(!after.results.is_empty(), "expected the same hits after demotion");
+    assert!(
+        after.results.iter().all(|r| !r.citation_safe),
+        "a document below the corpus's min_citation_provenance must never be citation_safe, \
+         even though it's still backed by a real structure-package parse"
+    );
+
+    // Rejects garbage rather than silently no-op-ing — a human explicitly promoting/demoting a
+    // document should get a hard error on a typo, not a promotion that quietly didn't happen.
+    let bad = engine
+        .set_document_provenance(&regulation.doc_id, "not_a_real_tier")
+        .await;
+    assert!(bad.is_err());
+}
+
 /// Enhancement #5 (docs/retrieve_guarantee.md, item 8 backlog): a citation-shaped question
 /// ("What does Article 33 require?") must guarantee the named unit via the package's `[[ref]]`
 /// grammar even when BM25 also runs — a locator is deterministic evidence, but must not suppress
