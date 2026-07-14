@@ -160,6 +160,11 @@ pub struct CorpusFile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorpusMeta {
     pub name: String,
+    /// Minimum provenance tier a document must carry to be `citation_safe` in this corpus
+    /// (`user_upload` | `plugin_bundle` | `web_fetched` | `auto_captured`) — see
+    /// `ProvenanceTier`. `None` means the item-10 default, `user_upload`, applies.
+    #[serde(default)]
+    pub min_citation_provenance: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

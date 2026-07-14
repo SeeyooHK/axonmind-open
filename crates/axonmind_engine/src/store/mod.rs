@@ -297,6 +297,11 @@ pub struct DocUnitRecord {
     /// Arbitrary capture names -> values (e.g. `article`/`paragraph`, or a medical package's
     /// `dosage`/`frequency`). Stored normalized in `doc_unit_locators`, not a column here.
     pub locators: std::collections::BTreeMap<String, String>,
+    /// Trust tier of the source document at ingest time (`user_upload`, `plugin_bundle`,
+    /// `web_fetched`, `auto_captured` — see `ProvenanceTier`), copied here from the owning
+    /// Document node so `document_search`'s hot path can gate `citation_safe` without a join
+    /// back to `nodes.attrs` (retrieve_guarantee.md item 10).
+    pub provenance: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2500,12 +2505,13 @@ impl GraphStore {
             confidence: row.get::<_, f64>(20)? as f32,
             doc_sha256: row.get(21)?,
             locators: std::collections::BTreeMap::new(),
+            provenance: row.get(22)?,
         })
     }
 
     const DOC_UNIT_COLUMNS: &'static str = "unit_id, doc_node_id, parent_unit_id, section_id, unit_kind, label, label_norm, \
          title, ordinal, level, text, span_start, span_end, page_start, page_end, path, \
-         citation, package_name, profile_name, profile_version, confidence, doc_sha256";
+         citation, package_name, profile_name, profile_version, confidence, doc_sha256, provenance";
 
     /// The staleness key `(doc_sha256, package_name, profile_name, profile_version)` for a
     /// document's existing parse, read from any one of its units (they are always written as a
@@ -2579,8 +2585,9 @@ impl GraphStore {
                     "INSERT INTO doc_units
                         (unit_id, doc_node_id, parent_unit_id, section_id, unit_kind, label, label_norm,
                          title, ordinal, level, text, span_start, span_end, page_start, page_end, path,
-                         citation, package_name, profile_name, profile_version, confidence, doc_sha256)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
+                         citation, package_name, profile_name, profile_version, confidence, doc_sha256,
+                         provenance)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
                     rusqlite::params![
                         unit.unit_id,
                         unit.doc_node_id,
@@ -2604,6 +2611,7 @@ impl GraphStore {
                         unit.profile_version,
                         unit.confidence,
                         unit.doc_sha256,
+                        unit.provenance,
                     ],
                 )
                 .map_err(|e| AxonMindError::Database(e.to_string()))?;

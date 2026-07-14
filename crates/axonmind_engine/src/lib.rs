@@ -110,7 +110,13 @@ fn make_document_node(doc: &NormalizedDocument) -> Node {
                 .unwrap_or("Untitled")
                 .to_owned()
         }),
-        attrs: serde_json::json!({ "sha256": doc.sha256, "source_path": doc.source_path }),
+        // Every current production caller of `start_ingest`/`ingest_file_with_content` is a
+        // user-initiated "add to Library" action (Library UI, CUEditor, brainmap-index, or
+        // expanding a project in the sidebar) — `user_upload` is correct for all of them today.
+        // `email_ingest.rs` is the one caller that builds its own Node directly and sets
+        // `auto_captured` itself; a future web-fetch/plugin-bundle ingest path would set its own
+        // tier the same way (retrieve_guarantee.md item 10).
+        attrs: serde_json::json!({ "sha256": doc.sha256, "source_path": doc.source_path, "provenance": "user_upload" }),
         confidence: axonmind_core::Confidence::RULE,
         created_at: now,
         updated_at: now,
@@ -147,6 +153,7 @@ fn summarize_mutations(mutations: &[GraphMutation]) -> IngestSummary {
 fn doc_units_from_parsed(
     index: &crate::structure::ParsedDocumentIndex,
     doc_sha256: &str,
+    provenance: &str,
 ) -> Vec<DocUnitRecord> {
     index
         .units
@@ -175,6 +182,7 @@ fn doc_units_from_parsed(
             confidence: unit.confidence,
             doc_sha256: doc_sha256.to_string(),
             locators: unit.locators.clone(),
+            provenance: provenance.to_string(),
         })
         .collect()
 }
@@ -217,12 +225,44 @@ fn snippet(text: &str, max_chars: usize) -> String {
     snippet
 }
 
-/// Builds a citation-safe `DocumentSearchResult` for a unit found by one of `document_search`'s
-/// three lookup paths (BM25/rerank, cross-reference expansion, locator fast-path) — same fields,
-/// only `score_source` differs by caller.
+/// Trust tier a document's provenance was captured at, most-trusted first. Ordering backs the
+/// `min_citation_provenance` gate (retrieve_guarantee.md item 10): a document below a corpus's
+/// declared floor degrades to `citation_safe: false`, same contract as an unclaimed document
+/// (no structure-package match) already used. `Unknown` — the backfill default for pre-item-10
+/// data whose origin can't be determined — ranks last, below every named tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ProvenanceTier {
+    UserUpload,
+    PluginBundle,
+    WebFetched,
+    AutoCaptured,
+    Unknown,
+}
+
+impl ProvenanceTier {
+    fn parse(value: &str) -> Self {
+        match value {
+            "user_upload" => Self::UserUpload,
+            "plugin_bundle" => Self::PluginBundle,
+            "web_fetched" => Self::WebFetched,
+            "auto_captured" => Self::AutoCaptured,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Builds a `DocumentSearchResult` for a unit found by one of `document_search`'s three lookup
+/// paths (BM25/rerank, cross-reference expansion, locator fast-path) — same fields, only
+/// `score_source` differs by caller. `citation_safe` is gated on the unit's provenance meeting
+/// `min_provenance` (the scoped corpus's `min_citation_provenance`, default `user_upload` — see
+/// `min_citation_provenance_for_scope`), on top of the existing "was this backed by a real
+/// structure-package parse" contract this function has always enforced by construction (a caller
+/// only reaches this function with a real `DocUnitRecord` — the no-match fallback path builds its
+/// own `DocumentSearchResult` with `citation_safe: false` directly, unchanged by this item).
 fn document_search_result(
     unit: &crate::store::DocUnitRecord,
     score_source: &str,
+    min_provenance: ProvenanceTier,
 ) -> DocumentSearchResult {
     DocumentSearchResult {
         doc_id: unit.doc_node_id.clone(),
@@ -233,7 +273,7 @@ fn document_search_result(
         title: unit_display_title(unit),
         snippet: snippet(&unit.text, 320),
         score_source: score_source.to_string(),
-        citation_safe: true,
+        citation_safe: ProvenanceTier::parse(&unit.provenance) <= min_provenance,
         doc_sha256: unit.doc_sha256.clone(),
         package_name: unit.package_name.clone(),
         package_version: unit.profile_version,
@@ -319,6 +359,39 @@ fn term_maps_for_scope<'a>(
         .filter_map(|pkg| pkg.corpus.as_ref())
         .flat_map(|corpus| corpus.term_maps.iter())
         .collect()
+}
+
+/// Strictest `min_citation_provenance` declared by any installed package whose `corpus.toml`
+/// binds documents into any of `scoped_identities`' corpus tags — same package-scoping rule as
+/// `ref_rules_for_scope`/`term_maps_for_scope`. No scope, and no declaring package, both mean the
+/// item-10 default applies: `user_upload`.
+fn min_citation_provenance_for_scope(
+    installed_packages: &[StructurePackage],
+    scoped_identities: &[DocumentIdentityRecord],
+) -> ProvenanceTier {
+    let corpora: std::collections::HashSet<&str> = scoped_identities
+        .iter()
+        .flat_map(|identity| identity.corpus.iter().map(String::as_str))
+        .collect();
+    if corpora.is_empty() {
+        return ProvenanceTier::UserUpload;
+    }
+    installed_packages
+        .iter()
+        .filter(|pkg| {
+            pkg.corpus.as_ref().is_some_and(|corpus| {
+                corpus
+                    .binds
+                    .iter()
+                    .any(|bind| bind.corpus.iter().any(|tag| corpora.contains(tag.as_str())))
+            })
+        })
+        .filter_map(|pkg| pkg.corpus.as_ref())
+        .filter_map(|corpus| corpus.corpus.as_ref())
+        .filter_map(|meta| meta.min_citation_provenance.as_deref())
+        .map(ProvenanceTier::parse)
+        .min()
+        .unwrap_or(ProvenanceTier::UserUpload)
 }
 
 /// A `term_map` only helps when its `to_lang` is actually present in scope, and — the guard the
@@ -601,8 +674,15 @@ impl AxonMindEngine {
         recursive: bool,
     ) -> Result<Vec<QueuedFile>, AxonMindError> {
         let mut files = Vec::new();
-        let mut stack: Vec<std::path::PathBuf> =
-            paths.iter().map(std::path::PathBuf::from).collect();
+        let mut stack: Vec<std::path::PathBuf> = Vec::new();
+        for p in paths {
+            let path = std::path::PathBuf::from(p);
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.starts_with('.') {
+                continue;
+            }
+            stack.push(path);
+        }
         while let Some(path) = stack.pop() {
             let meta = tokio::fs::metadata(&path)
                 .await
@@ -1502,6 +1582,18 @@ impl AxonMindEngine {
         sha256: &str,
         summary: &mut IngestSummary,
     ) {
+        // Read back the node just persisted (by the caller, moments earlier) rather than
+        // threading its attrs through every `run_pageindex` call site — mirrors how
+        // `ensure_document_grounding` already re-fetches the node to read sha256/source_path.
+        let provenance = match self.store.fetch_node(doc_node_id).await {
+            Ok(Some(node)) => node
+                .attrs
+                .get("provenance")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            _ => "unknown".to_string(),
+        };
         let markdown = render_markdown(doc);
         if let Err(e) = self.store.upsert_document_markdown(sha256, &markdown).await {
             summary.errors.push(format!("document_markdown cache: {e}"));
@@ -1548,7 +1640,7 @@ impl AxonMindEngine {
                                 .store
                                 .replace_doc_units(
                                     &doc_node_id.0,
-                                    &doc_units_from_parsed(&parsed, sha256),
+                                    &doc_units_from_parsed(&parsed, sha256, &provenance),
                                     &parsed.refs,
                                 )
                                 .await
@@ -2067,10 +2159,15 @@ impl AxonMindEngine {
                         &markdown,
                     )? {
                         parsed.tree.sha256 = current_sha256.clone();
+                        let provenance = node
+                            .attrs
+                            .get("provenance")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
                         self.store
                             .replace_doc_units(
                                 &node.id.0,
-                                &doc_units_from_parsed(&parsed, &current_sha256),
+                                &doc_units_from_parsed(&parsed, &current_sha256, provenance),
                                 &parsed.refs,
                             )
                             .await?;
@@ -2734,6 +2831,8 @@ impl AxonMindEngine {
         }
 
         let installed_packages = self.store.load_structure_packages().await?;
+        let min_provenance =
+            min_citation_provenance_for_scope(&installed_packages, &scoped_identities);
         let preferred_doc_ids = scoped_identities
             .iter()
             .filter(|identity| query_names_identity(&query, identity))
@@ -2778,8 +2877,11 @@ impl AxonMindEngine {
                             if !seen.insert((unit.doc_node_id.clone(), unit.label_norm.clone())) {
                                 continue;
                             }
-                            locator_results
-                                .push(document_search_result(&unit, "locator_fast_path"));
+                            locator_results.push(document_search_result(
+                                &unit,
+                                "locator_fast_path",
+                                min_provenance,
+                            ));
                         }
                     }
                 }
@@ -2846,6 +2948,7 @@ impl AxonMindEngine {
                     } else {
                         "bm25"
                     },
+                    min_provenance,
                 )
             } else {
                 if !seen.insert((section.doc_node_id.clone(), section.section_id.clone())) {
@@ -2971,7 +3074,11 @@ impl AxonMindEngine {
                     if !window_units.insert((unit.doc_node_id.clone(), unit.unit_id.clone())) {
                         continue;
                     }
-                    cross_reference_results.push(document_search_result(&unit, "cross_reference"));
+                    cross_reference_results.push(document_search_result(
+                        &unit,
+                        "cross_reference",
+                        min_provenance,
+                    ));
                     if cross_reference_results.len() >= budget {
                         break 'targets;
                     }
@@ -5658,5 +5765,70 @@ mod tests {
                 .iter()
                 .any(|g| g.code == "temporal_scope_partial")
         );
+    }
+
+    fn provenance_unit(provenance: &str) -> crate::store::DocUnitRecord {
+        crate::store::DocUnitRecord {
+            unit_id: "unit.1".to_string(),
+            doc_node_id: "doc.test".to_string(),
+            parent_unit_id: None,
+            section_id: "section.1".to_string(),
+            unit_kind: "article".to_string(),
+            label: "1".to_string(),
+            label_norm: "art.1".to_string(),
+            title: None,
+            ordinal: 1,
+            level: 1,
+            text: "unit text".to_string(),
+            span_start: 0,
+            span_end: 9,
+            page_start: None,
+            page_end: None,
+            path: "1".to_string(),
+            citation: "Art. 1".to_string(),
+            package_name: "test-package".to_string(),
+            profile_name: "test-profile".to_string(),
+            profile_version: 1,
+            confidence: 1.0,
+            doc_sha256: "sha".to_string(),
+            locators: std::collections::BTreeMap::new(),
+            provenance: provenance.to_string(),
+        }
+    }
+
+    // retrieve_guarantee.md item 10 acceptance: "a session transcript ingested as a Document
+    // can never appear as a citation-safe hit." A unit backed by a real structure-package parse
+    // used to be unconditionally citation_safe:true regardless of where its source document
+    // came from — this is the regression test for the fix: below-bar provenance must degrade
+    // exactly like an unclaimed document already does, not just add an unenforced label.
+    #[test]
+    fn auto_captured_unit_is_not_citation_safe_against_the_default_user_upload_bar() {
+        let unit = provenance_unit("auto_captured");
+        let result = document_search_result(&unit, "bm25", ProvenanceTier::UserUpload);
+        assert!(!result.citation_safe);
+    }
+
+    #[test]
+    fn user_upload_unit_stays_citation_safe_against_the_default_bar() {
+        let unit = provenance_unit("user_upload");
+        let result = document_search_result(&unit, "bm25", ProvenanceTier::UserUpload);
+        assert!(result.citation_safe);
+    }
+
+    #[test]
+    fn a_package_can_declare_a_looser_bar_than_the_default() {
+        // A corpus that explicitly declares `min_citation_provenance = "auto_captured"` accepts
+        // everything at or above that tier — this is the opt-in escape hatch, not the default.
+        let unit = provenance_unit("auto_captured");
+        let result = document_search_result(&unit, "bm25", ProvenanceTier::AutoCaptured);
+        assert!(result.citation_safe);
+    }
+
+    #[test]
+    fn unrecognized_provenance_value_ranks_below_every_named_tier() {
+        // Backfilled/malformed data must fail closed, not silently pass as if it were trusted.
+        let unit = provenance_unit("");
+        let result = document_search_result(&unit, "bm25", ProvenanceTier::AutoCaptured);
+        assert!(!result.citation_safe);
     }
 }
