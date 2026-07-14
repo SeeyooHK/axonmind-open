@@ -1,0 +1,5 @@
+[profile]
+name = "generic-en"
+version = 1
+description = "Minimal profile for term_map query-expansion tests (no structural units needed)"
+language = ["en"]

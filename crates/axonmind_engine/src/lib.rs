@@ -46,7 +46,8 @@ use crate::store::{
 };
 use crate::structure::{
     EvalCaseResult, EvalOutcome, IdentityMatch, InstallReport, PackageEvalReport, PackageInfo,
-    StructurePackage, StructureUnitRef, eval_case_result, extract_ref_mentions, identity_matches,
+    StructurePackage, StructureUnitRef, TermMapBinding, eval_case_result, extract_ref_mentions,
+    identity_matches,
 };
 
 /// Max number of existing concept-node names passed to the LLM entity extractor as the
@@ -289,6 +290,90 @@ fn ref_rules_for_scope(
         })
         .flat_map(|pkg| pkg.profiles.iter().flat_map(|profile| profile.refs.clone()))
         .collect()
+}
+
+/// Union of `[[term_map]]` bindings from installed packages whose `corpus.toml` binds documents
+/// into any of `scoped_identities`' corpus tags — same package-scoping rule as
+/// `ref_rules_for_scope` (docs/retrieve_guarantee.md, WIP 2026-07-15 item 4).
+fn term_maps_for_scope<'a>(
+    installed_packages: &'a [StructurePackage],
+    scoped_identities: &[DocumentIdentityRecord],
+) -> Vec<&'a TermMapBinding> {
+    let corpora: std::collections::HashSet<&str> = scoped_identities
+        .iter()
+        .flat_map(|identity| identity.corpus.iter().map(String::as_str))
+        .collect();
+    if corpora.is_empty() {
+        return Vec::new();
+    }
+    installed_packages
+        .iter()
+        .filter(|pkg| {
+            pkg.corpus.as_ref().is_some_and(|corpus| {
+                corpus
+                    .binds
+                    .iter()
+                    .any(|bind| bind.corpus.iter().any(|tag| corpora.contains(tag.as_str())))
+            })
+        })
+        .filter_map(|pkg| pkg.corpus.as_ref())
+        .flat_map(|corpus| corpus.term_maps.iter())
+        .collect()
+}
+
+/// A `term_map` only helps when its `to_lang` is actually present in scope, and — the guard the
+/// removed `italian_query_expansions` lacked — must stay silent whenever the query already names
+/// a specific instrument (`preferred_doc_ids`, via `query_names_identity`) written in a different
+/// language than `to_lang`. `italian_query_expansions` expanded unconditionally whenever *any*
+/// scoped document was Italian, which flooded the BM25 shortlist and starved out the correct
+/// non-Italian result even when the query named that result by title (docs/retrieve_guarantee.md,
+/// 2026-07-13 session). Naming a specific instrument means the query doesn't need translated
+/// terms to find it; injecting them anyway just adds noise that competes with the direct hit.
+fn term_map_applies(
+    term_map: &TermMapBinding,
+    scoped_identities: &[DocumentIdentityRecord],
+    preferred_doc_ids: &HashSet<String>,
+) -> bool {
+    let target_in_scope = scoped_identities
+        .iter()
+        .any(|identity| identity.language.as_deref() == Some(term_map.to_lang.as_str()));
+    if !target_in_scope {
+        return false;
+    }
+    if preferred_doc_ids.is_empty() {
+        return true;
+    }
+    scoped_identities
+        .iter()
+        .filter(|identity| preferred_doc_ids.contains(&identity.doc_node_id))
+        .any(|identity| identity.language.as_deref() == Some(term_map.to_lang.as_str()))
+}
+
+/// Appends target-language terms from applicable `term_map`s whenever `query` mentions their
+/// `from_lang` source term — e.g. an English "controller" query can lexically reach an
+/// Italian-only document's "titolare" via BM25, which has no stemming or translation of its own.
+/// Package-declared replacement for the removed `italian_query_expansions` (docs/retrieve_guarantee.md,
+/// WIP 2026-07-15 item 4): same substring-match mechanics, but data-driven via `corpus.toml`
+/// instead of hardcoded, and gated by `term_map_applies` instead of firing unconditionally.
+fn expand_query_with_term_maps(
+    query: &str,
+    term_maps: &[&TermMapBinding],
+    scoped_identities: &[DocumentIdentityRecord],
+    preferred_doc_ids: &HashSet<String>,
+) -> String {
+    let lower = query.to_lowercase();
+    let expansions: Vec<&str> = term_maps
+        .iter()
+        .filter(|term_map| term_map_applies(term_map, scoped_identities, preferred_doc_ids))
+        .flat_map(|term_map| term_map.terms.iter())
+        .filter(|(from_term, _)| lower.contains(&from_term.to_lowercase()))
+        .map(|(_, to_term)| to_term.as_str())
+        .collect();
+    if expansions.is_empty() {
+        query.to_string()
+    } else {
+        format!("{query} {}", expansions.join(" "))
+    }
 }
 
 impl AxonMindEngine {
@@ -2701,9 +2786,20 @@ impl AxonMindEngine {
             }
         }
 
+        let term_maps = term_maps_for_scope(&installed_packages, &scoped_identities);
+        let expanded_query = if term_maps.is_empty() {
+            query.clone()
+        } else {
+            expand_query_with_term_maps(
+                &query,
+                &term_maps,
+                &scoped_identities,
+                &preferred_doc_ids,
+            )
+        };
         let reasoning = self
             .reasoning_search(ReasoningSearchInput {
-                query: query.clone(),
+                query: expanded_query,
                 doc_node_ids: if scope.is_empty() {
                     None
                 } else {

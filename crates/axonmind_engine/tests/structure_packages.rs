@@ -1375,3 +1375,139 @@ Tasks of the Board\n\
         art68.text
     );
 }
+
+/// docs/retrieve_guarantee.md WIP 2026-07-15 item 4: `corpus.toml`'s `[[term_map]]` must expand
+/// an English query into a scoped Spanish document's own vocabulary (`controller` -> `responsable`,
+/// the only word the Spanish doc shares with the query once expanded) so BM25 -- which has no
+/// stemming or translation of its own -- can reach it at all. The Spanish doc's content contains
+/// no English tokens, so it is unreachable by this query unless expansion actually fires.
+#[tokio::test]
+async fn term_map_expands_query_into_scoped_document_language() {
+    let temp = TempDir::new().expect("tempdir");
+    let cfg = test_engine_config(&temp);
+    let engine = AxonMindEngine::open(cfg).await.expect("engine");
+    let package_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/term_map_corpus");
+    engine
+        .install_structure_package_from_dir(&package_dir, "standalone")
+        .await
+        .expect("install term-map-corpus package");
+
+    let doc_dir = TempDir::new().expect("doc tempdir");
+    let en_path = doc_dir.path().join("handbook-en.md");
+    std::fs::write(
+        &en_path,
+        "# Acme Ops Handbook EN\n\n\
+The controller reviews daily reports before they reach the regional office.\n",
+    )
+    .expect("write EN doc");
+    let en_doc = engine
+        .ingest_file_with_content(&en_path)
+        .await
+        .expect("ingest EN doc");
+
+    let es_path = doc_dir.path().join("manual-es.md");
+    std::fs::write(
+        &es_path,
+        "# Manual de Operaciones\n\n\
+El responsable revisa los informes diarios antes de enviarlos a la oficina regional.\n",
+    )
+    .expect("write ES doc");
+    let es_doc = engine
+        .ingest_file_with_content(&es_path)
+        .await
+        .expect("ingest ES doc");
+
+    let output = engine
+        .document_search(DocumentSearchInput {
+            query: "controller".to_string(),
+            doc_ids: None,
+            corpus: Some("ops".to_string()),
+            unit_types: None,
+            top_k: Some(4),
+        })
+        .await
+        .expect("document_search failed");
+
+    assert!(
+        output.results.iter().any(|r| r.doc_id == en_doc.doc_id),
+        "the EN doc must still be found directly on its own 'controller' text; results: {:?}",
+        output.results
+    );
+    assert!(
+        output.results.iter().any(|r| r.doc_id == es_doc.doc_id),
+        "the ES doc shares no English tokens with the query -- it is only reachable via the \
+         term_map's controller -> responsable expansion; results: {:?}",
+        output.results
+    );
+}
+
+/// Companion negative case for the same item 4: once the query names a *specific* instrument
+/// (`query_names_identity` -> `preferred_doc_ids`) written in a language the term_map doesn't
+/// target, expansion must stay silent -- this is the exact failure shape the removed
+/// `italian_query_expansions` had (it fired on any scoped Italian doc regardless of which
+/// document the query actually named), rebuilt here in package-declared clothing to prove the
+/// new code doesn't repeat it.
+#[tokio::test]
+async fn term_map_does_not_expand_when_query_names_a_different_language_instrument() {
+    let temp = TempDir::new().expect("tempdir");
+    let cfg = test_engine_config(&temp);
+    let engine = AxonMindEngine::open(cfg).await.expect("engine");
+    let package_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/term_map_corpus");
+    engine
+        .install_structure_package_from_dir(&package_dir, "standalone")
+        .await
+        .expect("install term-map-corpus package");
+
+    let doc_dir = TempDir::new().expect("doc tempdir");
+    let en_path = doc_dir.path().join("handbook-en.md");
+    std::fs::write(
+        &en_path,
+        "# Acme Ops Handbook EN\n\n\
+The controller reviews daily reports before they reach the regional office.\n",
+    )
+    .expect("write EN doc");
+    let en_doc = engine
+        .ingest_file_with_content(&en_path)
+        .await
+        .expect("ingest EN doc");
+
+    let es_path = doc_dir.path().join("manual-es.md");
+    std::fs::write(
+        &es_path,
+        "# Manual de Operaciones\n\n\
+El responsable revisa los informes diarios antes de enviarlos a la oficina regional.\n",
+    )
+    .expect("write ES doc");
+    let es_doc = engine
+        .ingest_file_with_content(&es_path)
+        .await
+        .expect("ingest ES doc");
+
+    // Names the EN doc by its canonical title -- `query_names_identity` resolves
+    // `preferred_doc_ids` to the EN doc, whose language ("en") doesn't match the term_map's
+    // `to_lang` ("es"), so the term_map must not fire.
+    let output = engine
+        .document_search(DocumentSearchInput {
+            query: "Acme Ops Handbook EN controller duties".to_string(),
+            doc_ids: None,
+            corpus: Some("ops".to_string()),
+            unit_types: None,
+            top_k: Some(4),
+        })
+        .await
+        .expect("document_search failed");
+
+    assert!(
+        output.results.iter().any(|r| r.doc_id == en_doc.doc_id),
+        "the named EN doc must still be found; results: {:?}",
+        output.results
+    );
+    assert!(
+        !output.results.iter().any(|r| r.doc_id == es_doc.doc_id),
+        "the query named the EN instrument specifically; the term_map must not have fired and \
+         pulled in the ES doc, which shares no tokens with the unexpanded query; results: {:?}",
+        output.results
+    );
+}

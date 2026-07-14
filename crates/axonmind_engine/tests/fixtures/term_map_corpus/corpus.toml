@@ -1,0 +1,17 @@
+[corpus]
+name = "term-map-ops"
+
+[[bind]]
+match = { instrument_type = "handbook-en" }
+corpus = ["ops"]
+domain = ["operations"]
+
+[[bind]]
+match = { instrument_type = "handbook-es" }
+corpus = ["ops"]
+domain = ["operations"]
+
+[[term_map]]
+from_lang = "en"
+to_lang = "es"
+terms = { "controller" = "responsable" }

@@ -1,0 +1,4 @@
+[package]
+name = "term-map-corpus"
+version = 1
+description = "Synthetic package used to test corpus.toml [[term_map]] query expansion (no real-world domain)"

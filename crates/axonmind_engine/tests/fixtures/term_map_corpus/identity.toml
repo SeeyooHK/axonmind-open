@@ -1,0 +1,17 @@
+[[rule]]
+sources = ["filename", "raw_title", "first_chars:12000"]
+match = '(?i)acme\s+ops\s+handbook\s+en'
+canonical_title = "Acme Ops Handbook (EN)"
+aliases = ["Ops Handbook EN"]
+profile = "generic-en"
+confidence = 0.9
+set = { instrument_type = "handbook-en", jurisdiction = [], language = "en" }
+
+[[rule]]
+sources = ["filename", "raw_title", "first_chars:12000"]
+match = '(?i)manual\s+de\s+operaciones'
+canonical_title = "Manual de Operaciones"
+aliases = ["Manual Ops ES"]
+profile = "generic-en"
+confidence = 0.9
+set = { instrument_type = "handbook-es", jurisdiction = [], language = "es" }

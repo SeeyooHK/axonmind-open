@@ -9,7 +9,7 @@ pub use identity::{DerivedIdentity, derive_identity, identity_matches};
 pub use model::{
     CaptureSelector, CorpusBinding, CorpusFile, EvalCase, EvalsFile, IdentityMatch, IdentityRule,
     IdentityRulesFile, PackageManifest, ProfileDefinition, StructurePackage, StructureUnit,
-    StructureUnitRef, XrefBinding,
+    StructureUnitRef, TermMapBinding, XrefBinding,
 };
 pub use parse::{ParsedDocumentIndex, ParsedUnit, RefMention, extract_ref_mentions, parse_document};
 pub use registry::{InstallReport, PackageInfo};
