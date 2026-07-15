@@ -131,6 +131,9 @@ mod tests {
             doc_sha256: "sha".to_string(),
             package_name: "legal-eu-privacy".to_string(),
             package_version: 9,
+            status: "unknown".to_string(),
+            as_of: None,
+            superseded_by: None,
         }
     }
 

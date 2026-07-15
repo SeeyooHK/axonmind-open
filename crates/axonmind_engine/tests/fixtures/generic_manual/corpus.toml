@@ -1,11 +1,15 @@
 [corpus]
 name = "acme-ops"
+review_by = "2020-06-01"
 
 [[bind]]
 match = { canonical_title = 'Acme Operations Handbook, Edition 3' }
 aliases = ["The Handbook", "Ops Manual"]
 corpus = ["acme-ops"]
 domain = ["operations"]
+status = "superseded"
+as_of = "2020-01-01"
+superseded_by = "Acme Operations Handbook, Edition 4"
 
 [[bind]]
 match = { canonical_title = 'Acme Checklist No\. 7' }

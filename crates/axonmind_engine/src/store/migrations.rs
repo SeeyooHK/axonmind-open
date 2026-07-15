@@ -26,6 +26,8 @@ const MIGRATION_013: &str =
 const MIGRATION_014: &str =
     include_str!("../../../../migrations/014_doc_units_staleness_key.sql");
 const MIGRATION_015: &str = include_str!("../../../../migrations/015_doc_units_provenance.sql");
+const MIGRATION_016: &str =
+    include_str!("../../../../migrations/016_document_identity_currency.sql");
 
 pub fn run_migrations(conn: &Connection) -> Result<(), AxonMindError> {
     conn.execute_batch(MIGRATION_001)
@@ -106,6 +108,11 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AxonMindError> {
     if max_version < 15 {
         conn.execute_batch(MIGRATION_015)
             .map_err(|e| AxonMindError::Database(format!("migration 015 failed: {e}")))?;
+    }
+
+    if max_version < 16 {
+        conn.execute_batch(MIGRATION_016)
+            .map_err(|e| AxonMindError::Database(format!("migration 016 failed: {e}")))?;
     }
 
     Ok(())

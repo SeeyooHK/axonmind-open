@@ -165,6 +165,17 @@ pub struct CorpusMeta {
     /// `ProvenanceTier`. `None` means the item-10 default, `user_upload`, applies.
     #[serde(default)]
     pub min_citation_provenance: Option<String>,
+    /// Currency review deadline for this corpus (retrieve_guarantee.md item 11) — a free-form
+    /// package-declared date string (e.g. `"2026-12-31"`), surfaced by the Library review UI as
+    /// "currency review overdue" once passed. `None` means no review cadence is declared.
+    #[serde(default)]
+    pub review_by: Option<String>,
+    /// When `true`, a unit whose document `status` is `superseded` is excluded outright
+    /// (`citation_safe: false`, same gate `min_citation_provenance` already uses) instead of the
+    /// default behavior of staying citable with an explicit warning in the rider. `None`/`false`
+    /// keeps today's behavior.
+    #[serde(default)]
+    pub exclude_superseded: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +188,18 @@ pub struct CorpusBinding {
     pub corpus: Vec<String>,
     #[serde(default)]
     pub domain: Vec<String>,
+    /// Currency status this bind declares for the matched instrument (`in_force` | `amended` |
+    /// `superseded` | `unknown`) — retrieve_guarantee.md item 11. `None` leaves the document's
+    /// existing status (default `unknown`) untouched.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Date `status` was declared true as-of, package-declared verbatim.
+    #[serde(default)]
+    pub as_of: Option<String>,
+    /// Declared replacement instrument, stored and rendered as the package-declared title string
+    /// verbatim — never resolved to an `IdentityMatch` at render time.
+    #[serde(default)]
+    pub superseded_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

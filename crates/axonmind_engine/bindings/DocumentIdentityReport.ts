@@ -12,4 +12,9 @@ export type DocumentIdentityReport = { doc_node_id: string, source_filename: str
  * `web_fetched` | `auto_captured` | `unknown`) — `None` when the document has no
  * `doc_units` yet (retrieve_guarantee.md item 10).
  */
-provenance: string | null, };
+provenance: string | null, 
+/**
+ * Currency status (`in_force` | `amended` | `superseded` | `unknown`) — package-declared,
+ * `unknown` is the silent default (retrieve_guarantee.md item 11).
+ */
+status: string, as_of: string | null, superseded_by: string | null, };

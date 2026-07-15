@@ -47,6 +47,9 @@ pub fn derive_identity(
         reviewed_at: None,
         updated_at: chrono::Utc::now().timestamp(),
         pinned_profile: None,
+        status: "unknown".to_string(),
+        as_of: None,
+        superseded_by: None,
         aliases: vec![DocumentAliasRecord {
             alias: source_filename.clone(),
             alias_norm: normalize_alias(&source_filename),
@@ -156,6 +159,9 @@ fn apply_rule(
                 reviewed_at: None,
                 updated_at: chrono::Utc::now().timestamp(),
                 pinned_profile: None,
+                status: "unknown".to_string(),
+                as_of: None,
+                superseded_by: None,
                 aliases,
             },
             source_specificity(source),
@@ -224,6 +230,15 @@ fn apply_corpus_bindings(identity: &mut DocumentIdentityRecord, bindings: &[Corp
         }
         merge_unique(&mut identity.corpus, &binding.corpus);
         merge_unique(&mut identity.domain, &binding.domain);
+        if let Some(status) = binding.status.as_ref() {
+            identity.status = status.clone();
+        }
+        if binding.as_of.is_some() {
+            identity.as_of = binding.as_of.clone();
+        }
+        if binding.superseded_by.is_some() {
+            identity.superseded_by = binding.superseded_by.clone();
+        }
     }
 }
 
@@ -353,6 +368,54 @@ mod tests {
             "expected the document's own title to win, got: {:?}",
             derived.identity.canonical_title
         );
+    }
+
+    /// A corpus binding's declared `status`/`as_of`/`superseded_by` (retrieve_guarantee.md item 11)
+    /// must land on the derived identity — this is the whole mechanism the item's acceptance
+    /// criterion depends on ("mark an instrument superseded in package vN+1 → its hits carry the
+    /// warning"). The fallback rule-derived identity itself defaults to `status: "unknown"`
+    /// (asserted in `derives_handbook_identity_from_opening_text`); `apply_corpus_bindings` is
+    /// what overwrites it once the `[[bind]]` in `tests/fixtures/generic_manual/corpus.toml`
+    /// matches this document's canonical title.
+    #[test]
+    fn corpus_binding_writes_currency_status_onto_identity() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic_manual");
+        let pkg = crate::structure::model::StructurePackage::from_dir(&dir).expect("package");
+        let derived = derive_identity(
+            "doc.handbook",
+            Some("Untitled"),
+            Some("Acme_Operations_Handbook_Ed3.pdf"),
+            Some("ACME OPERATIONS HANDBOOK, EDITION 3"),
+            &[pkg],
+            None,
+        );
+        assert_eq!(derived.identity.status, "superseded");
+        assert_eq!(derived.identity.as_of.as_deref(), Some("2020-01-01"));
+        assert_eq!(
+            derived.identity.superseded_by.as_deref(),
+            Some("Acme Operations Handbook, Edition 4")
+        );
+    }
+
+    /// A document whose identity doesn't match any `[[bind]]` (this package's checklist fixture
+    /// has no bind declaring currency fields) must keep the silent `"unknown"` default — the
+    /// item's own acceptance criterion: "a package with no declarations behaves exactly as
+    /// today".
+    #[test]
+    fn unbound_document_keeps_unknown_status_default() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic_manual");
+        let pkg = crate::structure::model::StructurePackage::from_dir(&dir).expect("package");
+        let derived = derive_identity(
+            "doc.checklist",
+            Some("Acme Checklist No. 7"),
+            None,
+            None,
+            &[pkg],
+            None,
+        );
+        assert_eq!(derived.identity.status, "unknown");
+        assert_eq!(derived.identity.as_of, None);
+        assert_eq!(derived.identity.superseded_by, None);
     }
 
     /// An explicit `pinned_profile` must override best-match-by-confidence, not just tiebreak it.

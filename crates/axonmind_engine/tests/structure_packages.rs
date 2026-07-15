@@ -32,6 +32,100 @@ async fn installs_and_lists_structure_package() {
     assert_eq!(packages[0].sources, vec!["standalone".to_string()]);
 }
 
+/// retrieve_guarantee.md item 11 acceptance: "mark an instrument superseded in package vN+1 →
+/// after retro-apply its hits carry the warning [...] in evidence record[...]". This proves the
+/// full chain end-to-end at the axonmind half: `corpus.toml`'s `[[bind]]` (the `generic_manual`
+/// fixture declares `status = "superseded"` on the handbook bind) → `apply_corpus_bindings` →
+/// `document_identity` → `document_search_result` → `DocumentSearchResult`, the exact struct the
+/// soverex-side evidence record serializes verbatim. (The rider-warning half — that
+/// `render_entry` turns `status: "superseded"` into a warning line — is covered separately by
+/// `render_entry_warns_when_status_is_superseded` in
+/// `crates/soverex_engine/src/acp/grounding_preretrieval.rs`, which takes exactly the
+/// `DocumentSearchResult` shape this test proves `document_search` actually produces.)
+#[tokio::test]
+async fn superseded_bind_status_propagates_to_document_search_hits() {
+    let temp = TempDir::new().expect("tempdir");
+    let cfg = test_engine_config(&temp);
+    let engine = AxonMindEngine::open(cfg).await.expect("engine");
+    let package_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic_manual");
+    engine
+        .install_structure_package_from_dir(&package_dir, "standalone")
+        .await
+        .expect("install");
+
+    let doc_dir = TempDir::new().expect("doc tempdir");
+    let doc_path = doc_dir.path().join("handbook.md");
+    std::fs::write(
+        &doc_path,
+        "Acme Operations Handbook, Edition 3\n\n## Chapter 1\n\nDo the thing safely.\n",
+    )
+    .expect("write doc");
+    let ingested = engine
+        .ingest_file_with_content(&doc_path)
+        .await
+        .expect("ingest failed");
+
+    let output = engine
+        .document_search(DocumentSearchInput {
+            query: "safely".to_string(),
+            doc_ids: Some(vec![ingested.doc_id.clone()]),
+            corpus: None,
+            unit_types: None,
+            top_k: Some(5),
+        })
+        .await
+        .expect("document_search failed");
+
+    let hit = output
+        .results
+        .iter()
+        .find(|r| r.doc_id == ingested.doc_id)
+        .expect("expected a hit for the ingested handbook document");
+    assert_eq!(hit.status, "superseded");
+    assert_eq!(hit.as_of.as_deref(), Some("2020-01-01"));
+    assert_eq!(
+        hit.superseded_by.as_deref(),
+        Some("Acme Operations Handbook, Edition 4")
+    );
+    // Default policy (no `exclude_superseded` declared): stays citable, warning-only.
+    assert!(hit.citation_safe);
+}
+
+/// retrieve_guarantee.md item 11 acceptance: "an overdue corpus shows in the UI." The
+/// `generic_manual` fixture declares `[corpus] review_by = "2020-06-01"`, long past — reads live
+/// from the installed package, no DB row involved (same shape as `min_citation_provenance`).
+#[tokio::test]
+async fn corpus_past_its_review_by_date_is_flagged_overdue() {
+    let temp = TempDir::new().expect("tempdir");
+    let cfg = test_engine_config(&temp);
+    let engine = AxonMindEngine::open(cfg).await.expect("engine");
+    let package_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic_manual");
+    engine
+        .install_structure_package_from_dir(&package_dir, "standalone")
+        .await
+        .expect("install");
+
+    let overdue = engine.list_overdue_corpora().await.expect("list overdue");
+    assert_eq!(overdue.len(), 1);
+    assert_eq!(overdue[0].corpus, "acme-ops");
+    assert_eq!(overdue[0].review_by, "2020-06-01");
+}
+
+/// A package with no `review_by` declaration must never appear in the overdue list — the item's
+/// own "no declarations behaves exactly as today" contract, applied to the review-cadence half of
+/// the spec.
+#[tokio::test]
+async fn corpus_with_no_review_by_declaration_is_never_overdue() {
+    let temp = TempDir::new().expect("tempdir");
+    let cfg = test_engine_config(&temp);
+    let engine = AxonMindEngine::open(cfg).await.expect("engine");
+
+    let overdue = engine.list_overdue_corpora().await.expect("list overdue");
+    assert!(overdue.is_empty());
+}
+
 /// Acceptance check for the step-5 cutover (docs/retrieve_guarantee.md item 1): a fresh
 /// axonmind install — zero structure packages ever installed — must not recognize a GDPR-looking
 /// document as GDPR. Before the cutover, `legal.rs::infer_document_identity` hardcoded literal

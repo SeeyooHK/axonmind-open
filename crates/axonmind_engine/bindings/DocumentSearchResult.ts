@@ -15,4 +15,16 @@ doc_sha256: string,
  * unit was parsed* (not necessarily the package's current version) — empty/0 when there is
  * no backing `doc_units` row.
  */
-package_name: string, package_version: bigint, };
+package_name: string, package_version: bigint, 
+/**
+ * Currency status of the hit's source document (`in_force` | `amended` | `superseded` |
+ * `unknown`) — package-declared, `unknown` is the silent default (retrieve_guarantee.md
+ * item 11). Callers (e.g. the pre-retrieval rider) render an explicit warning only when
+ * `superseded`.
+ */
+status: string, as_of: string | null, 
+/**
+ * Declared replacement instrument (package-declared title string, verbatim) — only
+ * meaningful when `status` is `superseded`.
+ */
+superseded_by: string | null, };

@@ -35,7 +35,7 @@ use crate::query::{
     DocumentSearchOutput, DocumentSearchResult, ExplainKpiInput, ExplainKpiOutput,
     FindConflictsInput, FindConflictsOutput, FocusKpiInput, FocusKpiOutput, GetEvidenceInput,
     GetEvidenceOutput, GraphDiff, GraphSearchInput, GraphSearchOutput, GraphStatsOutput,
-    ImpactRadiusInput, ImpactRadiusOutput, NodeKindCount, ReasoningSearchInput,
+    ImpactRadiusInput, ImpactRadiusOutput, NodeKindCount, OverdueCorpus, ReasoningSearchInput,
     ReasoningSearchOutput, ResolvedDocument, SuggestActionsInput, SuggestActionsOutput,
     TraceDecisionInput, TraceDecisionOutput, UnitLocator,
 };
@@ -259,11 +259,26 @@ impl ProvenanceTier {
 /// structure-package parse" contract this function has always enforced by construction (a caller
 /// only reaches this function with a real `DocUnitRecord` — the no-match fallback path builds its
 /// own `DocumentSearchResult` with `citation_safe: false` directly, unchanged by this item).
+///
+/// `identity` (retrieve_guarantee.md item 11) is the unit's source document's derived identity,
+/// when the caller has one on hand — `None` degrades to `status: "unknown"`, same silent-default
+/// contract as an identity row that was never claimed by a `[[bind]]`. When `exclude_superseded`
+/// is set and the identity's status is `superseded`, the hit is gated exactly like a
+/// below-floor-provenance hit (`citation_safe: false`) — same mechanism, same "can zero out a
+/// corpus's citation_safe hits" caveat as the provenance gate above it.
 fn document_search_result(
     unit: &crate::store::DocUnitRecord,
     score_source: &str,
     min_provenance: ProvenanceTier,
+    identity: Option<&DocumentIdentityRecord>,
+    exclude_superseded: bool,
 ) -> DocumentSearchResult {
+    let status = identity
+        .map(|identity| identity.status.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let as_of = identity.and_then(|identity| identity.as_of.clone());
+    let superseded_by = identity.and_then(|identity| identity.superseded_by.clone());
+    let superseded_excluded = exclude_superseded && status == "superseded";
     DocumentSearchResult {
         doc_id: unit.doc_node_id.clone(),
         section_id: unit.section_id.clone(),
@@ -273,10 +288,14 @@ fn document_search_result(
         title: unit_display_title(unit),
         snippet: snippet(&unit.text, 320),
         score_source: score_source.to_string(),
-        citation_safe: ProvenanceTier::parse(&unit.provenance) <= min_provenance,
+        citation_safe: !superseded_excluded
+            && ProvenanceTier::parse(&unit.provenance) <= min_provenance,
         doc_sha256: unit.doc_sha256.clone(),
         package_name: unit.package_name.clone(),
         package_version: unit.profile_version,
+        status,
+        as_of,
+        superseded_by,
     }
 }
 
@@ -392,6 +411,38 @@ fn min_citation_provenance_for_scope(
         .map(ProvenanceTier::parse)
         .min()
         .unwrap_or(ProvenanceTier::UserUpload)
+}
+
+/// Whether any installed package whose `corpus.toml` binds documents into any of
+/// `scoped_identities`' corpus tags declares `exclude_superseded = true` — same package-scoping
+/// rule as `min_citation_provenance_for_scope` (retrieve_guarantee.md item 11). Deliberately
+/// fail-closed: `.any()`, not a "most permissive wins" reduction, so one package's stricter
+/// policy over a shared corpus can't be silently loosened by another. No scope, and no declaring
+/// package, both mean today's behavior: superseded documents stay citable with a rider warning.
+fn exclude_superseded_for_scope(
+    installed_packages: &[StructurePackage],
+    scoped_identities: &[DocumentIdentityRecord],
+) -> bool {
+    let corpora: std::collections::HashSet<&str> = scoped_identities
+        .iter()
+        .flat_map(|identity| identity.corpus.iter().map(String::as_str))
+        .collect();
+    if corpora.is_empty() {
+        return false;
+    }
+    installed_packages
+        .iter()
+        .filter(|pkg| {
+            pkg.corpus.as_ref().is_some_and(|corpus| {
+                corpus
+                    .binds
+                    .iter()
+                    .any(|bind| bind.corpus.iter().any(|tag| corpora.contains(tag.as_str())))
+            })
+        })
+        .filter_map(|pkg| pkg.corpus.as_ref())
+        .filter_map(|corpus| corpus.corpus.as_ref())
+        .any(|meta| meta.exclude_superseded.unwrap_or(false))
 }
 
 /// A `term_map` only helps when its `to_lang` is actually present in scope, and — the guard the
@@ -2011,6 +2062,30 @@ impl AxonMindEngine {
         self.store.load_structure_packages().await
     }
 
+    /// Corpora whose package-declared `[corpus] review_by` (retrieve_guarantee.md item 11) has
+    /// passed, read live from installed packages — same "never persisted to a queryable table"
+    /// shape as `min_citation_provenance_for_scope`, not a DB column. Powers the Library review
+    /// UI's "currency review overdue" flag.
+    pub async fn list_overdue_corpora(&self) -> Result<Vec<OverdueCorpus>, AxonMindError> {
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let packages = self.store.load_structure_packages().await?;
+        Ok(packages
+            .iter()
+            .filter_map(|pkg| {
+                let meta = pkg.corpus.as_ref()?.corpus.as_ref()?;
+                let review_by = meta.review_by.as_ref()?;
+                if review_by.as_str() >= today.as_str() {
+                    return None;
+                }
+                Some(OverdueCorpus {
+                    corpus: meta.name.clone(),
+                    package_name: pkg.manifest.package.name.clone(),
+                    review_by: review_by.clone(),
+                })
+            })
+            .collect())
+    }
+
     /// Distinct corpus names a package's `[[bind]]` rules resolve documents into. See
     /// `GraphStore::structure_package_corpora` for why this reads `corpus_bindings` directly
     /// rather than the package's `[corpus] name` (never persisted).
@@ -2885,6 +2960,12 @@ impl AxonMindEngine {
         let installed_packages = self.store.load_structure_packages().await?;
         let min_provenance =
             min_citation_provenance_for_scope(&installed_packages, &scoped_identities);
+        let exclude_superseded =
+            exclude_superseded_for_scope(&installed_packages, &scoped_identities);
+        let identity_by_doc: HashMap<String, DocumentIdentityRecord> = scoped_identities
+            .iter()
+            .map(|identity| (identity.doc_node_id.clone(), identity.clone()))
+            .collect();
         let preferred_doc_ids = scoped_identities
             .iter()
             .filter(|identity| query_names_identity(&query, identity))
@@ -2933,6 +3014,8 @@ impl AxonMindEngine {
                                 &unit,
                                 "locator_fast_path",
                                 min_provenance,
+                                identity_by_doc.get(&unit.doc_node_id),
+                                exclude_superseded,
                             ));
                         }
                     }
@@ -3001,11 +3084,14 @@ impl AxonMindEngine {
                         "bm25"
                     },
                     min_provenance,
+                    identity_by_doc.get(&unit.doc_node_id),
+                    exclude_superseded,
                 )
             } else {
                 if !seen.insert((section.doc_node_id.clone(), section.section_id.clone())) {
                     continue;
                 }
+                let identity = identity_by_doc.get(&section.doc_node_id);
                 DocumentSearchResult {
                     doc_id: section.doc_node_id.clone(),
                     section_id: section.section_id.clone(),
@@ -3026,6 +3112,11 @@ impl AxonMindEngine {
                     doc_sha256: String::new(),
                     package_name: String::new(),
                     package_version: 0,
+                    status: identity
+                        .map(|identity| identity.status.clone())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    as_of: identity.and_then(|identity| identity.as_of.clone()),
+                    superseded_by: identity.and_then(|identity| identity.superseded_by.clone()),
                 }
             };
             results.push(result);
@@ -3112,6 +3203,18 @@ impl AxonMindEngine {
             'targets: for ((target_doc_id, target_label_norm), _) in ranked_targets {
                 self.ensure_document_grounding(&NodeId(target_doc_id.clone()))
                     .await?;
+                // A cross-reference target may be outside the original search scope (that's the
+                // whole point of the expansion), so its identity isn't necessarily already in
+                // `identity_by_doc` — fetch and cache it here, same cache `resolve_xref_target_doc`
+                // already populates for this block (retrieve_guarantee.md item 11).
+                if !identity_cache.contains_key(&target_doc_id) {
+                    if let Some(identity) =
+                        self.store.fetch_document_identity(&target_doc_id).await?
+                    {
+                        identity_cache.insert(target_doc_id.clone(), identity);
+                    }
+                }
+                let target_identity = identity_cache.get(&target_doc_id);
                 let matches = self
                     .store
                     .fetch_doc_units_by_label_norm(&target_doc_id, &target_label_norm)
@@ -3130,6 +3233,8 @@ impl AxonMindEngine {
                         &unit,
                         "cross_reference",
                         min_provenance,
+                        target_identity,
+                        exclude_superseded,
                     ));
                     if cross_reference_results.len() >= budget {
                         break 'targets;
@@ -5856,14 +5961,14 @@ mod tests {
     #[test]
     fn auto_captured_unit_is_not_citation_safe_against_the_default_user_upload_bar() {
         let unit = provenance_unit("auto_captured");
-        let result = document_search_result(&unit, "bm25", ProvenanceTier::UserUpload);
+        let result = document_search_result(&unit, "bm25", ProvenanceTier::UserUpload, None, false);
         assert!(!result.citation_safe);
     }
 
     #[test]
     fn user_upload_unit_stays_citation_safe_against_the_default_bar() {
         let unit = provenance_unit("user_upload");
-        let result = document_search_result(&unit, "bm25", ProvenanceTier::UserUpload);
+        let result = document_search_result(&unit, "bm25", ProvenanceTier::UserUpload, None, false);
         assert!(result.citation_safe);
     }
 
@@ -5872,7 +5977,8 @@ mod tests {
         // A corpus that explicitly declares `min_citation_provenance = "auto_captured"` accepts
         // everything at or above that tier — this is the opt-in escape hatch, not the default.
         let unit = provenance_unit("auto_captured");
-        let result = document_search_result(&unit, "bm25", ProvenanceTier::AutoCaptured);
+        let result =
+            document_search_result(&unit, "bm25", ProvenanceTier::AutoCaptured, None, false);
         assert!(result.citation_safe);
     }
 
@@ -5880,7 +5986,120 @@ mod tests {
     fn unrecognized_provenance_value_ranks_below_every_named_tier() {
         // Backfilled/malformed data must fail closed, not silently pass as if it were trusted.
         let unit = provenance_unit("");
-        let result = document_search_result(&unit, "bm25", ProvenanceTier::AutoCaptured);
+        let result =
+            document_search_result(&unit, "bm25", ProvenanceTier::AutoCaptured, None, false);
         assert!(!result.citation_safe);
+    }
+
+    fn identity_with_status(status: &str) -> DocumentIdentityRecord {
+        DocumentIdentityRecord {
+            doc_node_id: "doc.test".to_string(),
+            source_filename: "test.pdf".to_string(),
+            source_path: None,
+            raw_title: None,
+            canonical_title: "Test Regulation".to_string(),
+            language: Some("en".to_string()),
+            jurisdiction: vec![],
+            domain: vec![],
+            instrument_type: Some("regulation".to_string()),
+            corpus: vec!["test-corpus".to_string()],
+            confidence: 0.9,
+            reviewed_at: None,
+            updated_at: 0,
+            pinned_profile: None,
+            status: status.to_string(),
+            as_of: Some("2020-01-01".to_string()),
+            superseded_by: Some("Test Regulation v2".to_string()),
+            aliases: vec![],
+        }
+    }
+
+    // retrieve_guarantee.md item 11 acceptance: currency status/as_of/superseded_by must survive
+    // onto the `DocumentSearchResult` the rider and evidence record are built from.
+    #[test]
+    fn document_search_result_carries_currency_fields_from_identity() {
+        let unit = provenance_unit("user_upload");
+        let identity = identity_with_status("superseded");
+        let result = document_search_result(
+            &unit,
+            "bm25",
+            ProvenanceTier::UserUpload,
+            Some(&identity),
+            false,
+        );
+        assert_eq!(result.status, "superseded");
+        assert_eq!(result.as_of.as_deref(), Some("2020-01-01"));
+        assert_eq!(result.superseded_by.as_deref(), Some("Test Regulation v2"));
+    }
+
+    // No identity on hand (e.g. the generic PageIndex fallback path) must degrade to the silent
+    // `"unknown"` default, not panic or fabricate a status.
+    #[test]
+    fn document_search_result_defaults_to_unknown_status_with_no_identity() {
+        let unit = provenance_unit("user_upload");
+        let result = document_search_result(&unit, "bm25", ProvenanceTier::UserUpload, None, false);
+        assert_eq!(result.status, "unknown");
+        assert_eq!(result.as_of, None);
+        assert_eq!(result.superseded_by, None);
+    }
+
+    // Default behavior (no package policy flag): a superseded document stays citable — the rider
+    // is responsible for the warning, not exclusion.
+    #[test]
+    fn superseded_unit_stays_citation_safe_by_default() {
+        let unit = provenance_unit("user_upload");
+        let identity = identity_with_status("superseded");
+        let result = document_search_result(
+            &unit,
+            "bm25",
+            ProvenanceTier::UserUpload,
+            Some(&identity),
+            false,
+        );
+        assert!(result.citation_safe);
+    }
+
+    // `exclude_superseded = true` (retrieve_guarantee.md item 11's package policy flag) gates
+    // `citation_safe` exactly like `min_citation_provenance` does — same mechanism, so it inherits
+    // the same "can zero out a corpus's citation_safe hits" strict-mode interaction.
+    #[test]
+    fn superseded_unit_is_not_citation_safe_when_exclude_superseded_policy_set() {
+        let unit = provenance_unit("user_upload");
+        let identity = identity_with_status("superseded");
+        let result = document_search_result(
+            &unit,
+            "bm25",
+            ProvenanceTier::UserUpload,
+            Some(&identity),
+            true,
+        );
+        assert!(!result.citation_safe);
+    }
+
+    // The exclusion policy must only ever catch `superseded` — `in_force`/`amended`/`unknown`
+    // documents stay citable regardless of the flag.
+    #[test]
+    fn exclude_superseded_policy_does_not_affect_non_superseded_status() {
+        let unit = provenance_unit("user_upload");
+        for status in ["in_force", "amended", "unknown"] {
+            let identity = identity_with_status(status);
+            let result = document_search_result(
+                &unit,
+                "bm25",
+                ProvenanceTier::UserUpload,
+                Some(&identity),
+                true,
+            );
+            assert!(
+                result.citation_safe,
+                "status {status} must stay citation_safe"
+            );
+        }
+    }
+
+    #[test]
+    fn exclude_superseded_for_scope_is_false_when_no_package_declares_it() {
+        let identity = identity_with_status("superseded");
+        assert!(!exclude_superseded_for_scope(&[], &[identity]));
     }
 }

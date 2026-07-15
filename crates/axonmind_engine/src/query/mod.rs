@@ -22,7 +22,8 @@ pub use conflicts::{ConflictPair, EdgeWithEvidence, FindConflictsInput, FindConf
 pub use document::{
     DocumentIdentityReport, DocumentQuoteInput, DocumentQuoteOutput, DocumentReadSectionInput,
     DocumentReadSectionOutput, DocumentResolveInput, DocumentResolveOutput, DocumentSearchInput,
-    DocumentSearchOutput, DocumentSearchResult, PageLocator, ResolvedDocument, UnitLocator,
+    DocumentSearchOutput, DocumentSearchResult, OverdueCorpus, PageLocator, ResolvedDocument,
+    UnitLocator,
 };
 pub use reasoning::{ReasoningSearchInput, ReasoningSearchOutput, RetrievedSection};
 

@@ -54,6 +54,25 @@ pub struct DocumentIdentityReport {
     /// `web_fetched` | `auto_captured` | `unknown`) — `None` when the document has no
     /// `doc_units` yet (retrieve_guarantee.md item 10).
     pub provenance: Option<String>,
+    /// Currency status (`in_force` | `amended` | `superseded` | `unknown`) — package-declared,
+    /// `unknown` is the silent default (retrieve_guarantee.md item 11).
+    pub status: String,
+    pub as_of: Option<String>,
+    pub superseded_by: Option<String>,
+}
+
+/// A corpus whose package-declared `review_by` (retrieve_guarantee.md item 11) has passed —
+/// powers the Library review UI's "currency review overdue" flag. Read live from installed
+/// packages at call time (`[corpus]` meta is never persisted to a queryable table, same reason
+/// `min_citation_provenance` isn't), not cached.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OverdueCorpus {
+    pub corpus: String,
+    pub package_name: String,
+    /// Package-declared verbatim (expected ISO-8601 `YYYY-MM-DD`; overdue is a lexicographic
+    /// string comparison against today, so a non-ISO value won't compare meaningfully).
+    pub review_by: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -102,6 +121,15 @@ pub struct DocumentSearchResult {
     /// no backing `doc_units` row.
     pub package_name: String,
     pub package_version: i64,
+    /// Currency status of the hit's source document (`in_force` | `amended` | `superseded` |
+    /// `unknown`) — package-declared, `unknown` is the silent default (retrieve_guarantee.md
+    /// item 11). Callers (e.g. the pre-retrieval rider) render an explicit warning only when
+    /// `superseded`.
+    pub status: String,
+    pub as_of: Option<String>,
+    /// Declared replacement instrument (package-declared title string, verbatim) — only
+    /// meaningful when `status` is `superseded`.
+    pub superseded_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

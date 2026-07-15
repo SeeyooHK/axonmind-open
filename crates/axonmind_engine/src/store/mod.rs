@@ -265,6 +265,17 @@ pub struct DocumentIdentityRecord {
     pub updated_at: i64,
     pub pinned_profile: Option<String>,
     pub aliases: Vec<DocumentAliasRecord>,
+    /// Currency status declared by a package's `[[bind]]` (`in_force` | `amended` | `superseded` |
+    /// `unknown`) — package-declared data only, never derived from code (retrieve_guarantee.md
+    /// item 11). `unknown` is the silent default: no warning is ever rendered for it.
+    pub status: String,
+    /// Date the declared `status` was true as-of, package-declared verbatim (no parsing/validation
+    /// beyond what the package author wrote).
+    pub as_of: Option<String>,
+    /// Declared replacement instrument, stored as the package-declared title string verbatim
+    /// (never resolved to an `IdentityMatch` at render time — simpler, and consistent with
+    /// "package-declared data, never code").
+    pub superseded_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1506,8 +1517,8 @@ impl GraphStore {
                 "INSERT INTO document_identity
                     (doc_node_id, source_filename, source_path, raw_title, canonical_title, language,
                      jurisdiction, domain, instrument_type, corpus, confidence, reviewed_at, updated_at,
-                     pinned_profile)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+                     pinned_profile, status, as_of, superseded_by)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
                  ON CONFLICT(doc_node_id) DO UPDATE SET
                     source_filename=excluded.source_filename,
                     source_path=excluded.source_path,
@@ -1520,7 +1531,10 @@ impl GraphStore {
                     corpus=excluded.corpus,
                     confidence=excluded.confidence,
                     reviewed_at=excluded.reviewed_at,
-                    updated_at=excluded.updated_at",
+                    updated_at=excluded.updated_at,
+                    status=excluded.status,
+                    as_of=excluded.as_of,
+                    superseded_by=excluded.superseded_by",
                 rusqlite::params![
                     identity.doc_node_id,
                     identity.source_filename,
@@ -1536,6 +1550,9 @@ impl GraphStore {
                     identity.reviewed_at,
                     identity.updated_at,
                     identity.pinned_profile,
+                    identity.status,
+                    identity.as_of,
+                    identity.superseded_by,
                 ],
             )
             .map_err(|e| AxonMindError::Database(e.to_string()))?;
@@ -1674,7 +1691,7 @@ impl GraphStore {
                 .query_row(
                     "SELECT doc_node_id, source_filename, source_path, raw_title, canonical_title, language,
                             jurisdiction, domain, instrument_type, corpus, confidence, reviewed_at, updated_at,
-                            pinned_profile
+                            pinned_profile, status, as_of, superseded_by
                      FROM document_identity
                      WHERE doc_node_id = ?1",
                     [&doc_id],
@@ -1694,6 +1711,9 @@ impl GraphStore {
                             row.get::<_, Option<i64>>(11)?,
                             row.get::<_, i64>(12)?,
                             row.get::<_, Option<String>>(13)?,
+                            row.get::<_, String>(14)?,
+                            row.get::<_, Option<String>>(15)?,
+                            row.get::<_, Option<String>>(16)?,
                         ))
                     },
                 )
@@ -1740,6 +1760,9 @@ impl GraphStore {
                 updated_at: row.12,
                 aliases,
                 pinned_profile: row.13,
+                status: row.14,
+                as_of: row.15,
+                superseded_by: row.16,
             }))
         })
         .await
@@ -1832,7 +1855,7 @@ impl GraphStore {
                     .query_row(
                         "SELECT doc_node_id, source_filename, source_path, raw_title, canonical_title, language,
                                 jurisdiction, domain, instrument_type, corpus, confidence, reviewed_at, updated_at,
-                                pinned_profile
+                                pinned_profile, status, as_of, superseded_by
                          FROM document_identity
                          WHERE doc_node_id = ?1",
                         [&doc_id],
@@ -1852,6 +1875,9 @@ impl GraphStore {
                                 row.get::<_, Option<i64>>(11)?,
                                 row.get::<_, i64>(12)?,
                                 row.get::<_, Option<String>>(13)?,
+                                row.get::<_, String>(14)?,
+                                row.get::<_, Option<String>>(15)?,
+                                row.get::<_, Option<String>>(16)?,
                             ))
                         },
                     )
@@ -1892,6 +1918,9 @@ impl GraphStore {
                         reviewed_at: identity.11,
                         updated_at: identity.12,
                         pinned_profile: identity.13,
+                        status: identity.14,
+                        as_of: identity.15,
+                        superseded_by: identity.16,
                         aliases,
                     });
                 }
@@ -1923,7 +1952,7 @@ impl GraphStore {
                     "SELECT di.doc_node_id, di.source_filename, di.source_path, di.canonical_title,
                             di.instrument_type, di.corpus, di.confidence, di.pinned_profile, di.updated_at,
                             MAX(du.profile_name), MAX(du.profile_version), COUNT(du.doc_node_id),
-                            MAX(du.provenance)
+                            MAX(du.provenance), di.status, di.as_of, di.superseded_by
                      FROM document_identity di
                      LEFT JOIN doc_units du ON du.doc_node_id = di.doc_node_id
                      GROUP BY di.doc_node_id
@@ -1946,6 +1975,9 @@ impl GraphStore {
                         row.get::<_, Option<i64>>(10)?,
                         row.get::<_, i64>(11)?,
                         row.get::<_, Option<String>>(12)?,
+                        row.get::<_, String>(13)?,
+                        row.get::<_, Option<String>>(14)?,
+                        row.get::<_, Option<String>>(15)?,
                     ))
                 })
                 .map_err(|e| AxonMindError::Database(e.to_string()))?
@@ -1968,6 +2000,9 @@ impl GraphStore {
                     profile_version: row.10,
                     unit_count: row.11,
                     provenance: row.12,
+                    status: row.13,
+                    as_of: row.14,
+                    superseded_by: row.15,
                 });
             }
             Ok(out)
@@ -2145,6 +2180,23 @@ impl GraphStore {
                     tx.execute(
                         "INSERT INTO corpus_bindings (package_name, ordinal, kind, definition)
                          VALUES (?1, 0, 'enrichment', ?2)",
+                        rusqlite::params![package_name, definition],
+                    )
+                    .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                }
+                // `[corpus]` meta itself (name/min_citation_provenance/review_by/
+                // exclude_superseded) — found missing while wiring retrieve_guarantee.md item 11's
+                // `review_by`: this row was never written, so `min_citation_provenance` (item 10)
+                // silently never survived a DB-backed install either (only a from-dir-loaded
+                // in-memory package carried it) — no existing test round-tripped a declared
+                // corpus-level meta field through install+reload to catch it. Stored the same way
+                // `enrichment` already is: one JSON blob row, ordinal 0.
+                if let Some(meta) = corpus.corpus.as_ref() {
+                    let definition = serde_json::to_string(meta)
+                        .map_err(|e| AxonMindError::Database(e.to_string()))?;
+                    tx.execute(
+                        "INSERT INTO corpus_bindings (package_name, ordinal, kind, definition)
+                         VALUES (?1, 0, 'corpus_meta', ?2)",
                         rusqlite::params![package_name, definition],
                     )
                     .map_err(|e| AxonMindError::Database(e.to_string()))?;
@@ -2435,6 +2487,12 @@ impl GraphStore {
                                     .map_err(|e| AxonMindError::Database(e.to_string()))?,
                             )
                         }
+                        "corpus_meta" => {
+                            corpus.corpus = Some(
+                                serde_json::from_str(&definition)
+                                    .map_err(|e| AxonMindError::Database(e.to_string()))?,
+                            )
+                        }
                         _ => {}
                     }
                 }
@@ -2455,6 +2513,7 @@ impl GraphStore {
                         && corpus.term_maps.is_empty()
                         && corpus.xrefs.is_empty()
                         && corpus.enrichment.is_none()
+                        && corpus.corpus.is_none()
                     {
                         None
                     } else {
@@ -5288,6 +5347,9 @@ mod tests {
             reviewed_at: None,
             updated_at: chrono::Utc::now().timestamp(),
             pinned_profile: None,
+            status: "unknown".to_string(),
+            as_of: None,
+            superseded_by: None,
             aliases: vec![],
         };
         store.upsert_document_identity(&identity).await.unwrap();
