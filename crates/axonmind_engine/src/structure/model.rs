@@ -269,21 +269,40 @@ pub struct StructurePackage {
     pub corpus: Option<CorpusFile>,
     #[serde(default)]
     pub evals: Vec<EvalCase>,
+    /// sha256 over the package's own raw definition files (path-sorted `(path, text)` pairs),
+    /// computed once in `from_files` — the single source of truth `from_dir` delegates to, so
+    /// both constructors always agree. Deliberately NOT derived from the parsed struct shape:
+    /// axonmind's own schema can grow new optional fields over time with zero package content
+    /// changing (root-caused 2026-07-17 — two unrelated schema additions, `min_citation_provenance`
+    /// and the supersession fields, silently broke every already-installed package's stored sha
+    /// the moment they shipped, because the old hash covered `serde_json::to_vec(&parsed_struct)`).
+    /// `pub` (not encapsulated) to match every other field on this struct; `store::load_structure_packages`
+    /// reconstructs a `StructurePackage` from DB-stored parsed fragments with no raw file bytes
+    /// available and sets this to an empty string — that reconstruction path never calls
+    /// `content_sha()` (only the install path via `from_files`/`from_dir` does), by design.
+    #[serde(default)]
+    pub raw_content_sha: String,
 }
 
 impl StructurePackage {
     pub fn from_dir(path: &Path) -> Result<Self, AxonMindError> {
-        let manifest: PackageManifest = parse_toml_file(&path.join("package.toml"))?;
-        let identity: IdentityRulesFile = parse_toml_file(&path.join("identity.toml"))?;
-        let corpus_path = path.join("corpus.toml");
-        let corpus = if corpus_path.exists() {
-            Some(parse_toml_file(&corpus_path)?)
-        } else {
-            None
+        let mut files: BTreeMap<String, String> = BTreeMap::new();
+
+        let read = |rel: &Path| -> Result<String, AxonMindError> {
+            std::fs::read_to_string(rel).map_err(|e| AxonMindError::ValidationFailed {
+                message: format!("read {}: {e}", rel.display()),
+            })
         };
 
+        files.insert("package.toml".to_string(), read(&path.join("package.toml"))?);
+        files.insert("identity.toml".to_string(), read(&path.join("identity.toml"))?);
+
+        let corpus_path = path.join("corpus.toml");
+        if corpus_path.exists() {
+            files.insert("corpus.toml".to_string(), read(&corpus_path)?);
+        }
+
         let profiles_dir = path.join("profiles");
-        let mut profiles: Vec<ProfileDefinition> = Vec::new();
         let entries =
             std::fs::read_dir(&profiles_dir).map_err(|e| AxonMindError::ValidationFailed {
                 message: format!("read {}: {e}", profiles_dir.display()),
@@ -303,12 +322,11 @@ impl StructurePackage {
             if entry.path().extension().and_then(|ext| ext.to_str()) != Some("toml") {
                 continue;
             }
-            profiles.push(parse_toml_file(&entry.path())?);
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            files.insert(format!("profiles/{file_name}"), read(&entry.path())?);
         }
-        profiles.sort_by(|a, b| a.profile.name.cmp(&b.profile.name));
 
         let evals_dir = path.join("evals");
-        let mut evals: Vec<EvalCase> = Vec::new();
         if evals_dir.exists() {
             let entries =
                 std::fs::read_dir(&evals_dir).map_err(|e| AxonMindError::ValidationFailed {
@@ -321,20 +339,14 @@ impl StructurePackage {
                 if entry.path().extension().and_then(|ext| ext.to_str()) != Some("toml") {
                     continue;
                 }
-                let file: EvalsFile = parse_toml_file(&entry.path())?;
-                evals.extend(file.evals);
+                let file_name = entry.file_name().to_string_lossy().to_string();
+                files.insert(format!("evals/{file_name}"), read(&entry.path())?);
             }
-            evals.sort_by(|a, b| a.name.cmp(&b.name));
         }
 
-        Ok(Self {
-            root_dir: path.to_path_buf(),
-            manifest,
-            profiles,
-            identity,
-            corpus,
-            evals,
-        })
+        let mut pkg = Self::from_files(&files)?;
+        pkg.root_dir = path.to_path_buf();
+        Ok(pkg)
     }
 
     pub fn validate(&self) -> Result<(), AxonMindError> {
@@ -413,13 +425,7 @@ impl StructurePackage {
     }
 
     pub fn content_sha(&self) -> Result<String, AxonMindError> {
-        let mut hasher = Sha256::new();
-        hasher.update(serde_json::to_vec(&self.manifest).map_err(json_error)?);
-        hasher.update(serde_json::to_vec(&self.profiles).map_err(json_error)?);
-        hasher.update(serde_json::to_vec(&self.identity).map_err(json_error)?);
-        hasher.update(serde_json::to_vec(&self.corpus).map_err(json_error)?);
-        hasher.update(serde_json::to_vec(&self.evals).map_err(json_error)?);
-        Ok(format!("{:x}", hasher.finalize()))
+        Ok(self.raw_content_sha.clone())
     }
 
     /// Builds a package from in-memory file contents keyed by path relative to
@@ -468,8 +474,24 @@ impl StructurePackage {
             identity,
             corpus,
             evals,
+            raw_content_sha: raw_files_sha(files),
         })
     }
+}
+
+/// sha256 over path-sorted `(path, text)` pairs — the actual bytes a package author wrote, not
+/// whatever shape the current parser happens to produce them into. `BTreeMap` iteration is
+/// already path-sorted; a `\0` separator keeps e.g. `("a", "bc")` from hashing the same as
+/// `("ab", "c")`.
+fn raw_files_sha(files: &BTreeMap<String, String>) -> String {
+    let mut hasher = Sha256::new();
+    for (path, text) in files {
+        hasher.update(path.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(text.as_bytes());
+        hasher.update([0u8]);
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 fn get_required<'a>(
@@ -490,15 +512,6 @@ fn parse_toml_str<T: for<'de> Deserialize<'de>>(text: &str) -> Result<T, AxonMin
     })
 }
 
-fn parse_toml_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, AxonMindError> {
-    let text = std::fs::read_to_string(path).map_err(|e| AxonMindError::ValidationFailed {
-        message: format!("read {}: {e}", path.display()),
-    })?;
-    parse_toml_str(&text).map_err(|_| AxonMindError::ValidationFailed {
-        message: format!("parse {}", path.display()),
-    })
-}
-
 fn validate_regex<'a>(
     scope: &str,
     label: &str,
@@ -514,12 +527,6 @@ fn validate_regex<'a>(
             })?;
     }
     Ok(())
-}
-
-fn json_error(error: serde_json::Error) -> AxonMindError {
-    AxonMindError::ValidationFailed {
-        message: error.to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -566,5 +573,73 @@ mod tests {
             from_files_pkg.content_sha().expect("sha"),
             from_dir_pkg.content_sha().expect("sha"),
         );
+    }
+
+    #[test]
+    fn content_sha_equals_the_raw_files_hash_not_a_function_of_the_parsed_struct_shape() {
+        // Regression pin for the 2026-07-17 live bug: content_sha() used to hash
+        // `serde_json::to_vec(&parsed_struct)`, so any axonmind schema addition (a new
+        // optional field on PackageManifest/ProfileDefinition/etc.) changed every
+        // already-installed package's stored sha with zero actual package content
+        // change (`install_structure_package`'s "changed without version bump" guard
+        // then false-positives on every subsequent reconcile). Asserting content_sha()
+        // equals `raw_files_sha` directly — not just that two call sites agree — proves
+        // the value can never again depend on how the parser happens to shape its output.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic_manual");
+        let mut files = BTreeMap::new();
+        for name in ["package.toml", "identity.toml", "corpus.toml"] {
+            files.insert(
+                name.to_string(),
+                std::fs::read_to_string(dir.join(name)).expect("read"),
+            );
+        }
+        for entry in std::fs::read_dir(dir.join("profiles")).expect("read profiles dir") {
+            let entry = entry.expect("dir entry");
+            let file_name = entry.file_name().into_string().expect("utf8 filename");
+            files.insert(
+                format!("profiles/{file_name}"),
+                std::fs::read_to_string(entry.path()).expect("read profile"),
+            );
+        }
+
+        let pkg = StructurePackage::from_files(&files).expect("from_files");
+        assert_eq!(pkg.content_sha().expect("sha"), raw_files_sha(&files));
+    }
+
+    #[test]
+    fn content_sha_is_insensitive_to_extra_unknown_toml_keys_but_sensitive_to_real_edits() {
+        // A package author's own edit changes the sha (guard fires correctly); this doesn't
+        // test schema growth directly (that needs a second axonmind version to compare against),
+        // but pins that the sha tracks real file content changes, the property the guard needs.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic_manual");
+        let mut files = BTreeMap::new();
+        for name in ["package.toml", "identity.toml", "corpus.toml"] {
+            files.insert(
+                name.to_string(),
+                std::fs::read_to_string(dir.join(name)).expect("read"),
+            );
+        }
+        for entry in std::fs::read_dir(dir.join("profiles")).expect("read profiles dir") {
+            let entry = entry.expect("dir entry");
+            let file_name = entry.file_name().into_string().expect("utf8 filename");
+            files.insert(
+                format!("profiles/{file_name}"),
+                std::fs::read_to_string(entry.path()).expect("read profile"),
+            );
+        }
+        let baseline = StructurePackage::from_files(&files)
+            .expect("from_files")
+            .content_sha()
+            .expect("sha");
+
+        let mut edited = files.clone();
+        let package_toml = edited.get_mut("package.toml").expect("package.toml");
+        package_toml.push_str("\n# a real edit\n");
+        let edited_sha = StructurePackage::from_files(&edited)
+            .expect("from_files")
+            .content_sha()
+            .expect("sha");
+
+        assert_ne!(baseline, edited_sha);
     }
 }

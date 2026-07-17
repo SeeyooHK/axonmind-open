@@ -2523,6 +2523,11 @@ impl GraphStore {
                     // file-only, re-parsed from skill_files on every reconcile) — a package
                     // reconstructed from these tables is never the input to run_structure_evals.
                     evals: Vec::new(),
+                    // No raw file bytes are available from this DB-reconstruction path (only
+                    // already-parsed fragments) — `content_sha()` is never called on packages
+                    // returned from `load_structure_packages` (only the install path, via
+                    // `from_files`/`from_dir`, computes and compares it).
+                    raw_content_sha: String::new(),
                 });
             }
             Ok(out)
