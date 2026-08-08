@@ -17,15 +17,14 @@ repository = "https://github.com/SeeyooHK/axonmind-open"
 
 [workspace.dependencies]
 anyhow = "1"
+anydoc = "=0.1.7"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.0", features = ["derive"] }
-calamine = "0.25"
 comrak = "0.29"
 scraper    = "0.21"
 tesseract  = "0.14"
 deadpool-sqlite = "0.13"
-undoc = "0.3"
 eventsource-stream = "0.2"
 futures-util = "0.3"
 petgraph = "0.6"

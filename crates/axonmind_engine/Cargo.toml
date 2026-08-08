@@ -9,14 +9,13 @@ description = "Ingestion, extraction, graph queries, MCP tools, persistence, and
 [dependencies]
 axonmind_core   = { workspace = true }
 anyhow          = { workspace = true }
+anydoc          = { workspace = true }
 futures-util    = { workspace = true }
 async-trait     = { workspace = true }
 chrono          = { workspace = true }
-calamine        = { workspace = true }
 comrak          = { workspace = true }
 scraper         = { workspace = true }
 deadpool-sqlite = { workspace = true }
-undoc           = { workspace = true }
 petgraph        = { workspace = true }
 pdf-inspector   = { workspace = true }
 regex           = { workspace = true }

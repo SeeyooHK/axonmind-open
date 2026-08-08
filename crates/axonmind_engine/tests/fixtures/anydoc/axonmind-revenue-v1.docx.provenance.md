@@ -1,0 +1,4 @@
+ownership: AxonMind
+creation_tool: python-docx
+creation_tool_version: 1.2.0
+sha256: d3cae440860158c3b21a374e8be4c82706dde2464c9bf6dd7fc47a8ff76a99d9

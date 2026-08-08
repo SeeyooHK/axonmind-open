@@ -22,13 +22,13 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: cargo check
-        run: cargo check --workspace --exclude axonmind-host
+        run: cargo check --workspace --exclude axonmind-host --locked
 
       - name: cargo test + coverage gate (≥40% lines)
-        run: cargo llvm-cov --workspace --exclude axonmind-host --fail-under-lines 40
+        run: cargo llvm-cov --workspace --exclude axonmind-host --locked --fail-under-lines 40
 
       - name: cargo clippy
-        run: cargo clippy --workspace --exclude axonmind-host
+        run: cargo clippy --workspace --exclude axonmind-host --locked
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
@@ -44,7 +44,7 @@ jobs:
           bun-version: latest
 
       - name: bun install
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: typecheck
         run: bun run typecheck
